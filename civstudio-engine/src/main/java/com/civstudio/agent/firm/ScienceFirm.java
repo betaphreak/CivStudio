@@ -98,8 +98,17 @@ public class ScienceFirm extends Firm {
 		double newWageBudget = config.wageBudget();
 		Ruler ruler = colony.getRuler();
 		if (ruler != null && ruler.isAlive()) {
-			ruler.getBank().withdraw(ruler.getID(), newWageBudget);
-			bank.credit(getID(), newWageBudget, Bank.OTHER);
+			// bid the configured budget only so far as the crown can actually pay for it: research is
+			// patronage out of a positive treasury, not a standing charge on it. Funding the full
+			// budget regardless of means made this the crown's largest permanent outflow and drove the
+			// treasury monotonically negative (-3.5k after a year, -80k after ten), which in turn left
+			// the crown unable to meet its other obligations — its demesne villages' provisioning among
+			// them. Now a broke crown simply keeps fewer scholars until its treasury recovers.
+			newWageBudget = Math.min(newWageBudget, ruler.researchGrant());
+			if (newWageBudget > 0) {
+				ruler.getBank().withdraw(ruler.getID(), newWageBudget);
+				bank.credit(getID(), newWageBudget, Bank.OTHER);
+			}
 		} else {
 			newWageBudget = 0;
 		}

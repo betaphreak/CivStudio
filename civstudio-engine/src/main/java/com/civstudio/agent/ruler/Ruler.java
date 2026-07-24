@@ -65,6 +65,16 @@ public class Ruler extends AbstractHousehold {
 	// days of its GOURMET ration the ruler keeps as a stocked larder
 	private static final int NECESSITY_RESERVE_DAYS = 30;
 
+	// fraction of a POSITIVE treasury the crown grants to research each step. The crown used to fund
+	// the science firm's whole wage bill at a flat rate regardless of its means, which was its single
+	// largest standing outflow and drove the treasury permanently negative — measured at -3.5k after
+	// one year and -80k after ten, monotonically, on a colony whose peasant pool and granary bill it
+	// nothing. Sizing the grant to what the crown actually holds makes research self-limiting: a rich
+	// crown researches at the old pace, a broke one slows down and lets its treasury recover, exactly
+	// as its enjoyment consumption already does ("indulge only out of a positive treasury"). Chosen so
+	// a healthy treasury funds roughly the science firm's configured budget.
+	private static final double RESEARCH_FUNDING_RATE = 0.02;
+
 	// --- dynamic firm provisioning thresholds (see reviewSectors) ---
 	// a sector is supply-constrained — a reason to charter — when its firms run at or
 	// above this smoothed utilization while demand still goes unfilled. This is the
@@ -447,6 +457,26 @@ public class Ruler extends AbstractHousehold {
 	/** Total feudal dues the crown has collected from its direct-vassal peasants (P4). */
 	public double getCrownDuesCollected() {
 		return crownDuesCollected;
+	}
+
+	/**
+	 * The <b>research grant</b> the crown can fund this step — {@link #RESEARCH_FUNDING_RATE} of a
+	 * positive treasury, and <b>nothing at all while the crown is in debt</b>. The science firm bids
+	 * the lesser of its configured wage budget and this, so the colony's research pace is bounded by
+	 * the crown's actual means rather than draining it without limit.
+	 * <p>
+	 * This is the same rule the crown's enjoyment {@code consumption} already follows — a sovereign
+	 * driven into debt stops spending rather than borrowing forever — applied to the one outflow that
+	 * was exempt from it. Research is patronage, not an obligation: a crown that cannot pay for
+	 * scholars simply has fewer of them, and the tech tree slows instead of the treasury sinking.
+	 *
+	 * @return the research funding available this step (never negative)
+	 */
+	public double researchGrant() {
+		Account acct = getBank().getAcct(getID());
+		if (acct == null)
+			return 0;
+		return RESEARCH_FUNDING_RATE * Math.max(0, acct.getChecking() + acct.getSavings());
 	}
 
 	private void collectTaxes() {

@@ -234,6 +234,27 @@ and those wages flow to the scholars when the market clears — a near zero-prof
 conduit (ruler → firm → scholars), exactly as the builder is for its peasants. A
 colony with no ruler funds no scholars, so research never advances.
 
+**Research is funded from the crown's means (2026-07-25).** The firm bids the lesser of
+its configured `wageBudget` and the crown's `Ruler.researchGrant()` — a fixed fraction
+(`RESEARCH_FUNDING_RATE`, 2%) of a **positive** treasury, and nothing at all while the
+crown is in debt. Before this, the crown funded the whole wage bill every step
+regardless of what it held, which made research its single largest standing outflow and
+drove the treasury monotonically negative (measured at −3.5k after one in-game year and
+−80k after ten, on a colony whose peasant pool and granary bill it nothing). That debt
+then blocked the crown's *other* obligations — most visibly the provisioning of its
+demesne villages, whose purse cap read the negative treasury as zero forever. Throttling
+the grant is the same rule the crown's enjoyment consumption already followed ("indulge
+only out of a positive treasury"), applied to the one outflow that was exempt from it.
+
+The consequence worth knowing: **the long-run research pace is now set by the crown's
+income, not by `RESEARCH_FUNDING_RATE`.** The treasury settles where revenue equals the
+grant, so raising the rate only spends the opening treasury faster; it does not buy more
+research. The real levers are the **tax rates** (`bankProfitTaxRate` 5%,
+`nobleIncomeTaxRate` 2%) and the crown's dues. Measured over 10 years on three seeds: the
+treasury now hovers near zero instead of sinking (one seed dips to −600 and recovers),
+and 3–8 techs complete — research slows when the realm is poor and resumes when it is
+not, rather than the crown borrowing without limit to keep scholars on.
+
 - **Who staffs it (the scholars).** The same **aristocracy**: nobles post their
   INTELLECTUAL labor to `ScholarLabor` (and the ruler does too during the early
   ennoblement ramp, so research is staffed before the nobles are raised — mirroring how

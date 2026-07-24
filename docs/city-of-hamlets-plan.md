@@ -258,10 +258,17 @@ and the `dailyNeed` over-estimate remain as tuning levers.
     colony's ration need. The founding endowment is now the village's **own floor** (`FLOOR_DAYS` of
     its ration need, ~5 units), which removes the free lunch and folds two uncalibrated levers into
     one. Full suite stayed green, so it was not load-bearing.
-  - **A Crown-demesne village is usually provisioned by a broke crown.** The treasury runs deeply
-    negative on a young colony, and the purse cap (`max(0, checking + savings)`) then buys nothing —
-    by design, but it means the crown's provisioning duty is mostly nominal today. Noble-led villages
-    do provision. Worth revisiting if the crown's finances are ever reworked.
+  - **A Crown-demesne village was provisioned by a broke crown — FIXED 2026-07-25.** The purse cap
+    (`max(0, checking + savings)`) exists so a poor *noble* under-provisions rather than borrowing
+    without bound, but the crown's treasury is structurally negative, so for the crown it read as
+    zero forever and its provisioning duty was purely nominal. Two changes: the crown now provisions
+    **on credit**, its line being its **bank's equity** (the realm's accumulated wealth, which is
+    what a sovereign actually borrows against) — deliberately finite, since an unbounded budget makes
+    the demand curve `min(deficit, budget/price)` perfectly *inelastic*, which is a price ratchet and
+    also poisons the market's binary search (a demand of `Infinity` never converges). And the
+    underlying deficit was fixed at source: see the research-funding change in
+    [`docs/tech-tree.md`](tech-tree.md). The bill is small either way — topping *every* village to its
+    floor measured 0.0 at year boundaries, because home-plot food already fills the larders.
 
   **Validation.** Engine 482 (488 under `-Pfull`) + server 131 green with the flag **on**, including
   every survival/growth/CanonicalRun test — the same calibration signal V2's flip rested on. Only the

@@ -271,7 +271,22 @@ public class ConsumerGoodMarket extends Market {
 			}
 		}
 
-		mktPrice = price;
+		// A price is the price at which something was SOLD. When nothing was offered at all, the band
+		// search has no supply to converge on: demand exceeds it at every price in the band, so the
+		// search runs to the top and the price ratchets +zeta. Repeat that daily and it compounds —
+		// 1.1^365 is 10^15 a year — which is exactly what a colony whose food has moved off the market
+		// (home-plot subsistence and village larders feed it now) was doing on roughly half of seeds:
+		// the necessity price reached 10^30 and beyond, unnoticed, because nothing depends on it to
+		// survive any more. An empty market is not a dear market; it is a market with no information.
+		// So on a day with NOTHING to sell, yesterday's price stands.
+		//
+		// Only the no-supply side is held. A glut (supply offered, no buyers) still discovers downward
+		// as before — falling is bounded by the price floor, and the ruler's overbuilt-sector detection
+		// reads that fall. And the shortage is NOT hidden by holding the price: the unmet-demand
+		// fraction below is computed from demand and supply directly, so the pressure signal that
+		// drives the ruler to charter another farm registers the shortfall exactly as it did.
+		if (supply > 0 || colony.getTimeStep() == 0)
+			mktPrice = price;
 
 		// flag when the price drifts past a high multiple of its initial level,
 		// and again when it returns below; log once per crossing

@@ -170,11 +170,37 @@ public final class VillageLarders {
 		return leader instanceof Agent a && a.isAlive() ? a : null;
 	}
 
-	// what a leader can spend on its village's food today: its whole liquid purse (a lord's provisioning
-	// is not budgeted separately from the rest of its money).
+	/**
+	 * What a leader can spend on its village's food today: its whole liquid purse — a lord's
+	 * provisioning is not budgeted separately from the rest of its money — <b>except for the Crown,
+	 * which provisions on credit</b> (an unbounded purse).
+	 * <p>
+	 * The purse cap exists so a poor <em>noble</em> under-provisions rather than borrowing without
+	 * bound. The sovereign is not that kind of lord: it already runs its whole treasury as a standing
+	 * overdraft (its savings <em>is</em> a loan, funding research and the firms it charters), it has
+	 * the taxing power the nobles do not, and feeding its demesne is an obligation of the realm rather
+	 * than a discretionary purchase. Capping it just meant a demesne village was never provisioned at
+	 * all — the crown's treasury is structurally negative from the first year, so {@code max(0, …)}
+	 * read as zero forever, and the duty was nominal.
+	 * <p>
+	 * The credit line is its <b>bank's equity</b> — the realm's accumulated wealth, which is what a
+	 * sovereign actually borrows against — rather than an unbounded purse. Finite on purpose: the
+	 * demand curve is {@code min(deficit, budget / price)}, so an unbounded budget would make the
+	 * crown's food demand perfectly <em>inelastic</em>, bidding for the full deficit at any price. A
+	 * price-insensitive buyer against a thin market is a price ratchet, and it would also poison the
+	 * market's binary search (a demand of {@code Infinity} never converges on supply). The equity line
+	 * is a few thousand against a provisioning bill measured in tens, so it binds in practice only
+	 * when the realm itself is destitute.
+	 *
+	 * @param leader the village's leader
+	 * @return what it may spend on its villages' food today
+	 */
 	private double purseOf(Agent leader) {
 		Account acct = leader.getBank().getAcct(leader.getID());
-		return acct == null ? 0 : Math.max(0, acct.getChecking() + acct.getSavings());
+		double cash = acct == null ? 0 : Math.max(0, acct.getChecking() + acct.getSavings());
+		return leader == colony.getRuler()
+				? cash + Math.max(0, leader.getBank().getEquity())
+				: cash;
 	}
 
 	/**
