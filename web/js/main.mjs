@@ -9,6 +9,7 @@ import { initMinimap, drawMinimap } from "./minimap.mjs";
 import { currentCaption, scheduleCaptionRefresh, refreshCaptionNow } from "./bandcaption.mjs";   // the chip's viewport-context text
 import { escHtml } from "./plotlabel.mjs";
 import { draw, setFrame } from "./repaint.mjs";   // the repaint scheduler owns draw(); we install the frame body
+import { initPixi, resizePixi, renderPixi } from "./pixi.mjs";   // the second (Pixi) canvas — docs/pixi-migration-plan.md
 import { noteFrame } from "./diag.mjs";                        // the top bar's fps readout times real paints
 // the baked terrain raster (a real image asset), drawn over the water; its ocean pixels are
 // transparent so the sea layer below shows through, land is opaque.
@@ -48,10 +49,12 @@ if (ACTIVE_REALM && _fowTile) {
 // last draws in the scene that weren't in a registry. They now live in js/sea.mjs and are ordered by
 // the SCREEN_LAYERS stack (layers.mjs); initSea wires their async art loads to a repaint.
 initSea(draw);
+initPixi();   // boots the #gl renderer in the background; empty until P2, and never fatal (js/pixi.mjs)
 function resize() {
   const r = stage.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio||1, 2);
   if (!(r.width > 0) || !(r.height > 0)) return;   // ignore degenerate sizes (mid-layout / panel drag)
   cv.width = r.width*dpr; cv.height = r.height*dpr; VIEW.dpr = dpr;
+  resizePixi(r.width, r.height, dpr);   // ONE viewport size for both canvases — they must never disagree
   // Preserve the geographic point at the viewport centre AND the on-screen magnification across the
   // resize, so opening/closing/dragging the info panel beside the map (which shrinks/grows the stage)
   // never moves or rescales the world. fitView recomputes the base fit scale from the new size; we
@@ -172,6 +175,10 @@ function paintScene() {
   ctx.restore();
   drawRealmFog();  // hatch the void beyond the realm (screen-space, over the dark fill, under the minimap)
   drawMinimap();   // the bottom-left world thumbnail + viewport rectangle tracks pan/zoom
+  // …and the same frame on the Pixi canvas beneath (js/pixi.mjs). Empty as of P0, so this costs a
+  // no-op call; it is here now so the two renderers share ONE frame trigger from the outset —
+  // repaint.draw() stays the only thing that decides a frame happens.
+  renderPixi();
 }
 
 // The realm's fog of war: EVERY space not covered by one of the realm's provinces — the outer ocean

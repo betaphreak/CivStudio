@@ -16,9 +16,31 @@ which makes the engine the single source of truth for that data (it used to be a
 snapshot that could drift). `build.mjs` now bakes the binary assets and writes a small
 `src/main/resources/map/web-asset-manifest.json` describing them (the descriptors + the
 `plots.pack` byte index the server can't regenerate), which the server merges into the bundle it
-serves. No bundler or dependencies — just Node for the asset build. **The page therefore needs
-the server reachable** to render the map; if it isn't, the loading splash stays up with a
-*Maintenance Mode* notice (a deliberate hard dependency).
+serves. **No bundler** — the site still ships raw `.mjs`, and Node is needed only for the asset
+build. **The page therefore needs the server reachable** to render the map; if it isn't, the
+loading splash stays up with a *Maintenance Mode* notice (a deliberate hard dependency).
+
+### Vendored runtime dependency: PixiJS
+
+The site is no longer strictly dependency-free. `js/vendor/pixi.min.mjs` is a **vendored, pinned**
+copy of the PixiJS ESM bundle — the renderer the map layers are migrating onto, one at a time
+(`docs/pixi-migration-plan.md`). It is committed rather than bundled precisely so the no-bundler
+property survives: the page imports the file directly, exactly like every other module.
+
+- **Pinned version: `pixi.js` 8.19.0** (`devDependencies` in `package.json`, `--save-exact`).
+  It is a *dev* dependency because npm is only the delivery mechanism for the vendored artifact;
+  nothing at runtime resolves from `node_modules`.
+- **Re-vendor** (after bumping the pin) with:
+  ```sh
+  npm i --save-dev --save-exact pixi.js@<version>
+  node -e "const f=require('fs'),v=require('./node_modules/pixi.js/package.json').version; \
+    let s=f.readFileSync('node_modules/pixi.js/dist/pixi.min.mjs','utf8') \
+      .replace(/\r?\n\/\/# sourceMappingURL=.*\s*$/,'\n'); \
+    f.writeFileSync('js/vendor/pixi.min.mjs','// pixi.js v'+v+' — VENDORED, do not edit.\n'+s)"
+  ```
+  The `sourceMappingURL` is stripped because the `.map` (4.5 MB) is deliberately not committed.
+- **Pin it, don't float it.** Pixi v7→v8 broke the `Graphics` API and made `Application` init
+  async; an unnoticed major would take the map out.
 
 ## The WorldMap (with a live Caravans view)
 

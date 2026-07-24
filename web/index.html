@@ -179,6 +179,10 @@
     </header>
 
     <div class="stage" id="stage">
+      <!-- the PixiJS canvas (docs/pixi-migration-plan.md). It sits BENEATH #map — layers migrate off
+           the 2D canvas onto it one at a time, and #map is deleted when it is empty (P7). Empty and
+           fully transparent as of P0, so the page renders exactly as it did without it. -->
+      <canvas id="gl"></canvas>
       <canvas id="map"></canvas>
       <!-- the wordmark, moved off the top bar (§ space-saving) into a faint, unobtrusive watermark over
            the map; still clickable (back to server selection · reset to the world view) -->
