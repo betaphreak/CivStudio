@@ -1,11 +1,12 @@
 # 3D terrain — the target look, the spike that validated it, and the plan
 
 **Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`), **PLANNED** P0–P5 (§The plan),
-and **P0–P3 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to 34° by band 6.5 with
+and **P0–P4 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to 34° by band 6.5 with
 the whole 2D layer stack projected through the tilted camera, and its foliage STANDS UP as ~12k billboards
 that lie flat at the seam and rise with the tilt. Gated on a frame diff at the seam against the 2D path
 (mean 5.12/255, unchanged across all three phases) plus a geometric check that the props land on the 2D
-bake's own rects. P4 (interactions/polish) and P5 (prop art at the oblique angle) remain.
+bake's own rects, and a check that ground-anchored content stands on the terrain rather than on its
+sea-level shadow. P5 (prop art at the oblique angle) remains.
 
 ## The target
 
@@ -356,7 +357,35 @@ feature/improvement overlays.
 The ordering constraint at `plots.mjs:339` — foliage must sit over rivers, via province-level passes
 rather than per-plot — is satisfied by construction once the props stand above the surface.
 
-### P4 — interactions and polish
+### P4 — standing on the terrain — SHIPPED
+
+Billed as "interactions and polish"; it turned out to contain a **real bug left by P2** and one design change
+that supersedes a decision made in the plan.
+
+- **`provPath` was still on `pxr`/`pyr`.** Every province polygon in the scene — borders, the lake / sea-cell /
+  impassable washes, the political fills, the hover and selected highlights — was therefore drawn through the
+  separable fast path, which lies once the camera tilts. It survived P2 because the P2 gate measured the ground
+  and the tilted checks measured the camera; nothing looked at the polygons.
+- **A second seam, the vertical counterpart of the projector.** `project()` takes a height because the caller
+  knows it, and almost no caller does: a resource icon, a city marker, a district, a route sprite, a ring vertex
+  all just want to sit on the ground wherever the ground is. So `core.projectOn`/`pllOn` ask an installed
+  height lookup (`setGroundHeight`, filled by terrain3d exactly as `setProjector` is), and under the 2D camera
+  the lookup is skipped entirely — bands 0–4 pay nothing.
+- **This measurably mattered:** standing on the terrain moves an on-screen PEAK plot's content by up to **66 px**
+  versus its sea-level projection, at a zoom where a whole plot is 52.8 px. Everything ground-anchored was more
+  than a plot out of place on high ground.
+- **It also supersedes the plan's bake decision.** §The plan chose to bake province borders and fills into each
+  province's texture so they would drape over relief. Projecting each ring vertex at ITS OWN terrain height
+  drapes them just as well, keeps ONE copy of the geometry, needs no texture invalidation, and works for the
+  per-frame layers — hover, selection — that a bake could never have covered. Only the straight segment between
+  two ring vertices can still cut a hill, and these outlines are dense enough that it rarely reads.
+- **A robustness fix worth naming:** the tilted projector guarded against geometry behind the camera with
+  `W <= 1e-9`, but a point barely IN FRONT of the camera has a tiny positive `W` and divides into coordinates in
+  the billions. Off the top of a tilted viewport that is a perfectly ordinary place for a ring vertex to be, and
+  a `Path2D` carrying 1e9 coordinates is at best slow. The floor is now a quarter of the near plane.
+
+#### The original P4 plan, for reference
+
 
 `maptip`/`plotlabel` hover, the city screen, districts anchored to real mesh height, the minimap, and a
 no-WebGL fallback — which is cheap, because 3D only engages at band 5, so the 2D path below it *is* the
@@ -367,6 +396,34 @@ fallback (clamp the zoom).
 Buildings and units. Where the C2C asset question lands: pre-rendering from NIF in Blender sidesteps the
 `.kf`/`.kfm` animation-import risk entirely, and the ~700 Firaxis-origin models of ~6,086 need a
 decision. See [`civ4-files.md`](civ4-files.md).
+
+## Retiring the 2D path — when, and how much of it
+
+The question comes up naturally once 3D owns the deep zooms: at what point does the canvas-2D renderer go? The
+useful answer is that **"2D" is four different things with four different answers**, and only two of them are
+really duplication:
+
+| what | when it can go |
+|---|---|
+| **The screen-space overlay** — labels, icons, city plates, hover, minimap, all ~13.5k lines of it | **Never.** It is the right technology for screen-space UI, and the city bars in the target screenshot *are* this. |
+| **The 2D ground below band 5** | Costs almost nothing to keep: one `drawImage`, a gradient, and a `drawPlots` pass the 3D path needs anyway to build the textures it drapes. Also the no-WebGL fallback, for free. |
+| **Political overlays and the underworld** | The real duplication — both are gated out of 3D today. Worth unifying, and a far smaller and better-aimed job than "remove 2D". |
+| **The foliage double path** (bake vs props, P3) | Soonest of the four: it is the only place where the same content has two renderers that have to agree. |
+
+Three reasons to hold off on the ground path specifically:
+
+1. **It is the measuring instrument.** Every phase here was gated by diffing against it — P1 at mean 0.71, P2
+   catching the perspective-parallax regression the moment it appeared (0.7 → 24.8), P3 confirming the ground
+   was untouched at exactly 5.12. Delete it and the next phase has nothing to verify against.
+2. **It is the WebGL fallback at no cost.** Removing it means a visitor without WebGL sees nothing instead of a
+   working map. That is a product decision, not a cleanup.
+3. **The right trigger is a feature 2D BLOCKS, not "3D is good enough now."** P3 is the model: content baked
+   into a texture physically cannot stand up, so foliage had to move. Every future thing that hits that wall is
+   a reason. Tidiness is not one.
+
+A plausible sequence, then: finish P4 and P5 → bring political and the underworld into 3D so `ground3D()`
+collapses to "band ≥ 5 and WebGL exists" → consider dropping the threshold toward band 0, at which point the
+2D ground is dead except as fallback and can be weighed on its own merits.
 
 ### What it costs, and what does not change
 

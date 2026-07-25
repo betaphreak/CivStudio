@@ -11,7 +11,7 @@
 // bootstrap recorded on the bundle, else the deployed server). It used to be re-derived here and in
 // auth.mjs: three copies of the same two lines, all of which had to stay in lockstep with the
 // bootstrap that actually picks the server.
-import { ctx, px, py, cssVar, VIEW, baseXr, baseYr, sxSrc, sySrc, LABEL_FONT, centerOn, S, SERVER_BASE as LIVE_BASE, pll } from "../core.mjs";
+import { ctx, px, py, cssVar, VIEW, baseXr, baseYr, sxSrc, sySrc, LABEL_FONT, centerOn, S, SERVER_BASE as LIVE_BASE, pllOn } from "../core.mjs";
 import { hasDeepLink } from "../main.mjs";
 import { atLeast, BAND, bandAlpha } from "../bands.mjs";
 import { setRouteSession, invalidateRoutes } from "../routefetch.mjs";
@@ -465,7 +465,7 @@ export function drawLive() {
       ctx.save();
       ctx.globalAlpha = trailA;
       ctx.beginPath();
-      tr.forEach((p, k) => { const [x, y] = pll(p[1], p[0]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      tr.forEach((p, k) => { const [x, y] = pllOn(p[1], p[0]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.lineJoin = "round"; ctx.lineCap = "round";
       // a dark casing under the route + a soft glow, so it reads over any terrain rather than
       // blending in; then the bright coloured line on top
@@ -475,7 +475,7 @@ export function drawLive() {
       ctx.strokeStyle = col; ctx.globalAlpha = trailA * .95; ctx.lineWidth = 2.6; ctx.stroke();
       ctx.restore();
     }
-    const [x, y] = pll(c.longitude, c.latitude), r = c.settled ? 6 : 4.6;
+    const [x, y] = pllOn(c.longitude, c.latitude), r = c.settled ? 6 : 4.6;
     // Overland (BAND.PROVINCE+) shows the embodied unit: its button icon as the marker + a name and
     // signature-skill readout below. At atlas zoom (or a band with no embodied unit) it stays a role
     // dot — the icon would be oversized against the tiny provinces. docs/c2c-unit-import.md §1a.
@@ -522,7 +522,7 @@ export function drawLive() {
   // development), added to panel.provTip. See docs/urban-plots.md.
   const colony = snap.colonies[0];
   if (colony && Number.isFinite(colony.latitude)) {
-    const [x, y] = pll(colony.longitude, colony.latitude);
+    const [x, y] = pllOn(colony.longitude, colony.latitude);
     const overview = !atLeast(BAND.TERRAIN);
     if (overview) {
       ctx.fillStyle = cssVar("--accent") || "#e8b76a";

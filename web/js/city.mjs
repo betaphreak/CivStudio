@@ -8,7 +8,7 @@
 //
 // Real data only: markUrbanPlots flags each city-core plot `urban`; we draw one marker per flagged
 // plot. No new server data — these are the plots drawPlots already streams.
-import { P, ctx, project, plotPxAt, provOnScreen, isPolitical } from "./core.mjs";
+import { P, ctx, plotPxAt, provOnScreen, isPolitical, projectOn } from "./core.mjs";
 import { bandAlpha } from "./bands.mjs";
 
 // one small settlement pip centred on an urban plot: a soft stone disc with a thin keyline and a
@@ -54,7 +54,7 @@ export function drawCity() {
   for (const p of P) {
     if (!p._plots || !p._plots.length || !provOnScreen(p)) continue;
     const c = cityCenter(p);
-    if (c) drawMarker(...project(c[0] + 0.5, c[1] + 0.5), plotPx);   // the plot CENTRE, projected
+    if (c) drawMarker(...projectOn(c[0] + 0.5, c[1] + 0.5), plotPx);   // the plot CENTRE, on the terrain
   }
   ctx.restore();
 }

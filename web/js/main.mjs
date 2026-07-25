@@ -1,4 +1,4 @@
-import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm, pll, project } from "./core.mjs";
+import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm, pll, project, pllOn } from "./core.mjs";
 import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO, ground3D } from "./bands.mjs";
 import { renderTerrain3D } from "./terrain3d.mjs";   // the 3D ground, band 5 and deeper
 import { drawPlots } from "./plots.mjs";                       // still used directly by drawCavernPlots
@@ -293,7 +293,7 @@ function drawHoverHighlight() {
     ctx.fillStyle = "rgba(231,236,244,.12)"; ctx.fill(hp);
     ctx.strokeStyle = "#eef2f8"; ctx.lineWidth = 1.6 * s; ctx.stroke(hp);
   } else {
-    ctx.beginPath(); { const [hx, hy] = pll(S.hoverProv.lon, S.hoverProv.lat); ctx.arc(hx, hy, 6, 0, 7); }
+    ctx.beginPath(); { const [hx, hy] = pllOn(S.hoverProv.lon, S.hoverProv.lat); ctx.arc(hx, hy, 6, 0, 7); }
     ctx.strokeStyle = "#eef2f8"; ctx.lineWidth = 1.4 * s; ctx.stroke();
   }
 }
@@ -306,7 +306,7 @@ function drawSelectedHighlight() {
     ctx.fillStyle = "rgba(232,183,106,.12)"; ctx.fill(sp);
     ctx.strokeStyle = cssVar("--accent") || "#e8b76a"; ctx.lineWidth = 2.2 * s; ctx.stroke(sp);
   } else {
-    ctx.beginPath(); { const [sx, sy] = pll(S.selectedProv.lon, S.selectedProv.lat); ctx.arc(sx, sy, 7, 0, 7); }
+    ctx.beginPath(); { const [sx, sy] = pllOn(S.selectedProv.lon, S.selectedProv.lat); ctx.arc(sx, sy, 7, 0, 7); }
     ctx.strokeStyle = cssVar("--accent") || "#e8b76a"; ctx.lineWidth = 2 * s; ctx.stroke();
   }
 }
@@ -424,8 +424,8 @@ function drawAdjacencies() {
     if (teleport) {
       // too far for a sensible line — a teleporter: mark each endpoint instead (cave-entrance style),
       // each labelled with the province it warps to
-      teleportMark(...pll(a.lon, a.lat), b.name);
-      teleportMark(...pll(b.lon, b.lat), a.name);
+      teleportMark(...pllOn(a.lon, a.lat), b.name);
+      teleportMark(...pllOn(b.lon, b.lat), a.name);
       continue;
     }
     // span the two provinces' nearest coasts; centroids only if a ring is missing

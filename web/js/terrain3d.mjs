@@ -21,8 +21,8 @@
 // THREE IS LOADED LAZILY. The vendored build is 751 KB (188 KB gzipped) and `web/` has no bundler, so a
 // static import would put it on every page load's critical path to serve a band most sessions never
 // reach. It is fetched by dynamic import the first time the camera crosses into band 5.
-import { P, MAP, VIEW, cam, affineUnproject, setProjector, latAtSourceY, isUnderground, provSrcBox,
-         SEA_BANDS, TREES } from "./core.mjs";
+import { P, MAP, VIEW, cam, affineUnproject, setProjector, setGroundHeight, latAtSourceY,
+         isUnderground, provSrcBox, SEA_BANDS, TREES } from "./core.mjs";
 import { ground3D, props3D, set3DAvailable, band } from "./bands.mjs";
 import { tiltAt, heightScaleAt, TILT_MAX } from "./band-math.mjs";
 import { draw } from "./repaint.mjs";
@@ -154,6 +154,8 @@ function build() {
 
   buildSeaPlane();
   buildRasterPlane();
+  // hand core the height field, so every ground-anchored 2D layer can stand on the terrain (P4)
+  setGroundHeight(groundHeightAt);
   resize();
 }
 
@@ -558,11 +560,16 @@ function syncProjector() {
 const projector3d = {
   separable: false,
   project: (sx, sy, h) => {
-    if (!h) return applyH(H, sx, sy, VIEW.w, VIEW.h);
+    // minW = a quarter of the near plane. W is the view-space depth here, so anything below the near plane is
+    // invisible by definition; without the floor, a point barely in front of the camera divides into
+    // coordinates in the billions, which is a real position for a ring vertex just off a tilted viewport and
+    // poison for the Path2D it lands in. See project-math.applyH.
+    const minW = camera.near * 0.25;
+    if (!h) return applyH(H, sx, sy, VIEW.w, VIEW.h, minW);
     // off the ground plane the homography no longer applies, so pay the full 4×4 — written out rather than
     // via a Vector3 so a per-plot caller does not allocate
     const W = PV[3] * sx + PV[7] * h + PV[11] * sy + PV[15];
-    if (W <= 1e-9) return [-1e7, -1e7];
+    if (W <= minW) return [-1e7, -1e7];
     const X = (PV[0] * sx + PV[4] * h + PV[8] * sy + PV[12]) / W;
     const Y = (PV[1] * sx + PV[5] * h + PV[9] * sy + PV[13]) / W;
     return [(X + 1) * 0.5 * VIEW.w, (1 - Y) * 0.5 * VIEW.h];

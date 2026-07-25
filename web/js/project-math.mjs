@@ -104,10 +104,16 @@ export function groundHomography(e) {
  * Behind the camera (W ≤ 0) the projection is meaningless; the point is pushed far off-screen instead of
  * being allowed to wrap around to a plausible-looking position, so a cull rejects it rather than a layer
  * drawing a province from behind the viewer in the middle of the frame.
+ *
+ * `minW` is why that guard is not simply `W <= 0`. For a perspective projection W is the view-space depth, so a
+ * point AT the near plane has W = near and anything closer is invisible — but a point just barely in front of
+ * the camera has a tiny POSITIVE W, sails past a zero check, and divides into coordinates in the billions. Off
+ * the top of a tilted viewport that is a real position for a province's ring vertex to occupy, and a Path2D
+ * carrying 1e9 coordinates is at best slow and at worst undefined. Callers pass a fraction of their near plane.
  */
-export function applyH(H, sx, sy, w, h) {
+export function applyH(H, sx, sy, w, h, minW = 1e-9) {
   const W = H[6] * sx + H[7] * sy + H[8];
-  if (W <= 1e-9) return [-1e7, -1e7];
+  if (W <= minW) return [-1e7, -1e7];
   const X = (H[0] * sx + H[1] * sy + H[2]) / W;
   const Y = (H[3] * sx + H[4] * sy + H[5]) / W;
   return [(X + 1) * 0.5 * w, (1 - Y) * 0.5 * h];

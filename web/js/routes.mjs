@@ -11,7 +11,7 @@
 // or before a province's layer loads, city-core plots — which the engine founds on a TRAIL
 // (ProvincePlotPool) and which the plot grid flags `urban` — stand in as the trail tier, so a trailed
 // city core is visible on zoom-in with no session. docs/route-rendering.md §Viewport-windowed route persistence.
-import { P, ctx, ROUTES, project, plotPxAt, provOnScreen, isPolitical } from "./core.mjs";
+import { P, ctx, ROUTES, plotPxAt, provOnScreen, isPolitical, projectOn } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha } from "./bands.mjs";
 import { routePiece, neighbourMask } from "./route-tiling.mjs";
@@ -102,7 +102,7 @@ export function drawRoutes() {
       const rect = ROUTES[t.tier].cell[t.piece];
       if (!rect) continue;
       ctx.globalAlpha = a * (TIER_ALPHA[t.tier] || 1);
-      stampCell(atlas[t.tier], rect, ...project(t.x, t.y), plotPx, t.rot);
+      stampCell(atlas[t.tier], rect, ...projectOn(t.x, t.y), plotPx, t.rot);   // roads lie ON the ground
     }
   }
   ctx.restore();

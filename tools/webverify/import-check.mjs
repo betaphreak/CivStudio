@@ -62,11 +62,39 @@ for (const f of files) {
 // ReferenceError on the first paint. That happened twice during the terrain-3d P2 call-site conversion
 // (`pll`, then `project`), each time costing a full headless round to diagnose from a blank page.
 //
-// Deliberately conservative, because a false positive here is worse than a miss: only identifiers that the
-// module CALLS as functions, that a module it already imports from exports, and that are not declared locally.
-// A shadowing local (`const project = ...`) is therefore not flagged, and neither is anything reached through a
-// namespace or a property.
-const DECL = n => new RegExp(`(?:function|const|let|var|class)\\s+${n}\\b|\\b${n}\\s*(?:,[^=]*)?=[^=>]|\\(\\s*(?:[^)]*,\\s*)?${n}\\s*[,)]`);
+// Scoped to names a module could plausibly have MEANT to import: an identifier that appears as a bare word,
+// that a module it already imports from exports, and that it does not bind locally. That last clause is where
+// the difficulty lives — see localNames — because a false positive here trains people to ignore the tool, and a
+// false negative is the bug it exists to catch. It caught three real missing imports on its first outings,
+// including one (`cost.mjs` → `provOnScreen`) that would have thrown the moment anyone toggled that overlay.
+/**
+ * Every name the module BINDS locally — so a local that shadows an importable name is not reported as missing.
+ *
+ * Parameter lists have to be collected from actual function heads, not from "a name inside parentheses". The
+ * loose version cannot tell `screenAABB(project, …)` — passing a function by reference, which this codebase does
+ * in several places — from a parameter named `project`, and it resolved that the wrong way: the check stayed
+ * silent when exactly that import went missing. Dropping parameters altogether is no good either, because
+ * `paintBuildIcon(el, id, px)` really does shadow core's `px`. So: only `function name(…)` and `(…) =>` heads.
+ */
+function localNames(body) {
+  const out = new Set();
+  for (const m of body.matchAll(/(?:function|const|let|var|class)\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1]);
+  // Anything assigned to. Written so it cannot span a comma: `const px = a, py = b` must yield BOTH names, and
+  // a pattern that allowed `,…` between the name and the `=` swallowed the second declarator into the first
+  // match — which is how coast.mjs's `py` looked un-declared. Excluding a leading `.` keeps `o.prop =` out.
+  for (const m of body.matchAll(/(^|[^.\w$])([A-Za-z_$][\w$]*)\s*=(?![=>])/g)) out.add(m[2]);
+  const params = [
+    ...body.matchAll(/function\s*[A-Za-z_$][\w$]*\s*\(([^)]*)\)/g),
+    ...body.matchAll(/\(([^)]*)\)\s*=>/g),
+  ];
+  for (const m of params)
+    for (const raw of m[1].split(',')) {
+      const n = raw.trim().replace(/^\.\.\./, '').split(/[=:\s]/)[0];
+      if (/^[A-Za-z_$][\w$]*$/.test(n)) out.add(n);
+    }
+  for (const m of body.matchAll(/\b([A-Za-z_$][\w$]*)\s*=>/g)) out.add(m[1]);   // single-param arrow
+  return out;
+}
 // COMMENTS MUST GO FIRST. This codebase comments densely and names the symbols it discusses — half of
 // terrain3d.mjs's prose mentions project() and K_TEX — so scanning raw source reports the documentation as
 // dead code. Strings go too: a name inside a template or a selector is not a call.
@@ -79,6 +107,12 @@ for (const f of files) {
   const src = srcOf.get(f);
   let body = stripped(src);
   for (const imp of importsOf.get(f)) body = body.replace(stripped(imp.raw), '');
+  // A RE-EXPORT is not a use. `export { kBand } from "./band-math.mjs"` forwards a name without binding it
+  // locally, so leaving these in makes every re-exporting module (bands.mjs) look like it uses what it forwards.
+  //
+  // Note the `*` in the quotes, not `+`: `stripped` has already emptied every string literal, so by the time
+  // this runs the specifier reads `from ""`. Requiring a non-empty path matched nothing at all.
+  body = body.replace(/^export\s*\{[^}]*\}\s*from\s*["'][^"']*["'];?/gm, '');
   const imported = new Set();
   for (const imp of importsOf.get(f)) for (const n of imp.names) imported.add(n.local);
   const reachable = new Map();     // exported name → the module that exports it
@@ -88,12 +122,19 @@ for (const f of files) {
     const ex = exportsOf.get(target);
     if (ex) for (const name of ex) if (!reachable.has(name)) reachable.set(name, imp.from);
   }
+  const locals = localNames(body);
   for (const [name, from] of reachable) {
     if (imported.has(name)) continue;
-    // A CALL, not a member access and not a property key: `o.project(x)` is someone else's method and
-    // `{ project: (x) => … }` is a definition, so neither may be preceded by `.` or `:`.
-    if (!new RegExp(`(^|[^.:\\w$])${name}\\s*\\(`).test(body)) continue;
-    if (DECL(name).test(body)) continue;                            // declared locally — shadowing, not a bug
+    // Any USE of the bare identifier — not just a call. Three variants slipped past narrower versions of this
+    // during the terrain-3d conversions, each costing a headless round to trace back from a blank page:
+    //   project(x)          a plain call
+    //   f(...project(x))    a spread call, whose leading `...` looks like a member access
+    //   screenAABB(project) the identifier as a VALUE, never called at all
+    // So the test is simply "does this name appear as a standalone word", with the two things it must not be:
+    // a member access (`o.project`, but `...project` is fine) and a property key (`{ project: … }`).
+    const used = new RegExp(`(^|[^.:\\w$]|\\.\\.\\.)${name}\\b(?!\\s*:)`);
+    if (!used.test(body)) continue;
+    if (locals.has(name)) continue;                                 // declared locally — shadowing, not a bug
     console.log(`NOT IMPORTED    ${f}: calls '${name}' — exported by ${from} but absent from its import list`);
     bad++;
   }

@@ -225,7 +225,7 @@ const tilted = await (async () => {
   await page.waitForSelector('#zoomLevel', { timeout: 45000 });
   const out = await page.evaluate(async () => {
     const { draw } = await import('./js/repaint.mjs');
-    const { VIEW, MAP, project, unproject, separable, plotPxAt, cam } = await import('./js/core.mjs');
+    const { P, VIEW, MAP, project, projectOn, unproject, separable, plotPxAt, cam } = await import('./js/core.mjs');
     const { band } = await import('./js/bands.mjs');
     const { tiltAt } = await import('./js/band-math.mjs');
     const t3 = await import('./js/terrain3d.mjs');
@@ -242,12 +242,28 @@ const tilted = await (async () => {
     const back = project(c[0], c[1], 0);
     // Horizontal magnification at the focus must match the 2D camera's, or crossing the seam would zoom.
     const affineScale = cam.k * VIEW.dw / (MAP.x1 - MAP.x0);
+    // P4: does ground-anchored content STAND ON the terrain? Measure how far projectOn moves an on-screen PEAK
+    // plot's centre away from its sea-level projection. Anything ground-anchored — resource icons, city
+    // markers, districts, route sprites, every province ring vertex — was drawn at the sea-level position
+    // before P4, so this number is the error that was there.
+    let lift = 0, peaks = 0;
+    for (const pr of P) {
+      if (!pr._plots || !pr._plots.length) continue;
+      for (const q of pr._plots) {
+        if (q.plotType !== 'PEAK') continue;
+        const flat = project(q.x + 0.5, q.y + 0.5, 0);
+        if (flat[0] < 0 || flat[0] > VIEW.w || flat[1] < 0 || flat[1] > VIEW.h) continue;
+        const on = projectOn(q.x + 0.5, q.y + 0.5);
+        lift = Math.max(lift, Math.hypot(on[0] - flat[0], on[1] - flat[1]));
+        peaks++;
+      }
+    }
     const st = t3.terrain3dStats();
     return {
       band: +band().toFixed(2), tilt: +tiltAt(band()).toFixed(2), separable: separable(),
       focusOffset: [+(back[0] - VIEW.w / 2).toFixed(3), +(back[1] - VIEW.h / 2).toFixed(3)],
       plotPx: +plotPxAt(c[0], c[1]).toFixed(3), affineScale: +affineScale.toFixed(3),
-      st,
+      lift: +lift.toFixed(1), peaks, st,
     };
   });
   const shot = await page.evaluate(async () => {
@@ -360,6 +376,12 @@ if (Math.abs(tilted.plotPx - tilted.affineScale) / tilted.affineScale > 0.02)
   fails.push(`tilted: horizontal magnification changed (${tilted.plotPx} vs ${tilted.affineScale}) — crossing the seam would zoom`);
 if (!(tilted.st.vertexY && tilted.st.vertexY[1] > 1))
   fails.push(`tilted: the terrain is flat (${JSON.stringify(tilted.st.vertexY)}) — relief is the entire point`);
+console.log(`  ground-anchored content stands on the terrain: up to ${tilted.lift}px above its sea-level ` +
+  `projection (${tilted.peaks} on-screen PEAK plots)`);
+// A whole plot is 52.8px at this zoom, so anything less than a few px would mean the height seam is not wired
+// and every icon, marker and ring vertex is still being drawn at sea level.
+if (!(tilted.lift > 5))
+  fails.push(`tilted: projectOn barely differs from sea level (${tilted.lift}px) — the ground-height seam looks unwired`);
 
 if (errors.length) { console.log('\npage errors:'); for (const e of errors.slice(0, 10)) console.log('  ' + e); }
 

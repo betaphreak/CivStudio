@@ -1,4 +1,4 @@
-import { P, BUNDLE, px, cam, VIEW, ctx, LABEL_FONT, pll, project } from "./core.mjs";
+import { P, BUNDLE, px, cam, VIEW, ctx, LABEL_FONT, pll, project, pllOn } from "./core.mjs";
 import { bandAlpha, kBand, GEO_TIER_ENV } from "./bands.mjs";
 
 // Stellaris-style map lettering: the shared bundled geometric sans (see core.LABEL_FONT).
@@ -175,7 +175,7 @@ function drawLabels() {
       const inView = [];
       for (const p of P) {
         if (p.type!=="LAND") continue;
-        const [x, y] = pll(p.lon, p.lat);
+        const [x, y] = pllOn(p.lon, p.lat);
         if (x < -40 || y < -20 || x > VIEW.w+40 || y > VIEW.h+20) continue;   // cull to viewport
         inView.push({ p, x, y });
       }
@@ -191,7 +191,7 @@ function drawLabels() {
         const water = [];
         for (const p of P) {
           if (p.type!=="SEA" && p.type!=="LAKE") continue;
-          const [x, y] = pll(p.lon, p.lat);
+          const [x, y] = pllOn(p.lon, p.lat);
           if (x < -40 || y < -20 || x > VIEW.w+40 || y > VIEW.h+20) continue;
           water.push({ p, x, y });
         }

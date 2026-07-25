@@ -96,6 +96,27 @@ const project = (sx, sy, h) => PROJ.project(sx, sy, h);
 /** Screen (mx, my) → source pixel [sx, sy] on the ground plane. Was hand-rolled in latAtScreenY (now
  *  routed through here) and, differently, inside hittest.plotAt (which P2 replaces with a raycast). */
 const unproject = (mx, my) => PROJ.unproject(mx, my);
+// ---- standing ON the terrain (docs/terrain-3d.md §The plan → P4) ----
+// A second seam, the vertical counterpart of the projector. project() takes a height because the caller knows
+// it; almost no caller does — a resource icon, a city marker, a district, a province outline all just want to
+// sit on the GROUND, wherever the ground happens to be. Installed by terrain3d (which owns the height field)
+// exactly as the projector is, so core stays ignorant of the renderer.
+let GROUND_H = null;
+/** Install the terrain-height lookup (terrain3d.groundHeightAt); no argument reverts to a flat world. */
+function setGroundHeight(fn) { GROUND_H = fn || null; S.baseVersion++; }
+/**
+ * Project a source point STANDING ON THE TERRAIN rather than at sea level.
+ *
+ * Under the 2D camera this is exactly project(): the affine projector ignores height, so the lookup is skipped
+ * entirely and bands 0-4 pay nothing. Under a tilted camera it is the difference between an icon sitting on its
+ * hill and sitting at the hill's sea-level shadow — which, at 34° and 3.4 plot-widths of relief, is a couple of
+ * plots downhill.
+ */
+const projectOn = (sx, sy) =>
+  PROJ.separable || !GROUND_H ? PROJ.project(sx, sy, 0) : PROJ.project(sx, sy, GROUND_H(sx, sy));
+/** projectOn for a lon/lat point — the paired form, as pll is to project. */
+const pllOn = (lon, lat) => projectOn(sxSrc(lon), sySrc(lat));
+
 /** One plot's on-screen size in px at a source-space point — the honest form of the `pxr(1) - pxr(0)`
  *  idiom the layer code used to spell out (project-math.scaleAt says why it must become a function of
  *  position). Under the 2D camera the answer is identical everywhere, so the arguments are optional and
@@ -239,11 +260,26 @@ function provBoxHas(p, sx, sy, margin = 0) {
       && sy >= Math.min(ay, by) - margin && sy <= Math.max(ay, by) + margin;
 }
 const lerp = (a,b,t) => a + (b-a)*t;
-function provPath(p) {                           // Path2D of a province's rings, rebuilt on view change
+/**
+ * Path2D of a province's rings, rebuilt on view change — the geometry behind province borders, the lake and
+ * sea-cell washes, the impassable wash, the political fills and the hover/selected highlights.
+ *
+ * Goes through projectOn, so every ring vertex sits at the terrain height under IT: a border crossing a ridge
+ * climbs the ridge instead of being drawn at the ridge's sea-level shadow, a couple of plots downhill. Only the
+ * straight segment between two vertices can still cut a hill, and these outlines are dense enough that it
+ * rarely reads — which is why the borders are drawn this way rather than baked into each province's texture as
+ * the plan first proposed. Projecting them keeps ONE copy of the geometry, needs no texture invalidation, and
+ * works for the per-frame layers (hover, selection) that a bake could never have covered.
+ *
+ * It was left on pxr/pyr through P2, which was a real bug: under a tilted camera those two lie, so every
+ * polygon in the scene was drawn in the wrong place. Cached per viewVersion, and the height lookup is skipped
+ * outright under the 2D camera, so this costs nothing below band 5.
+ */
+function provPath(p) {
   if (p._pv === S.viewVersion) return p._path;
   const path = new Path2D();
   for (const ring of p.rings) {
-    ring.forEach((pt,i)=>{ const x=pxr(pt[0]), y=pyr(pt[1]); i?path.lineTo(x,y):path.moveTo(x,y); });
+    ring.forEach((pt,i)=>{ const [x,y]=projectOn(pt[0],pt[1]); i?path.lineTo(x,y):path.moveTo(x,y); });
     path.closePath();
   }
   p._path = path; p._pv = S.viewVersion; return path;
@@ -375,4 +411,4 @@ export const S = {
 };
 
 export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, pll,
-  project, unproject, setProjector, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
