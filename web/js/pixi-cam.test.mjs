@@ -12,7 +12,7 @@
 //   — and that is the authority. These tests exist to catch the arithmetic fast, on every `npm test`.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { worldTransform, applyWorldTransform, mapClipRect } from "./pixi-cam.mjs";
+import { worldTransform, applyWorldTransform, mapClipRect, baseRect } from "./pixi-cam.mjs";
 
 // ---- reference implementation, transcribed from core.mjs:44-50 ----
 const refBaseXr = (MAP, VIEW, sp) => VIEW.dx + (sp - MAP.x0) / (MAP.x1 - MAP.x0) * VIEW.dw;
@@ -81,6 +81,44 @@ test("mapClipRect in base space maps onto the screen rect main.paintScene comput
       assert.ok(Math.abs((br.y - tl.y) - Math.abs(yBot - yTop)) < 1e-9, "clip height");
     }
   }
+});
+
+test("baseRect equals blitProvinceCanvas's dest rect, transformed to base space", () => {
+  // plotcanvas.blitProvinceCanvas: dest = [pxr(x0), pyr(y0), pxr(x0+w)-pxr(x0), pyr(y0+h)-pyr(y0)]
+  const boxes = [
+    { x0: 0, y0: 0, w: 1, h: 1 },                  // a one-plot province
+    { x0: 1201, y0: 604, w: 37, h: 22 },
+    { x0: 1199, y0: 602, w: 41, h: 26 },           // the same, padded by buildPlotTexCanvas's PAD=2
+    { x0: 4900, y0: 1900, w: 400, h: 140 },        // a giant province near the raster edge
+  ];
+  for (const MAP of [WORLD, REALM]) {
+    const VIEW = fit(MAP, 1400, 900);
+    for (const cam of [{ k: 1, x: 0, y: 0 }, { k: 16, x: -900, y: 140 }, { k: 512, x: 5e4, y: -2e4 }]) {
+      const t = worldTransform(cam);
+      for (const box of boxes) {
+        const r = baseRect(MAP, VIEW, box);
+        // base rect, pushed through the camera, must land on the 2D path's screen rect
+        const p = applyWorldTransform(t, r.x, r.y);
+        const wantX = refPxr(MAP, VIEW, cam, box.x0), wantY = refPyr(MAP, VIEW, cam, box.y0);
+        const wantW = refPxr(MAP, VIEW, cam, box.x0 + box.w) - wantX;
+        const wantH = refPyr(MAP, VIEW, cam, box.y0 + box.h) - wantY;
+        assert.ok(Math.abs(p.x - wantX) < 1e-9, `x at k=${cam.k} box=${box.x0}`);
+        assert.ok(Math.abs(p.y - wantY) < 1e-9, `y at k=${cam.k} box=${box.y0}`);
+        assert.ok(Math.abs(r.w * t.k - wantW) < 1e-9, `w at k=${cam.k}`);
+        assert.ok(Math.abs(r.h * t.k - wantH) < 1e-9, `h at k=${cam.k}`);
+      }
+    }
+  }
+});
+
+test("baseRect never mentions the camera — one rect serves every zoom", () => {
+  // the property the whole migration rests on: a province sprite is placed once, not per frame
+  const VIEW = fit(WORLD, 1400, 900);
+  const box = { x0: 1201, y0: 604, w: 37, h: 22 };
+  const a = baseRect(WORLD, VIEW, box);
+  // baseRect takes no cam argument at all, so this is really a regression guard on its signature
+  assert.equal(baseRect.length, 3, "baseRect must stay (MAP, VIEW, box) — no camera");
+  assert.deepEqual(baseRect(WORLD, VIEW, box), a, "not deterministic for a fixed MAP/VIEW/box");
 });
 
 test("mapClipRect is the fit rectangle, independent of the camera", () => {

@@ -70,7 +70,7 @@ export const pixiBackend = () => (app ? app.renderer.type === 1 /* WEBGL */ ? "w
  * swallowed rather than thrown — and it stays that way until P7 deletes the 2D path, at which point
  * this becomes a hard requirement and the failure branch must become a real error screen.
  */
-export function initPixi() {
+export function initPixi(opts = {}) {
   if (booting) return booting;
   const canvas = document.getElementById("gl");
   if (!canvas) return (booting = Promise.resolve(null));
@@ -78,10 +78,17 @@ export function initPixi() {
   const a = new Application();
   booting = a.init({
     canvas,
-    // TRANSPARENT, deliberately — the plan said #070a10, but a background colour here would paint a
-    // dark rectangle beneath #map, and P0's whole claim is that the page is pixel-identical. The
-    // clear colour becomes real at P7, when #map goes away and this canvas owns the void fill.
-    backgroundAlpha: 0,
+    // THE CLEAR COLOUR IS A HANDOFF, not decoration. main.paintScene opens every frame with an
+    // OPAQUE full-viewport `#070a10` fill (the void beyond the map) on the 2D canvas — which means
+    // nothing drawn on #gl beneath it can ever be seen, no matter how correct it is. P2 found this
+    // the hard way: the plot sprites were placed exactly right and rendered a perfectly good frame
+    // that was 100% occluded.
+    //
+    // So whoever paints the void owns the back of the scene. Default (transparent, alpha 0) leaves
+    // that with the 2D canvas and #gl is invisible — correct for P0/P1, which draw nothing. A caller
+    // migrating real layers passes the void colour here AND stops the 2D fill (main.paintScene).
+    background: opts.background ?? 0x070a10,
+    backgroundAlpha: opts.backgroundAlpha ?? 0,
     // Size the BACKING STORE only and let styles.css keep owning the display size (canvas#gl is
     // inset:0/100%×100%, exactly like canvas#map). autoDensity would write inline px width/height
     // and fight the stylesheet; resize() below mirrors what main.resize does for the 2D canvas.

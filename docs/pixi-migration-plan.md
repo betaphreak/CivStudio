@@ -1,9 +1,12 @@
 # Plan: the map to PixiJS — retained-mode rendering under the same band spine
 
-**Status:** P0–P1 BUILT 2026-07-25 (P0 = commit `7916f5e`); P2–P8 proposed. This is the enabling work
-for an isometric Ground regime and for sprite counts canvas 2D cannot reach; it is *not* itself a
-visual feature, and it should be judged on the fps delta at P2 and abandoned there if the delta is
-not real.
+**Status:** P0–P2 BUILT 2026-07-25 (P0 = `7916f5e`, P1 = `154c430`). **P2's gate: PASS** — the plot
+layer is **~10× faster** on Pixi in the regime where it dominates (see P2). P2 ships **flag-gated,
+default off** (`?pixiPlots=1`), for reasons that reshaped the phase order — read P2's two findings
+before starting P3. P3–P8 proposed, and **P3/P4 have swapped**.
+
+This is the enabling work for an isometric Ground regime and for sprite counts canvas 2D cannot
+reach; it is *not* itself a visual feature.
 
 Companion to [`zoom-bands.md`](zoom-bands.md) (the band spine and layer registry this preserves
 wholesale), [`plots.md`](plots.md) / [`province-plots.md`](province-plots.md) (the plot layer P2
@@ -137,6 +140,93 @@ every later phase.
 
 ## P2 — The plot layer moves (the pilot, and the go/no-go)
 
+**Status: BUILT, flag-gated (`?pixiPlots=1`), default off.** `web/js/pixi-plots.mjs` (pooled sprite
+per province), `plotcanvas.provinceTexture` (a `WeakMap` on the canvas object, so the existing
+`p._tcanvas = null` hooks invalidate textures for free), the emit branch in `plots.drawPlots`,
+`pixi-cam.baseRect` + 2 more tests (130 in `web/`), and three tools:
+`tools/webverify/pixi-p2-verify.mjs` (correctness + the A/B), `pixi-p2-diag.mjs` (why it rendered
+nothing), and a repaired `layer-profile.mjs` (it called `main.draw()`, which `main.mjs` does not
+export, and hardcoded port 3000).
+
+### The gate: PASS
+
+Median ms to get the plot layer on screen, matched conditions, 1400×900, 60 samples per cell:
+
+| `cam.k` | provinces on screen | canvas2d | pixi (sync + render) | |
+|---|---|---|---|---|
+| 5.5 | 181 | 0.8 ms | 0.4 + 0.5 = **0.9 ms** | 0.89× |
+| 8 | 82 | 0.5 ms | 0.3 + 0.5 = **0.8 ms** | 0.63× |
+| **16** | 24 | **7.2 ms** | 0.3 + 0.4 = **0.7 ms** | **10.3× faster** |
+| 40 | 2 | 0.4 ms | 0.3 + 0.4 = **0.7 ms** | 0.57× |
+
+`renderPixi()` is timed and **added**, because that is where the GPU work happens — comparing sprite
+sync against `drawImage` alone would flatter Pixi dishonestly.
+
+Two things to read off this, and the second is the real one:
+
+- **Pixi's cost is flat: ~0.7–0.9 ms from 2 provinces to 181.** The 2D path swings 0.4 → 7.2 ms. That
+  is the camera-as-matrix plus batching property, and it is the property an isometric Ground regime
+  and any high-sprite-count future actually needs. The k=16 win is where it already pays: `k >= K_TEX`
+  is the textured regime, and the repaired `layer-profile.mjs` independently puts `plots` at **83% of
+  all layer cost at 16×** (11.15 ms of 13.39 ms).
+- **Below K_TEX it is a wash, and that is fine.** Pixi has a ~0.7 ms fixed floor (one renderer pass);
+  where the 2D path only issues a handful of cheap flat blits, the floor is the whole cost. That floor
+  is *shared* once other layers migrate, not additive — so the shallow rows get better on their own.
+
+**Where the frame time actually goes** (the same profiler, unflagged) — worth knowing before P3:
+
+| `cam.k` | dominant layer | |
+|---|---|---|
+| 5.5 | **`tiers` 26.3 ms (85%)** | plots 2.4 ms (8%) |
+| 8 | **`tiers` 23.0 ms (75%)** | labels 3.4 ms (11%), plots 1.7 ms (6%) |
+| 16 | **`plots` 11.2 ms (83%)** | labels 0.7 ms (5%) |
+
+So the plot layer is the right first migration *for the deep end*, and `tiers` — the dissolved
+continent/region/super-region boundary overlay — is a **bigger single prize than plots** at the
+shallow plot zooms and is untouched by this migration. It deserves its own investigation (it may not
+even need Pixi; 26 ms for a boundary overlay smells like a caching bug).
+
+### Finding 1 — the back of the 2D frame is a wall of opaque fills
+
+**Nothing on `#gl` can be seen until the whole back prefix has migrated.** `main.paintScene` opens
+with an opaque full-viewport `#070a10` void fill, then `sea.drawSeaBase` (fills the viewport from the
+latitude at each screen row), then `drawRealmFogUnder` (parchment over the whole map region), then the
+opaque land raster. `#gl` composites *beneath* `#map`, so each one occludes it completely.
+
+This cost real time: the sprites were placed exactly right and rendered a perfectly good frame that
+was 100% hidden. The placement assertion passed, the timings were valid, and the screenshot was black.
+Only a framebuffer read-back (`pixi-p2-diag.mjs` — RGB `[84,81,74]`, opaque) proved the pixels existed.
+**A migrated layer that renders invisibly looks exactly like a broken one; test for pixels, not just
+for placement.**
+
+Under the flag those four fills stand down (`pixiOwnsBackground()`, one predicate, four call sites) and
+Pixi's clear colour supplies the void — so no ocean and no fog under the flag, deliberately. Note this
+vindicates the clear colour this plan originally specified: P0's transparent clear was right for P0 and
+wrong for the endgame.
+
+### Finding 2 — migration order is forced, so P3/P4 swap
+
+`plots` is entry 3 in `layers.LAYERS`. With `#gl` beneath `#map`, layers must migrate strictly
+**back-to-front**, so the static geographic prefix (originally P4) has to land *before* the plot layer
+can ship unflagged. **P3 is now the back prefix; P4 is turning the plot flag on and deleting the
+scaffolding.**
+
+### Other notes
+
+- **Sampling was backwards in this plan's original risk note.** The flat 1px/plot canvas blits with
+  `imageSmoothingEnabled = false` → `scaleMode = "nearest"`; the *textured* canvas blits with it
+  **true** → `"linear"`. Both are set at texture creation and asserted by the screenshot pair.
+- **`allowPixi` is opt-in per call site, not derived from `only`.** Both callers pass a predicate
+  (`drawSurfacePlots` → `isSurface`, `drawCavernPlots` → `isUnderground`), so `only` cannot tell them
+  apart — an early version silently disabled the migration for the surface layer too. The cavern layer
+  stays on 2D: different z-level, drawn after `underworldVeil`/`cavernFloors`.
+- **Benchmark camera targeting is a trap.** Parking on a province's `provSrcBox` centre (then
+  `clampPan`) can leave the viewport with no plots in it at all — the first run "measured" k=16/40 with
+  one sprite at global x = −2694, off screen, and reported 0.21× SLOWER. The verifier now aims at the
+  centre of a real plot box and **fails any row with nothing on screen**.
+- Giant provinces (>20k plots) keep their flat-canvas fallback; the ~80k-plot worst case never enters
+  the textured build, on either path.
+
 **Goal.** The heaviest layer renders through Pixi. Measure the delta. **Decide here whether to
 continue.**
 
@@ -156,38 +246,65 @@ screenshots at `K_PLOT`, `K_TEX` and `K_MAX`, diffed against pre-migration captu
 **Kill criteria.** If fps at `K_TEX` is not materially better than the 30-cap, or the terrain
 cannot be made pixel-identical, stop here and revert. P0–P2 is a bounded, deletable spike.
 
-## P3 — The registry becomes a container tree
+## P3 — The back prefix, and the registry becomes a container tree
 
-**Goal.** One declarative place decides what is visible, at what alpha, on which renderer — with
-the migrated and unmigrated layers side by side and legible.
+**Swapped with the old P4 — see P2 Finding 2.** This is now the phase that unblocks everything: until
+the opaque back prefix has migrated, no layer on `#gl` is visible, so P2 could only ever be a flagged
+spike. The registry work folds in here rather than standing alone, because migrating five layers at
+once is exactly when the registry has to express "container or `draw`".
 
-1. `LAYERS` entries gain an optional `container` (Pixi) beside `draw` (legacy canvas). An entry has
-   one or the other; the migration is visibly "how many entries still say `draw`".
-2. New pure `layer-state.mjs`: `layerStateAt(LAYERS, z, bandPos, gateResults)` → `[{id, visible,
-   alpha}]`. `renderLayers()` becomes: apply that to containers, then run the remaining `draw` fns
-   on the 2D canvas above.
-3. Container creation order follows array order, so paint order stays single-sourced.
+**Goal.** Pixi owns the back of the scene, unflagged, with the plot layer still on 2D — i.e. the
+mirror image of P2, and pixel-identical to today.
 
-**Risk / tests.** `layer-state.test.mjs` — z-filtering, gating, band alpha, and that order is
-preserved. This is the phase that keeps P4/P5 from becoming a mess.
+1. **The void fill** becomes Pixi's clear colour (`initPixi({ backgroundAlpha: 1 })`), and
+   `paintScene`'s `#070a10` `fillRect` goes away. Already implemented behind P2's flag; this makes it
+   unconditional, which means Pixi's init failure path stops being cosmetic — if the renderer is
+   absent the void is unpainted, so `initPixi`'s "never fatal" branch needs a real fallback here.
+2. **`seaBase`** → a `Container` child of `stage` (not `world`): screen-space, so the camera cannot
+   reach it, which is the rule `layers.mjs:28-36` currently enforces with a comment.
+3. **`drawRealmFogUnder`** → a container between sea and raster; `drawRealmFog` (the void hatch) → a
+   screen-space masked `Graphics` under `screenAbove`.
+4. **`raster`** → one `Sprite` in base space. `lakes`, `seaCells`, `impassable` → `Graphics` built on
+   `S.baseVersion` change, never per frame.
+5. **The registry**: `LAYERS` entries gain an optional `container` beside `draw` — one or the other,
+   so migration progress is countable. New pure `layer-state.mjs`:
+   `layerStateAt(LAYERS, z, bandPos, gateResults)` → `[{id, visible, alpha}]`, with
+   `layer-state.test.mjs` for z-filtering, gating, band alpha and order preservation.
 
-## P4 — The static geographic layers
+**Risk / tests.** The fog compositing (`_fogFill`'s two-pass parchment + sepia) is the fiddly one —
+soft-light over sea, under land. Screenshot-diff the World and Realm bands, and **read pixels, not just
+placement** (P2 Finding 1). `provBorders`, `tiers` and `political` are deliberately *not* here: they
+sit in front of `plots`, so they belong after P4.
 
-**Goal.** Everything that changes only on bundle/realm/mode moves. Build-once, mutate-rarely.
+## P4 — Ship the plot layer
 
-`raster`, `lakes`, `seaCells`, `impassable`, `provBorders`, `tiers`, `political`, plus `seaBase`
-(child of `stage`, not `world`) and the two realm-fog passes (`drawRealmFogUnder` becomes a
-container between sea and raster; `drawRealmFog` a screen-space masked `Graphics`).
+**Goal.** Delete the flag.
 
-Province borders and political fills are `Graphics` — build on `S.baseVersion` change, never per
-frame. For 5,264 province fills, measure `Graphics` first; bake to a texture if tessellation costs.
+1. `?pixiPlots=1` and `pixiPlotsEnabled()` go away; the emit branch in `plots.drawPlots` becomes the
+   only path and `blitProvinceCanvas` loses its plot-layer caller (`cost.mjs` still uses it).
+2. `pixiOwnsBackground()` and its four suppressions die — P3 made them unconditional.
+3. `drawCavernPlots` migrates too, as its own container between `cavernFloors` and `cavernRims`.
 
-**Risk / tests.** The fog compositing (`_fogFill`'s two-pass parchment + sepia, `main.mjs:193-197`)
-is the fiddly one — soft-light over sea, under land. Screenshot-diff the World and Realm bands.
+**Risk / tests.** `pixi-p2-verify.mjs` becomes an unflagged regression (drop its two-pass A/B, keep the
+placement assertion). Re-measure: the shallow-zoom rows should improve on their own once Pixi's fixed
+renderer cost is shared with P3's layers rather than added to them.
+
+## P4b — `tiers`, out of band
+
+**Not a Pixi phase.** P2's profiling found `tiers` at **26.3 ms / 85% of layer cost at 5.5×** and
+23.0 ms / 75% at 8× — several times the plot layer it was assumed to be dwarfed by. Before migrating
+it, find out why a dissolved-boundary overlay costs that much; 26 ms smells like a per-frame
+re-tessellation or a cache that never hits, in which case it is a bug fix worth more than any phase
+here and independent of the renderer.
 
 ## P5 — The dynamic session layers
 
 **Goal.** The per-tick surface, without allocating per frame.
+
+Also picks up the three **static** layers that sit in FRONT of `plots` and so could not ride along in
+P3 — `provBorders`, `tiers`, `political` (all `Graphics`; build on `S.baseVersion`, never per frame, and
+for 5,264 province fills measure tessellation before assuming `Graphics` is the answer). See P4b: `tiers`
+may be cheap once its real problem is found, in which case it does not belong on this list at all.
 
 `routes`, `city`, `districts`, `live`, `tradeGoods`, `cost`, `hover`, `selected`. These change on
 snapshot arrival, so: sprite **pools** keyed by stable id, rebuilt on data-dirty (`routeDirty`

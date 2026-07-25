@@ -4,6 +4,7 @@
 // 1px/plot → screen mapping. Split out of plots.mjs so those layers don't have to import each other.
 import { ctx, pxr, pyr } from "./core.mjs";
 import { draw } from "./repaint.mjs";
+import { Texture } from "./vendor/pixi.min.mjs";
 
 // Load a baked art image once: on load run `onReady` (flip its ready flag / invalidate caches) and
 // repaint. Returns the Image, or null when the asset is absent from the bundle (LFS not pulled /
@@ -41,4 +42,33 @@ export function buildPixelCanvas(plots, perPlot) {
 export function blitProvinceCanvas(canvas, box) {
   const dX = pxr(box.x0), dY = pyr(box.y0);
   ctx.drawImage(canvas, dX, dY, pxr(box.x0 + box.w) - dX, pyr(box.y0 + box.h) - dY);
+}
+
+// ---- the Pixi side of the same offscreens (docs/pixi-migration-plan.md P2) ----
+// A GPU texture per province offscreen, so the migrated plot layer draws the SAME canvases the 2D
+// path blits — the expensive half (buildPixelCanvas / buildPlotTexCanvas) is untouched by the
+// migration, which is what makes P2 cheap.
+//
+// Keyed on the CANVAS OBJECT, weakly, which makes invalidation free: every rebuild allocates a fresh
+// canvas (buildPixelCanvas and buildPlotTexCanvas both do `document.createElement`), so the existing
+// `p._tcanvas = null` invalidation hooks — a late-arriving tree atlas, a feature overlay — drop the
+// old canvas and its texture becomes collectable with it. No second cache to keep in step, and no
+// texture field on the province.
+const texCache = new WeakMap();
+
+/**
+ * The Texture for a province offscreen. `smooth` picks the sampling, and it MUST match what the 2D
+ * path sets on its blit: the flat 1px/plot canvas draws with imageSmoothingEnabled = FALSE (nearest —
+ * one canvas pixel is one plot, and smoothing would smear the terrain into mush), while the textured
+ * canvas draws with it TRUE (linear — it is real ground art being scaled).
+ */
+export function provinceTexture(canvas, smooth) {
+  let t = texCache.get(canvas);
+  if (!t) {
+    t = Texture.from(canvas);
+    // set once at creation: a given canvas is always drawn with the same sampling
+    t.source.scaleMode = smooth ? "linear" : "nearest";
+    texCache.set(canvas, t);
+  }
+  return t;
 }

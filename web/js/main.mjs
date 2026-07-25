@@ -10,6 +10,7 @@ import { currentCaption, scheduleCaptionRefresh, refreshCaptionNow } from "./ban
 import { escHtml } from "./plotlabel.mjs";
 import { draw, setFrame } from "./repaint.mjs";   // the repaint scheduler owns draw(); we install the frame body
 import { initPixi, resizePixi, renderPixi, syncCamera } from "./pixi.mjs";   // the second (Pixi) canvas — docs/pixi-migration-plan.md
+import { pixiPlotsEnabled, pixiOwnsBackground } from "./pixi-plots.mjs";   // P2 spike flag (?pixiPlots=1)
 import { noteFrame } from "./diag.mjs";                        // the top bar's fps readout times real paints
 // the baked terrain raster (a real image asset), drawn over the water; its ocean pixels are
 // transparent so the sea layer below shows through, land is opaque.
@@ -49,7 +50,10 @@ if (ACTIVE_REALM && _fowTile) {
 // last draws in the scene that weren't in a registry. They now live in js/sea.mjs and are ordered by
 // the SCREEN_LAYERS stack (layers.mjs); initSea wires their async art loads to a repaint.
 initSea(draw);
-initPixi();   // boots the #gl renderer in the background; empty until P2, and never fatal (js/pixi.mjs)
+// Boot the #gl renderer (background, never fatal — js/pixi.mjs). When the P2 plot layer is driving,
+// Pixi also takes over the VOID FILL: the 2D canvas's opaque `#070a10` covers the whole viewport and
+// would otherwise occlude everything on #gl (see initPixi's clear-colour note and paintScene below).
+initPixi(pixiPlotsEnabled() ? { backgroundAlpha: 1 } : {});
 function resize() {
   const r = stage.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio||1, 2);
   if (!(r.width > 0) || !(r.height > 0)) return;   // ignore degenerate sizes (mid-layout / panel drag)
@@ -152,7 +156,12 @@ function paintScene() {
   const w=VIEW.w, h=VIEW.h, dpr=VIEW.dpr;
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
-  ctx.fillStyle = "#070a10"; ctx.fillRect(0,0,w,h);   // void beyond the rendered latitude band
+  // The void beyond the rendered latitude band. OPAQUE — and the first of the four full-area fills that
+  // make up the back of this frame, all of which hide anything drawn on #gl beneath it. When Pixi owns
+  // the background they all stand down and its clear colour supplies the void instead; see
+  // pixi-plots.pixiOwnsBackground for why, and initPixi for the handoff.
+  const pixiBack = pixiOwnsBackground();
+  if (!pixiBack) { ctx.fillStyle = "#070a10"; ctx.fillRect(0,0,w,h); }
 
   // clip the whole scene to the imported map's own raster extent — BOTH axes — rather than out to
   // ±89° / the full viewport width. Beyond the mapped land there is no real data, so the polar
@@ -168,8 +177,12 @@ function paintScene() {
   // the ocean base behind everything (the land raster's sea is transparent, so this shows through
   // it), then the polar ice cap over the open water. Screen-space, so drawn ONCE here rather than
   // inside the per-world-copy wrap loop below — see js/sea.mjs.
-  renderScreenLayers();
-  drawRealmFogUnder();   // parchment between the sea and the land raster → the outer ocean reads as fog
+  // …fills 2 and 3 of the back prefix (see the void fill above): the sea base covers the whole
+  // viewport and the fog-under covers the whole map region, both opaque.
+  if (!pixiBack) {
+    renderScreenLayers();
+    drawRealmFogUnder();   // parchment between the sea and the land raster → the outer ocean reads as fog
+  }
 
   // one world copy: the map is a finite sheet, not a cylinder, so there is no east-west wrap to tile
   // (docs/realms.md §Delete the wrap). renderScene's own viewport culling and provPath cache do the
@@ -255,6 +268,11 @@ function drawImpassable() {
 // the baked terrain raster, scaled by the camera — the base of every band
 function drawRaster() {
   if (!mapReady) return;
+  // …fill 4 of the back prefix (see paintScene's void fill): the land raster is opaque over exactly
+  // the area the plot layer covers, so it hides the migrated plots. Stand down where the plot layer is
+  // at full alpha (no fade in progress), which keeps the flagged view coherent without blanking the
+  // zoomed-out map. Flag-only scaffolding; dies when P3 migrates the prefix.
+  if (pixiOwnsBackground() && bandAlpha(kBand([K_PLOT, 6.5])) >= 0.999) return;
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(mapImg, 0, 0, MAP.dw, MAP.dh,
     cam.x + cam.k * VIEW.dx, cam.y + cam.k * VIEW.dy, cam.k * VIEW.dw, cam.k * VIEW.dh);
@@ -267,7 +285,9 @@ function drawLakes() {
   ctx.restore();
 }
 // surface plots only — underground provinces are relit by drawUnderworld on the Underworld plane.
-function drawSurfacePlots() { drawPlots(isSurface); }
+// (the `true` opts this call site — and only this one — into the Pixi plot layer when its flag is on;
+// docs/pixi-migration-plan.md P2. drawCavernPlots below deliberately does not.)
+function drawSurfacePlots() { drawPlots(isSurface, true); }
 // province outlines (surface only; underground gets its lit rim from drawUnderworld). They FADE OUT
 // below the province zoom so the coarser tier boundaries take over: gone below ~7.5×, full by ~10×.
 function drawProvinceBorders() {

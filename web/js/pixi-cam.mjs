@@ -58,3 +58,32 @@ export function applyWorldTransform(t, bx, by) {
 export function mapClipRect(VIEW) {
   return { x: VIEW.dx, y: VIEW.dy, w: VIEW.dw, h: VIEW.dh };
 }
+
+/**
+ * A per-province offscreen's destination rectangle in BASE space — the Pixi equivalent of what
+ * plotcanvas.blitProvinceCanvas computes in screen space:
+ *
+ *   dest = [pxr(box.x0), pyr(box.y0), pxr(box.x0+box.w) - pxr(box.x0), pyr(box.y0+box.h) - pyr(box.y0)]
+ *
+ * The `box` is in source-pixel plot space ({x0,y0,w,h} from plotcanvas.plotBounds), because a plot IS
+ * a province land pixel on the 5632x2048 raster.
+ *
+ * WHY THIS MATTERS MORE THAN IT LOOKS: in base space the rectangle does not mention the camera at
+ * all, so a province's sprite has the SAME position and size at every zoom and pan — the transform on
+ * `world` does the rest. That is the structural reason the migration is worth doing: the 2D path
+ * recomputes four pxr/pyr calls per province per frame to place a blit that never actually moves
+ * relative to the map.
+ *
+ * @param {{x0:number,y0:number,x1:number,y1:number}} MAP the crop extent in source px (core.MAP)
+ * @param {{dx:number,dy:number,dw:number,dh:number}} VIEW the crop fit rectangle (core.VIEW)
+ * @param {{x0:number,y0:number,w:number,h:number}} box the offscreen's plot-space box
+ */
+export function baseRect(MAP, VIEW, box) {
+  const sx = VIEW.dw / (MAP.x1 - MAP.x0), sy = VIEW.dh / (MAP.y1 - MAP.y0);
+  return {
+    x: VIEW.dx + (box.x0 - MAP.x0) * sx,
+    y: VIEW.dy + (box.y0 - MAP.y0) * sy,
+    w: box.w * sx,
+    h: box.h * sy,
+  };
+}
