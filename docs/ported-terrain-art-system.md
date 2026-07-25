@@ -314,6 +314,11 @@ and the *deliverable* is web atlases + JSON, not Civ4 formats.**
 
 ## 11. As-built status (2026-07) — what's actually wired vs. §10's plan
 
+> **Census: [`docs/civ4-texture-inventory.md`](civ4-texture-inventory.md)** (2026-07-26) — every texture
+> in the FPK archives vs. the ~35 the bake consumes, family by family. Its headline: the coast/beach
+> blend atlases (`textures/coast*blend.dds`) are real painted art and are 100% unused, which is why the
+> shoreline still looks procedural.
+
 §1–§10 describe the *target*. This section is the **current implementation**, so the
 gap between "art available" and "art rendered" is explicit. **Ground, water and rivers are done;
 features/bonuses/improvements/wonders are not.** Of the whole `terrain/` tree, the web client bakes

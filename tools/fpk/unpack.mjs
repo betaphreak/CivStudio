@@ -41,17 +41,21 @@
 // offset[i] + size[i] — but not exactly, so contiguity is reported and not enforced.)
 //
 // Usage:
-//   node unpack.mjs list   <archive.fpk> [substring]      list matching entries (no writes)
+//   node unpack.mjs list   <archive.fpk> [substring] [--all]   list matching entries (no writes)
 //   node unpack.mjs extract <archive.fpk> <outDir> [substring]
+//
+// `list` prints the first 400 matches unless `--all` is given.
 //
 // `substring` is matched case-insensitively against the path, so a targeted pull is one command:
 //   node unpack.mjs extract .../Art0.FPK ../../.civ4-unpacked art/terrain/peaks
 import fs from 'node:fs';
 import path from 'node:path';
 
-const [, , mode, archive, ...rest] = process.argv;
+const argv = process.argv.slice(2);
+const all = argv.includes('--all');
+const [mode, archive, ...rest] = argv.filter(a => a !== '--all');
 if (!mode || !archive || !['list', 'extract'].includes(mode)) {
-  console.error('usage: node unpack.mjs list <archive.fpk> [substring]\n' +
+  console.error('usage: node unpack.mjs list <archive.fpk> [substring] [--all]\n' +
                 '       node unpack.mjs extract <archive.fpk> <outDir> [substring]');
   process.exit(2);
 }
@@ -152,8 +156,12 @@ const sel = filter ? entries.filter(e => e.name.toLowerCase().includes(filter)) 
 console.log(`${path.basename(archive)}: ${entries.length} entries` + (filter ? `, ${sel.length} match "${filter}"` : ''));
 
 if (mode === 'list') {
-  for (const e of sel.slice(0, 400)) console.log(`  ${String(e.size).padStart(9)}  ${e.name}`);
-  if (sel.length > 400) console.log(`  ... and ${sel.length - 400} more`);
+  // The 400-line cap keeps an exploratory `list` from flooding a terminal, but it makes the tool
+  // useless for an INVENTORY (an archive holds ~9k entries) — hence `--all`, which is what
+  // docs/civ4-texture-inventory.md is regenerated with.
+  const cap = all ? sel.length : 400;
+  for (const e of sel.slice(0, cap)) console.log(`  ${String(e.size).padStart(9)}  ${e.name}`);
+  if (sel.length > cap) console.log(`  ... and ${sel.length - cap} more (pass --all to list every entry)`);
 } else {
   let written = 0, bytes = 0;
   for (const e of sel) {
