@@ -67,13 +67,13 @@ const browser = await chromium.launch({ channel: 'msedge', headless: true });
 const errors = [];
 
 /** Load the map at one camera in one ground mode and return its composited canvas as a data URL. */
-async function capture(zoom, mode3d, lit = false) {
+async function capture(zoom, mode3d, lit = false, props = true) {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   page.on('pageerror', e => errors.push(`[z${zoom} ${mode3d ? '3d' : '2d'}] PAGEERROR: ${e.message}`));
   page.on('console', m => { if (m.type() === 'error') errors.push(`[z${zoom} ${mode3d ? '3d' : '2d'}] ${m.text()}`); });
   // #none = the plain physical overlay (the site defaults to the live Spectate one); ?live= names the
   // server so the page skips the "Choose a server" splash; &lobby=0 keeps the lobby off the map.
-  const url = `${base}/index.html?p=${PROVINCE}&z=${zoom}&terrain3d=${mode3d ? 1 : 0}`
+  const url = `${base}/index.html?p=${PROVINCE}&z=${zoom}&terrain3d=${mode3d ? 1 : 0}${props ? '' : '&props=0'}`
     + `&live=${encodeURIComponent(SERVER)}&lobby=0#none`;
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#zoomLevel', { timeout: 45000 });
@@ -96,7 +96,8 @@ async function capture(zoom, mode3d, lit = false) {
     }
     draw();
     await new Promise(r => setTimeout(r, 400));
-    return { textured: onScreen(), k: cam.k, stats: t3d ? t3d.terrain3dStats() : null };
+    return { textured: onScreen(), k: cam.k, stats: t3d ? t3d.terrain3dStats() : null,
+             propPlacement: t3d ? t3d.propPlacementError() : null };
   }, { want3d: mode3d, lit });
 
   // Composite exactly as the browser does: the 3D ground first, the 2D canvas over it.
@@ -195,12 +196,19 @@ async function luminance(urls) {
 const results = [];
 {
   const z = SEAM_Z;
-  const a = await capture(z, false);
-  const b = await capture(z, true);
-  const c = await capture(z, true, true);          // the same camera, LIT — the deliverable, not the gate
+  // GROUND ONLY, via ?props=0 — both sides then have foliage baked into the province texture, so this
+  // measures the two GROUNDS against each other and the thresholds can stay where P1 set them. With props on,
+  // foliage goes from a stamp baked at 32px-per-plot and minified with the whole canvas to a quad sampled once
+  // at screen scale; a few percent of pixels differ by construction, and no pixel threshold can tell that from
+  // a fault. The props are checked by GEOMETRY instead — see propPlacementError below.
+  const a = await capture(z, false, false, false);
+  const b = await capture(z, true, false, false);
+  const c = await capture(z, true, true, false);    // the same camera, LIT — the deliverable, not the gate
   const d = await diff(a.dataUrl, b.dataUrl);
   const lum = await luminance([b.dataUrl, c.dataUrl]);
-  results.push({ z, d, lum, two: a.settled, three: b.settled });
+  const props = await capture(z, true, false, true);   // props ON: the P3 geometry check, and the shot to look at
+  fs.writeFileSync(path.join(HERE, `terrain3d-z${z}-props.png`), Buffer.from(props.dataUrl.split(',')[1], 'base64'));
+  results.push({ z, d, lum, two: a.settled, three: b.settled, props: props.settled });
   fs.writeFileSync(path.join(HERE, `terrain3d-z${z}-2d.png`), Buffer.from(a.dataUrl.split(',')[1], 'base64'));
   fs.writeFileSync(path.join(HERE, `terrain3d-z${z}-3d.png`), Buffer.from(b.dataUrl.split(',')[1], 'base64'));
   fs.writeFileSync(path.join(HERE, `terrain3d-z${z}-lit.png`), Buffer.from(c.dataUrl.split(',')[1], 'base64'));
@@ -316,6 +324,18 @@ for (const r of results) {
   if (!three.stats.ready) fails.push(`z=${z}: the 3D renderer never became ready`);
   if (!three.stats.meshes) fails.push(`z=${z}: no province meshes were built`);
   if (!three.stats.flatLit) fails.push(`z=${z}: flat lighting was not in effect`);
+  // P3: the props must be the SAME trees in the SAME places as the 2D bake. Geometry, not pixels — the frame
+  // diff cannot judge it any more, because foliage is now a blended quad rather than a composited stamp.
+  // P3: the SAME trees in the SAME places as the 2D bake, asserted as geometry rather than pixels.
+  // Tolerance 1e-3 SOURCE PIXELS — a thousandth of a plot, ~0.014 screen px here. It is not zero because
+  // positions live in a Float32Array, whose precision at map coordinates around 4000 is ~5e-4; the measured
+  // error sits right on that floor, which is itself the evidence that nothing but storage rounding is at play.
+  const pp = r.props.propPlacement, ps = r.props.stats;
+  console.log(`  props: ${ps.props} quads in ${ps.propGroups} groups (atlases ${ps.atlases.join(', ')})` +
+    ` · worst placement error ${pp.worst} source px over ${pp.checked} quads`);
+  if (!ps.props) fails.push(`z=${z}: no props were built — P3's foliage is missing`);
+  if (pp.worst > 1e-3) fails.push(`z=${z}: prop quads are ${pp.worst} source px off their 2D rects`);
+  if (three.stats.props) fails.push(`z=${z}: ?props=0 did not disable the props (${three.stats.props} built)`);
   if (two.textured !== three.textured)
     console.log(`  NOTE: the two modes settled on different province counts (${two.textured} vs ${three.textured})`);
   if (d.mean > GATE.meanDelta) fails.push(`z=${z}: mean delta ${d.mean.toFixed(2)} > ${GATE.meanDelta}`);

@@ -5,12 +5,13 @@
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
 import { P, terrainRgb, provSrcBox, provOnScreen, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
-import { bandAlpha, kBand, atLeast, BAND, ground3D } from "./bands.mjs";
+import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
 import { paintCoast, drawSeaIce } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
 import { loadPlots } from "./plotfetch.mjs";
+import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
 
 // the Civ4 ground-texture atlas (sliced per-terrain into repeating tiles by extractTiles); null →
 // drawPlots stays on the flat 1px/plot colour offscreen
@@ -146,6 +147,11 @@ function drawPlots(only) {
     vis.push(p);
     // giant provinces skip the heavy textured build (bounded worst case) and use the flat canvas
     if (textured && p._plots.length <= MAX_TEX_PLOTS) {
+      // The cached canvas was baked either WITH foliage (2D owns the ground) or without it (3D stands the
+      // trees up instead). If the mode has flipped since, it is the wrong canvas — drop it and let the budget
+      // below rebuild it. Lazy by construction: a province off screen is never touched, and rebuilds the first
+      // time it is drawn.
+      if (p._tcanvas && p._tfoliage !== !props3D()) p._tcanvas = null;
       if (!p._tcanvas) {
         if (performance.now() >= buildDeadline) {   // out of frame budget — flat placeholder now, texture next frame
           deferred = true;
@@ -208,6 +214,14 @@ const noiseOff = (qx, qy, d) => {
 // once and blitted scaled (so hover/pan redraws stay a single drawImage per province).
 // TPP drops for very large provinces to bound the offscreen size.
 function buildPlotTexCanvas(p) {
+  // FOLIAGE, unless the 3D ground is going to stand it up instead (docs/terrain-3d.md §The plan → P3). A tree
+  // baked into this canvas is a top-down stamp lying on the ground; the 3D path draws the same trees — same
+  // placement, from js/foliage.mjs — as upright billboards, and drawing both would show every forest twice.
+  //
+  // The canvas is CACHED, so which way it was baked is recorded on the province (`_tfoliage`, at the foot of
+  // this function) and drawPlots invalidates it when the mode flips. That costs one rebuild per province on the
+  // first crossing of band 5, spread over frames by the existing 6 ms budget, and nothing thereafter.
+  const bakeFoliage = !props3D();
   let { x0, y0, x1, y1 } = plotBounds(p._plots);
   // pad the offscreen two cells beyond the land so the coastline can bleed OUTWARD into the
   // adjacent sea (which is not a plot of this province) — wide enough for the >1-cell shallows +
@@ -351,7 +365,7 @@ function buildPlotTexCanvas(p) {
   o.filter = "saturate(0.7) brightness(0.94)";
   drawRivers(o, p._plots, x0, y0, tpp, grid, riverPat);
   o.filter = "none";
-  for (const q of p._plots) {
+  if (bakeFoliage) for (const q of p._plots) {
     if (q.feature) { const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp; featureSprite(o, cx, cy, tpp, q.feature, q.x, q.y); }
   }
   // improvements: a flat Civ6 SV overlay (farm/mine/quarry) over each improved plot, on top of the
@@ -364,6 +378,7 @@ function buildPlotTexCanvas(p) {
   } // end land-only ground stages
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
   p._tcanvas = oc; p._tbox = { x0, y0, w, h }; p._grid = grid;   // grid: q.x*1e5+q.y → plot, for the resource tooltip
+  p._tfoliage = bakeFoliage;   // which way this canvas was baked — drawPlots invalidates it when that flips
 }
 // The river ribbon: a water-textured centre line running through each river cell, its width set by the
 // plot's render width class — one class per octave of drainage, so a headwater reads as a thread and a
@@ -413,54 +428,36 @@ function drawRivers(o, plots, x0, y0, tpp, grid, pat) {
   pass(0, pat || "rgba(74,124,170,1)", pat ? 0.95 : 0.6);  // the water itself (flat blue if the tile is absent)
   o.restore();
 }
-// small deterministic RNG seeded by a plot's coords, so feature sprites are stable
-function mkRng(seed) { let s = seed >>> 0 || 1; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
-// feature → real Civ4 foliage sprite atlas + density/scale, or null for a feature with no
-// atlas (drawn as bare terrain). CACTUS and VERY_TALL_GRASS have no billboard imposter in
-// the Civ4 art, so tools/nifbake renders their 3D .nif models to sprite sheets at build
-// time (docs/features-art.md); the rest come from the *_1024.dds billboards.
-function treeGroupFor(feature) {
-  if (/JUNGLE|RAINFOREST/.test(feature))         return { key: "leafy",  lo: 3, hi: 5, scale: 0.60 };  // dense
-  if (/SWAMP|BOG|MARSH|WETLAND/.test(feature))   return { key: "swamp",  lo: 2, hi: 3, scale: 0.44 };
-  if (/SAVANNA/.test(feature))                   return { key: "palm",   lo: 1, hi: 2, scale: 0.6 };   // sparse
-  if (/OASIS/.test(feature))                     return { key: "palm",   lo: 1, hi: 2, scale: 0.55 };
-  if (/CACTUS|KAKTUS/.test(feature))             return { key: "cactus", lo: 1, hi: 2, scale: 0.55 };  // real Civ4 cactus (nif)
-  if (/BAMBOO/.test(feature))                    return { key: "bamboo", lo: 2, hi: 3, scale: 0.55 };
-  // VERY_TALL_GRASS/SWORD_GRASS/TALL_GRASS is handled procedurally (stampGrass), before treeGroupFor.
-  if (/FOREST|WOOD|TAIGA|MANGROVE/.test(feature)) return { key: "leafy",  lo: 2, hi: 4, scale: 0.55 };
-  return null;
-}
-// stamp real Civ4 tree cutouts into a plot: N sprites at jittered positions, back-to-front, each sized
-// to the plot. Returns false when the group's atlas isn't loaded (caller falls back to procedural).
-function stampTrees(o, cx, cy, s, g, rng) {
-  const meta = TREES && TREES[g.key], img = treeImg[g.key];
-  if (!meta || !treeReady[g.key]) return false;
-  const n = g.lo + (rng() * (g.hi - g.lo + 1) | 0), items = [];
-  for (let i = 0; i < n; i++) {
-    const sp = meta.sprites[rng() * meta.sprites.length | 0];
-    const th = s * g.scale * (0.82 + 0.36 * rng()), tw = th * sp[2] / sp[3];
-    items.push({ sp, tw, th, px: cx + s * (0.16 + 0.68 * rng()), py: cy + s * (0.22 + 0.6 * rng()) });
-  }
-  items.sort((a, b) => a.py - b.py);                    // nearer (lower) trees drawn last → natural overlap
-  for (const it of items) o.drawImage(img, it.sp[0], it.sp[1], it.sp[2], it.sp[3], it.px - it.tw / 2, it.py - it.th / 2, it.tw, it.th);
+// Stamp real Civ4 tree cutouts into a plot, from the SHARED placement (js/foliage.mjs — which is also what
+// the 3D prop layer builds its billboards from, so the two agree tree for tree). Returns false when the
+// group's atlas isn't loaded, so the caller can fall back.
+function stampTrees(o, cx, cy, s, feature, sx, sy) {
+  const g = foliageGroup(feature);
+  const meta = g && TREES && TREES[g.key];
+  if (!meta) return false;
+  const pl = placeFoliage(feature, sx, sy, meta.sprites);
+  if (!pl || !treeReady[pl.key]) return false;
+  const img = treeImg[pl.key];
+  // back-to-front already (placeFoliage sorts by y), so nearer trees overlap the ones behind
+  for (const it of pl.items)
+    o.drawImage(img, it.sp[0], it.sp[1], it.sp[2], it.sp[3],
+      cx + s * (it.x - it.w / 2), cy + s * (it.y - it.h / 2), s * it.w, s * it.h);
   return true;
 }
 function featureSprite(o, cx, cy, s, feature, sx, sy) {
-  // Civ6-covered features (forest, jungle, marsh/swamp, oasis) draw as a flat Civ6 SV overlay filling
-  // the plot; per-plot horizontal flip breaks the tiling. C2C-only flora (bamboo/cactus/tall-grass/
-  // savanna) keeps the scattered Civ4 billboards. FLOOD_PLAINS (a ground quality) draws nothing.
+  // A few features (today just OASIS and SWAMP) have a flat Civ6 SV overlay that fills the plot; per-plot
+  // horizontal flip breaks the tiling. Everything else — forest, jungle, savanna, bamboo, cactus — is
+  // scattered Civ4 billboards. FLOOD_PLAINS (a ground quality) draws nothing.
   if (foImg[feature] && foReady[feature]) {
     if ((sx ^ sy) & 1) { o.save(); o.translate(cx + s, cy); o.scale(-1, 1); o.drawImage(foImg[feature], 0, 0, s, s); o.restore(); }
     else o.drawImage(foImg[feature], cx, cy, s, s);
     return;
   }
-  const rng = mkRng((sx * 73856093) ^ (sy * 19349663));
   // tall grass has no good billboard (the C2C sword-grass sprite was a muddy wheat crop), so draw it
   // procedurally: a few clumps of thin curved blades. Clean, varied, no ugly texture.
-  if (/VERY_TALL_GRASS|SWORD_GRASS|TALL_GRASS/.test(feature)) { stampGrass(o, cx, cy, s, rng); return; }
-  const g = treeGroupFor(feature);
-  if (!g) return;
-  stampTrees(o, cx, cy, s, g, rng);              // real foliage sprites; nothing if not yet loaded
+  if (isGrassFeature(feature)) { stampGrass(o, cx, cy, s, mkRng(foliageSeed(sx, sy))); return; }
+  if (!foliageGroup(feature)) return;
+  stampTrees(o, cx, cy, s, feature, sx, sy);     // real foliage sprites; nothing if not yet loaded
 }
 // Procedural tall-grass: N clumps of a few thin, curved, tapering blades in varied greens — a clean
 // savanna tuft in place of the muddy sword-grass billboard. Deterministic via the plot rng.

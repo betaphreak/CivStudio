@@ -1,10 +1,11 @@
 # 3D terrain — the target look, the spike that validated it, and the plan
 
 **Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`), **PLANNED** P0–P5 (§The plan),
-and **P0 + P1 + P2 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up and PITCHES OVER to 34° by
-band 6.5, with the whole 2D layer stack projected through the tilted camera. Gated on a frame diff at the
-seam against the 2D path it replaces (mean 5.12/255 at band 5.0, where tilt is 0). P3 (upright props) is
-next, and is the largest single piece left.
+and **P0–P3 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to 34° by band 6.5 with
+the whole 2D layer stack projected through the tilted camera, and its foliage STANDS UP as ~12k billboards
+that lie flat at the seam and rise with the tilt. Gated on a frame diff at the seam against the 2D path
+(mean 5.12/255, unchanged across all three phases) plus a geometric check that the props land on the 2D
+bake's own rects. P4 (interactions/polish) and P5 (prop art at the oblique angle) remain.
 
 ## The target
 
@@ -301,7 +302,46 @@ entrances, realm arrows, `S.markers`.
 
 All the regression risk lives in this phase.
 
-### P3 — upright props
+### P3 — upright props — SHIPPED
+
+Foliage placement moved out of `plots.mjs` into a pure `js/foliage.mjs` that BOTH renderers ask, and the 3D
+path turns each answer into a quad standing on the mesh. **~12k props over 124 atlas groups**, from six Civ4
+atlases (leafy, palm, swamp, bamboo, cactus, city).
+
+- **The billboard pitches with the camera, and that is why one code path is enough.** Civ4-style foliage is
+  world-vertical and rotates about Y to face the camera — but this camera goes fully overhead at band 5, where
+  a world-vertical quad is edge-on and invisible. Instead the quad's plane stays perpendicular to the view
+  axis: at tilt 0 it lies flat and covers exactly the screen rect the 2D bake drew, and by full tilt it has
+  risen to stand. No second bake, no cross-fade. It pivots about its BASE so a tree stays planted rather than
+  sinking half of itself into the hillside.
+- **`featureOverlays` turned out to cover only OASIS and SWAMP.** The plan assumed the flat Civ6 overlays were
+  the common case for forest and jungle and would all have to be replaced; in fact forests were already
+  scattered Civ4 billboards, so P3 was a change of *geometry* rather than of art for nearly everything.
+- **The placement is shared, not reimplemented, and that is the whole point of the extraction.** If the 3D path
+  invented its own scatter, crossing band 5 would rearrange every forest on the map. `foliage.mjs` is
+  deterministic per plot, and the ORDER of its random draws is copied verbatim — the sequence *is* the
+  placement, so reordering two lines there moves every tree in the world. The tests assert exactly this.
+- **The 2D bake now skips foliage when the props own it**, recorded per province as `_tfoliage` and invalidated
+  lazily by `drawPlots` when the mode flips, so crossing band 5 costs one texture rebuild per province spread
+  over the existing 6 ms budget — and nothing after that.
+
+**How it is verified, and why the frame diff alone could not do it.** Props change foliage from a stamp baked
+at 32px-per-plot and then minified with the whole canvas into a quad sampled once at screen scale, so a few
+percent of pixels differ *by construction*: the seam diff went 5.12 → 9.32 on that alone. Loosening the
+threshold would have hidden real faults, so instead `?props=0` puts the trees back in the texture and the frame
+diff compares GROUNDS (back to exactly 5.12, i.e. P3 left the ground untouched), while the props are checked as
+GEOMETRY — every quad's corners against the rect its plot fraction implies. Worst error **1.2e-4 source px over
+11,982 quads**, which is the Float32Array precision floor at map coordinates, i.e. as exact as the storage
+allows.
+
+An attempt to fix the pixel difference with a firm `alphaTest` made it slightly worse and is worth recording:
+at band 5 a tree is ~8px drawn from a ~60px sprite, so its antialiased edge is a wide fringe that *is* most of
+the tree, and cutting it hard shrinks every tree in the world. The material blends, with only a token
+alphaTest to drop the invisible tail; `depthWrite` stays on so trees still occlude against terrain and each
+other.
+
+#### The original P3 plan, for reference
+
 
 The largest single piece, and surgery on the densest code in the frontend. `plots.mjs:346-353` draws
 `featureSprite`/`improvementSprite` into the province offscreen, so on a lit slope the foliage reads as

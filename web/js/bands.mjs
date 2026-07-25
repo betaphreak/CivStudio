@@ -50,6 +50,19 @@ const _force3D = typeof location !== "undefined"
 // then also the fallback ABOVE it, which is why this phase needs no separate degraded mode.
 let _has3D = _force3D !== "0";
 export function set3DAvailable(ok) { _has3D = ok; }
+// Whether foliage STANDS UP as 3D props (P3) rather than being baked flat into each province's texture.
+// Rides ground3D — there is nowhere to stand a billboard without the mesh — and can be turned off on its own
+// with ?props=0, which puts the trees back in the texture.
+//
+// That flag is not only a safety valve. It is what lets the GROUND gate stay strict: props change foliage from
+// a stamp baked at 32px-per-plot and then minified with the whole canvas, into a quad sampled once at screen
+// scale, so a few percent of pixels differ by construction and no threshold can tell that from a real fault.
+// With ?props=0 the frame diff compares grounds alone, and the props are checked by geometry instead
+// (terrain3d.propPlacementError). See tools/webverify/terrain3d-verify.mjs.
+const _forceProps = typeof location !== "undefined"
+  ? new URLSearchParams(location.search).get("props") : null;
+export const props3D = () => _forceProps !== "0" && ground3D();
+
 export const ground3D = () =>
   // The UNDERWORLD keeps the 2D ground at every band. Its plots come through the same drawPlots (called
   // as drawPlots(isUnderground) by main.drawCavernPlots), so suppressing the blits there without a mesh to

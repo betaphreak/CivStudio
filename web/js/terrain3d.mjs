@@ -22,12 +22,14 @@
 // static import would put it on every page load's critical path to serve a band most sessions never
 // reach. It is fetched by dynamic import the first time the camera crosses into band 5.
 import { P, MAP, VIEW, cam, affineUnproject, setProjector, latAtSourceY, isUnderground, provSrcBox,
-         SEA_BANDS } from "./core.mjs";
-import { ground3D, set3DAvailable, band } from "./bands.mjs";
+         SEA_BANDS, TREES } from "./core.mjs";
+import { ground3D, props3D, set3DAvailable, band } from "./bands.mjs";
 import { tiltAt, heightScaleAt, TILT_MAX } from "./band-math.mjs";
 import { draw } from "./repaint.mjs";
 import { seaColorAt } from "./sea.mjs";
-import { HEIGHT, indexPlots, smoothCornerAt } from "./heightfield.mjs";
+import { HEIGHT, indexPlots, smoothCornerAt, groundAt } from "./heightfield.mjs";
+import { placeFoliage, foliageGroup } from "./foliage.mjs";
+import { loadArt } from "./plotcanvas.mjs";
 import { groundHomography, applyH, invertH, unapplyH } from "./project-math.mjs";
 
 let THREE = null;                 // the vendored module namespace, once loaded
@@ -280,6 +282,145 @@ function buildGeometry(plots, box) {
   return g;
 }
 
+// ---- 4) upright props: the foliage, standing up ----
+// The piece the spike named as the largest single job. Baked into the province canvas, a tree is a top-down
+// stamp lying on the ground, so on a lit slope under an oblique camera a forest reads as symbols painted on
+// the hillside. Here each tree becomes a QUAD that stands up as the camera pitches over.
+//
+// THE BILLBOARD PITCHES WITH THE CAMERA, which is the detail that makes one code path enough. Civ4-style
+// foliage is world-VERTICAL and rotates about Y to face the camera — but this camera goes fully overhead at
+// band 5, where a world-vertical quad is edge-on and vanishes. Instead the quad's plane stays perpendicular to
+// the view axis at every tilt: at tilt 0 it lies flat on the ground and covers exactly the screen rect the 2D
+// bake drew, so the seam is invisible; by full tilt it has risen to stand. No second bake, no cross-fade.
+//
+// It pivots about its BASE, not its centre, so a tree stays planted as it rises rather than sinking half of
+// itself into the hillside. `up` below is the camera's own up vector — (0, sin, −cos) — which at tilt 0 is due
+// north, i.e. screen-up, exactly where the 2D sprite extended to.
+const propMeshes = new Map();     // province id → THREE.Mesh[] (one per atlas group present)
+const propAtlas = {};             // group key → {img, tex, ready}
+let propTilt = null, propExag = null;   // the tilt/exaggeration the current prop geometry was built at
+
+if (TREES) for (const k of Object.keys(TREES)) {
+  const meta = TREES[k];
+  const img = loadArt(meta, () => { propAtlas[k].ready = true; dropAllProps(); draw(); });
+  propAtlas[k] = { img, meta, ready: false, tex: null };
+}
+
+/**
+ * A province's props as flat instance records — chosen once, from the SAME placement the 2D bake uses
+ * (js/foliage.mjs), so the trees do not move when the ground changes hands at band 5.
+ *
+ * Cached on the province because the choosing is deterministic and the geometry is not: geometry has to be
+ * rebuilt whenever the tilt or the exaggeration changes, and re-running the scatter each time would be waste.
+ */
+function propsOf(p) {
+  if (p._props && p._propsFor === p._plots) return p._props;
+  const byGroup = new Map();
+  for (const q of p._plots) {
+    if (!q.feature) continue;
+    const g = foliageGroup(q.feature);
+    const a = g && propAtlas[g.key];
+    if (!a || !a.ready) continue;
+    const pl = placeFoliage(q.feature, q.x, q.y, a.meta.sprites);
+    if (!pl) continue;
+    let list = byGroup.get(pl.key);
+    if (!list) byGroup.set(pl.key, list = []);
+    for (const it of pl.items)
+      // the sprite's BASE: its 2D rect ran from y−h/2 to y+h/2, so the bottom edge is at y + h/2. Anchoring
+      // there makes the tilt-0 quad cover that rect exactly, and gives the pivot for standing up.
+      list.push({ sp: it.sp, w: it.w, h: it.h, bx: q.x + it.x, bz: q.y + it.y + it.h / 2 });
+  }
+  p._props = byGroup;
+  p._propsFor = p._plots;
+  return byGroup;
+}
+
+/** Build one group's quads at the current tilt. Positions are absolute source px; UVs index the atlas. */
+function propGeometry(items, key) {
+  const { meta } = propAtlas[key];
+  const th = tiltNow * Math.PI / 180;
+  const uy = Math.sin(th), uz = -Math.cos(th);          // the camera's up vector, in world terms
+  const n = items.length;
+  const pos = new Float32Array(n * 12), uv = new Float32Array(n * 8);
+  const idx = new (n * 4 > 65535 ? Uint32Array : Uint16Array)(n * 6);
+  for (let i = 0; i < n; i++) {
+    const it = items[i];
+    const gh = groundAt(heights, it.bx, it.bz);
+    const by = (gh === null ? 0 : gh) * exagNow;
+    const hw = it.w / 2, hh = it.h;
+    const o = i * 12;
+    // base left/right, then top left/right — the top displaced along the camera's up by the sprite's height
+    pos[o]      = it.bx - hw; pos[o + 1]  = by;           pos[o + 2]  = it.bz;
+    pos[o + 3]  = it.bx + hw; pos[o + 4]  = by;           pos[o + 5]  = it.bz;
+    pos[o + 6]  = it.bx + hw; pos[o + 7]  = by + uy * hh; pos[o + 8]  = it.bz + uz * hh;
+    pos[o + 9]  = it.bx - hw; pos[o + 10] = by + uy * hh; pos[o + 11] = it.bz + uz * hh;
+    // flipY is off on the atlas, so v runs with the image's rows: the sprite's BOTTOM row goes on the base
+    const u0 = it.sp[0] / meta.w, u1 = (it.sp[0] + it.sp[2]) / meta.w;
+    const v0 = it.sp[1] / meta.h, v1 = (it.sp[1] + it.sp[3]) / meta.h;
+    const t = i * 8;
+    uv[t] = u0; uv[t + 1] = v1;  uv[t + 2] = u1; uv[t + 3] = v1;
+    uv[t + 4] = u1; uv[t + 5] = v0;  uv[t + 6] = u0; uv[t + 7] = v0;
+    const b = i * 4, e = i * 6;
+    idx[e] = b; idx[e + 1] = b + 1; idx[e + 2] = b + 2;
+    idx[e + 3] = b; idx[e + 4] = b + 2; idx[e + 5] = b + 3;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(Array.from(idx));
+  return g;
+}
+
+/**
+ * The material for a foliage group.
+ *
+ * BLENDED, with only a token alphaTest, and it matters more than it sounds. A tree is drawn from a ~60px
+ * sprite at ~8px across at band 5 — minified 7× — so its antialiased edge becomes a wide partially-transparent
+ * fringe, and that fringe is most of the tree. A firm alphaTest (0.35 was the first attempt) turns it into a
+ * hard boundary and visibly shrinks every tree in the world: the seam frame diff went from mean 5.1 to 9.2 on
+ * that alone, which is the 2D bake's soft-composited foliage disagreeing with a cutout. Keeping the blend, and
+ * cutting only the all-but-invisible tail, matches what the canvas does.
+ *
+ * depthWrite stays ON so trees still occlude against terrain and each other rather than showing through hills
+ * — the cost being that overlapping blended quads depend on draw order, which placeFoliage's back-to-front
+ * sort already provides within a province, and which is stable across tilts because the camera never yaws.
+ *
+ * UNLIT, because a camera-facing quad's normal always points at the camera, so lighting it would only wash it
+ * flat; the sprites carry their own shading and the 2D path does not light them either.
+ */
+function propMaterial(key) {
+  const a = propAtlas[key];
+  if (!a.tex) { a.tex = groundTexture(a.img); a.tex.anisotropy = 4; }
+  return new THREE.MeshBasicMaterial({
+    map: a.tex, transparent: true, alphaTest: 0.02, depthWrite: true, side: THREE.DoubleSide,
+  });
+}
+
+function dropProps(id) {
+  const list = propMeshes.get(id);
+  if (!list) return;
+  for (const m of list) { scene.remove(m); m.geometry.dispose(); m.material.dispose(); }
+  propMeshes.delete(id);
+}
+function dropAllProps() { for (const id of [...propMeshes.keys()]) dropProps(id); propTilt = null; }
+
+/** Rebuild the prop meshes for a province at the current tilt/exaggeration. */
+function syncProps(p) {
+  dropProps(p.id);
+  if (!props3D()) return;          // ?props=0 — the trees are baked back into the ground texture instead
+  const byGroup = propsOf(p);
+  if (!byGroup.size) return;
+  const list = [];
+  for (const [key, items] of byGroup) {
+    if (!items.length || !propAtlas[key] || !propAtlas[key].ready) continue;
+    const m = new THREE.Mesh(propGeometry(items, key), propMaterial(key));
+    m.renderOrder = 1;                    // after the ground, so the depth buffer is already populated
+    scene.add(m);
+    list.push(m);
+  }
+  if (list.length) propMeshes.set(p.id, list);
+}
+
 /** Texture a province from the canvas plots.mjs already baked, keyed on the canvas OBJECT so
  *  invalidation is free: every rebuild allocates a fresh canvas, so the existing `p._tcanvas = null`
  *  hooks are all the cache invalidation this needs. (The one reusable lesson from the Pixi effort.) */
@@ -479,6 +620,17 @@ function resize() {
  * the lazy loadPlots, the per-frame build budget and MAX_TEX_PLOTS all keep working untouched.
  */
 function syncMeshes() {
+  // Vertical exaggeration first, because the prop geometry below is built at it — see
+  // band-math.heightScaleAt for why relief has to be judged against the frame rather than against a plot. The
+  // TERRAIN applies it as a per-mesh scale (a transform, no rebuild); the props cannot, because each quad
+  // stands from its own base and a scale would stretch the sprites too.
+  exagNow = heightScaleAt(band());
+  // The props' quads are shaped by the tilt, so they are rebuilt when it moves — and ONLY then. Both tilt and
+  // exaggeration are functions of the band, so this is really "the zoom changed by a noticeable amount": free
+  // while panning at a fixed zoom, one rebuild per zoom step otherwise. The epsilons are what keep a slow
+  // continuous zoom from rebuilding 15k quads on every single frame.
+  const propsStale = propTilt === null
+    || Math.abs(tiltNow - propTilt) > 0.2 || Math.abs(exagNow - propExag) > 0.004;
   for (const p of P) {
     if (isUnderground(p)) continue;           // z=-1 is its own plane — P2 territory
     // A rebuild queued by a neighbour's arrival. Cleared on VISIT rather than in bulk at the end: this
@@ -492,23 +644,22 @@ function syncMeshes() {
     indexProvince(p);
     let m = meshes.get(p.id);
     if (m && (stale || m.userData.cvs !== cvs)) { drop(p.id); m = null; }
-    if (m) continue;
+    if (m) { if (propsStale || !propMeshes.has(p.id)) syncProps(p); continue; }
     const g = buildGeometry(p._plots, box);
     m = new THREE.Mesh(g, materialFor(textureFor(cvs, !textured)));
     m.userData = { cvs };
     meshes.set(p.id, m);
     scene.add(m);
+    syncProps(p);                          // fresh terrain → fresh props on it
   }
-  // Vertical exaggeration, per frame, as a transform — see band-math.heightScaleAt for why relief has to be
-  // judged against the frame rather than against a plot. A scale, not a rebuild: the geometry holds the model's
-  // true heights and this is the only thing that moves with zoom.
-  exagNow = heightScaleAt(band());
   for (const m of meshes.values()) if (m.scale.y !== exagNow) m.scale.y = exagNow;
+  propTilt = tiltNow; propExag = exagNow;
   // ids queued for provinces already passed this frame: one more paint picks them up, and the pass after
   // that finds the set empty, so this terminates rather than spinning.
   if (dirty.size) draw();
 }
 function drop(id) {
+  dropProps(id);
   const m = meshes.get(id);
   if (!m) return;
   scene.remove(m);
@@ -538,6 +689,39 @@ export function renderTerrain3D() {
   renderer.render(scene, camera);
 }
 
+/**
+ * Where each prop quad ACTUALLY is, versus where its plot fraction says it should be — the check that P3 put
+ * the same trees in the same places, independent of how either side rasterises them.
+ *
+ * Needed because the seam frame diff can no longer settle it: P3 deliberately changes foliage from a
+ * soft-composited stamp into a blended quad, so a slice of pixels differs by design and a pixel comparison can
+ * no longer tell "drawn differently" from "drawn somewhere else". This compares GEOMETRY in source-pixel space.
+ * Returns the worst discrepancy found, in source px (= plots), and how many quads were checked.
+ */
+export function propPlacementError() {
+  let worst = 0, checked = 0;
+  for (const p of P) {
+    if (!p._props) continue;
+    const list = propMeshes.get(p.id);
+    if (!list) continue;
+    for (const [key, items] of p._props) {
+      const tex = propAtlas[key] && propAtlas[key].tex;
+      const mesh = list.find(m => m.material.map === tex);
+      if (!mesh) continue;
+      const pos = mesh.geometry.attributes.position.array;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i], o = i * 12;
+        // corner 0 is base-left, corner 2 is top-right. The x span must always be bx ± w/2; at tilt 0 the quad
+        // also lies flat, so its source-y span must be exactly the 2D sprite's rect: bz − h to bz.
+        worst = Math.max(worst, Math.abs(pos[o] - (it.bx - it.w / 2)), Math.abs(pos[o + 6] - (it.bx + it.w / 2)));
+        if (!tiltNow) worst = Math.max(worst, Math.abs(pos[o + 2] - it.bz), Math.abs(pos[o + 8] - (it.bz - it.h)));
+        checked++;
+      }
+    }
+  }
+  return { worst: +worst.toFixed(6), checked };
+}
+
 /** What the renderer actually put on screen this frame — read by tools/webverify/terrain3d-verify.mjs. */
 export function terrain3dStats() {
   let triangles = 0, yMin = Infinity, yMax = -Infinity;
@@ -550,7 +734,11 @@ export function terrain3dStats() {
     const pos = m.geometry.attributes.position.array;
     for (let i = 1; i < pos.length; i += 3) { if (pos[i] < yMin) yMin = pos[i]; if (pos[i] > yMax) yMax = pos[i]; }
   }
+  let props = 0, propGroups = 0;
+  for (const list of propMeshes.values())
+    for (const m of list) { propGroups++; props += m.geometry.index.count / 6; }
   return { ready: !!renderer, failed, loading, flatLit, triangles, tilt: tiltNow, installed, exag: +exagNow.toFixed(3),
+           props, propGroups, atlases: Object.keys(propAtlas).filter(k => propAtlas[k].ready),
            meshes: meshes.size, indexedProvinces: indexed.size, indexedPlots: heights.size,
            vertexY: Number.isFinite(yMin) ? [+yMin.toFixed(3), +yMax.toFixed(3)] : null,
            height: { ...HEIGHT } };

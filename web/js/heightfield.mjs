@@ -109,3 +109,28 @@ export function smoothCornerAt(index, lx, ly) {
   }
   return sum / n;
 }
+
+/**
+ * Ground height at a FRACTIONAL source position — bilinear across the four corners of the plot it falls in.
+ *
+ * The mesh only ever needs heights at integer lattice points, so this exists for things that STAND on the
+ * terrain: a tree scattered at 0.37 of the way across its plot has to meet the ground where the mesh actually
+ * is, not at the plot's corner. Snapping to the nearest corner instead would leave props floating above or
+ * sunk into any sloped plot — and a slope is precisely where it shows.
+ *
+ * Missing corners (outside the loaded set) fall back to the mean of those present, so a prop at a province's
+ * edge sits at a sensible height rather than being dragged to zero. Null only when the plot has no corners at
+ * all, i.e. there is no terrain there to stand on.
+ */
+export function groundAt(index, x, y) {
+  const x0 = Math.floor(x), y0 = Math.floor(y), fx = x - x0, fy = y - y0;
+  const h00 = smoothCornerAt(index, x0, y0), h10 = smoothCornerAt(index, x0 + 1, y0);
+  const h01 = smoothCornerAt(index, x0, y0 + 1), h11 = smoothCornerAt(index, x0 + 1, y0 + 1);
+  let sum = 0, n = 0;
+  for (const h of [h00, h10, h01, h11]) if (h !== null) { sum += h; n++; }
+  if (!n) return null;
+  const mean = sum / n;
+  const a = h00 === null ? mean : h00, b = h10 === null ? mean : h10;
+  const c = h01 === null ? mean : h01, d = h11 === null ? mean : h11;
+  return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+}
