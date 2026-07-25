@@ -1,4 +1,5 @@
-// P4b of docs/pixi-migration-plan.md: WHY does the tier-boundary overlay cost 26 ms?
+// docs/frontend-performance.md: WHY did the tier-boundary overlay cost 26 ms? (Kept as the regression
+// check for the cull that fixed it — it asserts the cull is pixel-identical to drawing every ring.)
 //
 // layer-profile put `tiers` at 26.3 ms / 85% of layer cost at 5.5x and 23.0 ms / 75% at 8x — several
 // times the plot layer. This separates the candidates instead of guessing:

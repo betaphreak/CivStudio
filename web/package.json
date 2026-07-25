@@ -10,8 +10,5 @@
   },
   "dependencies": {
     "sharp": "^0.33.5"
-  },
-  "devDependencies": {
-    "pixi.js": "8.19.0"
   }
 }

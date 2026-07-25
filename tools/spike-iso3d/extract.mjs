@@ -1,4 +1,4 @@
-// SPIKE (docs/pixi-migration-plan.md — the isometric/3D question): pull ONE province's real baked
+// SPIKE (docs/terrain-3d.md): pull ONE province's real baked
 // terrain texture and its real per-plot relief data out of the running app, so the 3D viewer next door
 // renders actual eos data rather than a mock.
 //

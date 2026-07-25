@@ -7,7 +7,6 @@ import { P, terrainRgb, provSrcBox, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, 
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
-import { pixiPlotsEnabled, beginPlots, placePlot, endPlots } from "./pixi-plots.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
 import { paintCoast, drawSeaIce } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
@@ -120,22 +119,12 @@ function buildPlotCanvas(p, plots) {
 // `only` (optional): a province predicate — draw just the provinces it accepts. The
 // Underworld plane uses it to relight the cavern provinces' plots over its surface veil
 // (see main.drawUnderworld); called with no argument it draws the whole world.
-function drawPlots(only, allowPixi) {
-  // The emit step is the ONLY thing the Pixi migration changes here (docs/pixi-migration-plan.md P2):
-  // loading, the frame build budget and the culling are identical either way, and the province
-  // offscreens are shared verbatim.
-  //
-  // `allowPixi` is opt-in per CALL SITE, not derived from `only` — both call sites pass a predicate
-  // (main.drawSurfacePlots → isSurface, main.drawCavernPlots → isUnderground), so `only` cannot tell
-  // them apart. Only the surface layer migrates: the cavern one is a different z-level drawn at a
-  // different point in the layer order (after underworldVeil / cavernFloors), and routing it into the
-  // same container would draw it in the wrong place.
-  const toPixi = allowPixi && pixiPlotsEnabled();
-  if (cam.k < K_PLOT) { if (toPixi) { beginPlots(0); endPlots(); } return; }
+function drawPlots(only) {
+  if (cam.k < K_PLOT) return;
   const textured = atLeast(BAND.TERRAIN) && ttReady && !S.dragging;   // real textures from band 4 (16×); flat tiles while panning
   const a = bandAlpha(kBand([K_PLOT, 6.5]));   // fade in over the plots band
   const smooth = ctx.imageSmoothingEnabled;
-  if (toPixi) beginPlots(a); else ctx.globalAlpha = a;
+  ctx.globalAlpha = a;
   const vis = [];   // in-view provinces with plots loaded — reused by the bonus overlay (no 2nd P scan)
   const buildDeadline = performance.now() + PLOT_FRAME_BUDGET_MS;   // stop starting builds past this
   let deferred = false;
@@ -154,17 +143,14 @@ function drawPlots(only, allowPixi) {
       if (!p._tcanvas) {
         if (performance.now() >= buildDeadline) {   // out of frame budget — flat placeholder now, texture next frame
           deferred = true;
-          if (p._pcanvas) {
-            if (toPixi) placePlot(p, p._pcanvas, p._pbox, false);
-            else { ctx.imageSmoothingEnabled = false; blitProvinceCanvas(p._pcanvas, p._pbox); }
-          }
+          if (p._pcanvas) { ctx.imageSmoothingEnabled = false; blitProvinceCanvas(p._pcanvas, p._pbox); }
           continue;
         }
         buildPlotTexCanvas(p);                       // textured offscreen, built once
       }
       // the textured offscreen is real ground art being scaled up → SMOOTH sampling
-      if (toPixi) placePlot(p, p._tcanvas, p._tbox, true);
-      else { ctx.imageSmoothingEnabled = true; blitProvinceCanvas(p._tcanvas, p._tbox); }
+      ctx.imageSmoothingEnabled = true;
+      blitProvinceCanvas(p._tcanvas, p._tbox);
       continue;
     }
     if (!p._pcanvas) {
@@ -172,10 +158,10 @@ function drawPlots(only, allowPixi) {
       buildPlotCanvas(p, p._plots);                  // flat-colour offscreen, built once
     }
     // the flat offscreen is one pixel PER PLOT → NEAREST sampling; smoothing would smear it to mush
-    if (toPixi) placePlot(p, p._pcanvas, p._pbox, false);
-    else { ctx.imageSmoothingEnabled = false; blitProvinceCanvas(p._pcanvas, p._pbox); }
+    ctx.imageSmoothingEnabled = false;
+    blitProvinceCanvas(p._pcanvas, p._pbox);
   }
-  if (toPixi) endPlots(); else ctx.globalAlpha = 1;
+  ctx.globalAlpha = 1;
   ctx.imageSmoothingEnabled = smooth;
   drawBonusOverlay(vis);   // resource icons: screen-space overlay over the in-view provinces only
   if (deferred) draw();    // keep each paint under budget — finish the remaining builds over the next frames

@@ -1,4 +1,4 @@
-// P3 of docs/pixi-migration-plan.md, "profile before you port": what is the ~30 ms of paintScene work
+// docs/frontend-performance.md Trap 1: what is the ~30 ms of paintScene work
 // that sits OUTSIDE both layer registries at world/realm zoom?
 //
 // layer-profile (post-P4b) attributes, at 1600x900:

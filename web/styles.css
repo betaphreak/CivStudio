@@ -248,10 +248,9 @@ body {
    over the map (title, legend, transport, tooltip) is pinned to the dark palette
    regardless of the UI theme the rail follows. */
 .stage {
-  /* background = THE VOID beyond the rendered map (docs/pixi-migration-plan.md P3 step 1). This used
-     to be repainted as an opaque full-viewport fillRect by main.paintScene on every frame, which made
-     it impossible for anything on the Pixi canvas beneath #map to be seen. It is a static backdrop, so
-     it belongs here: neither renderer owns it, and it costs nothing. (It was #090d14 — a different
+  /* background = THE VOID beyond the rendered map (docs/frontend-performance.md §The void fill). It
+     used to be repainted as an opaque full-viewport fillRect by main.paintScene on every frame; a
+     static backdrop has no business being redrawn 30 times a second. (It was #090d14 — a different
      dark that had been invisible all along, because the fill covered it every frame.) */
   position: absolute; top: var(--bar-h); left: 0; right: 0; bottom: var(--foot-h); z-index: 0; overflow: hidden; background: #070a10; cursor: grab;
   transition: right .22s ease;   /* the panel resizes the map (see .app.rail-open); a ResizeObserver refits the canvas */
@@ -282,9 +281,6 @@ body {
   box-shadow: inset 0 0 140px 10px rgba(4,7,12,.55);
 }
 canvas#map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 1; }
-/* the Pixi canvas, one layer beneath the 2D one it is progressively taking over (js/pixi.mjs).
-   Same box; only the stacking differs, so a migrated layer lands in exactly the place it left. */
-canvas#gl  { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
 
 /* the project wordmark (leftmost in the top bar) */
 .brand {
