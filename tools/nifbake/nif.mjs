@@ -1,10 +1,39 @@
-// Minimal NIF (Gamebryo) reader for Civ4 feature models — version 20.0.0.4, userVer 0.
-// Parses the block stream sequentially (there is no per-block size array in this version,
-// so every block type present must be parsed byte-exactly). It extracts what a 2D
-// billboard render needs: NiNode transforms, NiTriShape geometry refs, and the vertex /
-// UV / triangle arrays in NiTriShapeData. Correctness is validated by landing exactly on
-// the file footer. See tools/nifbake/README once this is wired.
+// Minimal NIF reader for Civ4 feature models — Gamebryo 20.0.0.4 (C2C's own art) and NetImmerse 10.0.1.0
+// (the base game's, e.g. the peak/hill mountain models out of Art0.FPK; docs/terrain-3d.md §Relief is props).
+//
+// THE TWO VERSIONS DIFFER IN THREE PLACES, and nowhere else that a billboard render touches:
+//
+//   header          20.0.0.4 carries an endian byte (>= 20.0.0.3) and a user version (>= 10.0.1.8);
+//                   10.0.1.0 has neither, so its header is 5 bytes shorter.
+//   NiGeometryData  Group ID and the Keep/Compress flag bytes arrived at 10.1.0.0, so 10.0.1.0 has none
+//                   of the three; the Additional Data ref arrived at 20.0.0.4, so 10.0.1.0 lacks that too.
+//   nothing else    NiObjectNET's extra-data LIST, NiAVObject's collision ref and NiGeometryData's vector
+//                   and consistency flags all arrived at exactly 10.0.1.0, so both versions have them.
+//
+// `V` below is the packed version integer (0x0A000100 for 10.0.1.0, 0x14000004 for 20.0.0.4), which is why
+// the guards read as plain comparisons. It is module state rather than a parameter because every block body
+// would otherwise have to thread it, and one file is parsed at a time.
+//
+// The block stream is parsed SEQUENTIALLY — neither version carries a per-block size array — so every block
+// type present must be parsed byte-exactly. What a 2D billboard render needs is NiNode transforms, NiTriShape
+// geometry refs, and the vertex / UV / triangle arrays in NiTriShapeData.
+//
+// Correctness is validated by landing exactly on the file footer, which is what makes adding a version safe to
+// attempt: a wrong guess desynchronises and fails loudly instead of yielding plausible-looking geometry.
+//
+// 10.0.1.0 IS NOT FINISHED. The three guards below took it from failing at an absurd offset (1685016229 — an
+// ASCII run read as a length) to overrunning the footer of a 16364-byte file by 3 bytes: the walk is close but
+// still consumes slightly the wrong amount somewhere, so `numRoots` is read off-position and the root refs run
+// past the end. 20.0.0.4 is unaffected and still parses cleanly, so this is additive and inert for the existing
+// bakes. The remaining suspects, in order: whether NiObjectNET at 10.0.1.0 carries a single ExtraData ref rather
+// than the counted list; whether NiGeometry's Has Shader block exists at this version; and the exact footer
+// shape. `NIF_FROM=<blockIndex>:<byteOffset>` prints each block's byte range, which is how to localise it.
 import fs from 'node:fs';
+
+// The packed version of the file being parsed, set by parseNif before any block body runs.
+const V_10_0_1_0 = 0x0a000100, V_10_1_0_0 = 0x0a010000, V_20_0_0_4 = 0x14000004;
+let V = V_20_0_0_4;
+const atLeast = v => V >= v;
 
 class Reader {
   constructor(buf) { this.b = buf; this.o = 0; }
@@ -59,9 +88,9 @@ function niTriShape(r) {
 }
 // NiGeometryData — vertices / normals / UVs, shared by NiTriShapeData and NiTriStripsData
 function niGeometryData(r) {
-  r.i32();                                          // Group ID (>=10.1.0.0)
+  if (atLeast(V_10_1_0_0)) r.i32();                // Group ID (>=10.1.0.0)
   const numVertices = r.u16();
-  r.u8(); r.u8();                                  // Keep Flags, Compress Flags (>=10.1.0.0)
+  if (atLeast(V_10_1_0_0)) { r.u8(); r.u8(); }     // Keep Flags, Compress Flags (>=10.1.0.0)
   const hasVertices = r.bool();
   const vertices = [];
   if (hasVertices) for (let i = 0; i < numVertices; i++) vertices.push(r.vec3());
@@ -80,8 +109,8 @@ function niGeometryData(r) {
     for (let i = 0; i < numVertices; i++) set.push([r.f32(), r.f32()]);
     if (s === 0) uvs.push(...set);
   }
-  r.u16();                                          // Consistency Flags
-  r.i32();                                          // Additional Data ref (>=20.0.0.4)
+  r.u16();                                          // Consistency Flags (>=10.0.1.0, so both versions)
+  if (atLeast(V_20_0_0_4)) r.i32();                // Additional Data ref (>=20.0.0.4)
   return { numVertices, vertices, uvs };
 }
 function niTriShapeData(r) {
@@ -187,7 +216,10 @@ export function parseNif(buf, debug = false, lenient = false) {
   const r = new Reader(buf);
   while (r.b[r.o] !== 0x0A) r.o++;
   const header = r.b.toString('latin1', 0, r.o); r.o++;
-  const version = r.u32(); const endian = r.u8(); const userVer = r.u32();
+  const version = r.u32();
+  V = version;                                      // every block body reads this (see the note at the top)
+  const endian = atLeast(0x14000003) ? r.u8() : 1;  // Endian Type (>=20.0.0.3)
+  const userVer = atLeast(0x0a000108) ? r.u32() : 0;   // User Version (>=10.0.1.8)
   const numBlocks = r.u32();
   const numTypes = r.u16();
   const types = []; for (let i = 0; i < numTypes; i++) types.push(r.str());
@@ -320,7 +352,11 @@ if (process.env.NIF_FROM && process.argv[1] && /nif\.mjs$/.test(process.argv[1])
   const [idx, off] = process.env.NIF_FROM.split(':').map(Number);
   const buf = fs.readFileSync(process.argv[2]);
   // rebuild header context minimally
-  let o = 0; while (buf[o] !== 0x0A) o++; o++; o += 9; const numBlocks = buf.readUInt32LE(o); o += 4;
+  let o = 0; while (buf[o] !== 0x0A) o++; o++;
+  const ver = buf.readUInt32LE(o); V = ver; o += 4;
+  if (ver >= 0x14000003) o += 1;                    // endian byte
+  if (ver >= 0x0a000108) o += 4;                    // user version
+  const numBlocks = buf.readUInt32LE(o); o += 4;
   const numTypes = buf.readUInt16LE(o); o += 2; const types = [];
   for (let i = 0; i < numTypes; i++) { const n = buf.readUInt32LE(o); o += 4; types.push(buf.toString('latin1', o, o + n)); o += n; }
   const typeIdx = []; for (let i = 0; i < numBlocks; i++) { typeIdx.push(buf.readUInt16LE(o) & 0x7fff); o += 2; }
