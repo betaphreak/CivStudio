@@ -1,8 +1,9 @@
 # Plan: the map to PixiJS — retained-mode rendering under the same band spine
 
-**Status:** PROPOSED 2026-07-25. Nothing built. This is the enabling work for an isometric Ground
-regime and for sprite counts canvas 2D cannot reach; it is *not* itself a visual feature, and it
-should be judged on the fps delta at P2 and abandoned there if the delta is not real.
+**Status:** P0–P1 BUILT 2026-07-25 (P0 = commit `7916f5e`); P2–P8 proposed. This is the enabling work
+for an isometric Ground regime and for sprite counts canvas 2D cannot reach; it is *not* itself a
+visual feature, and it should be judged on the fps delta at P2 and abandoned there if the delta is
+not real.
 
 Companion to [`zoom-bands.md`](zoom-bands.md) (the band spine and layer registry this preserves
 wholesale), [`plots.md`](plots.md) / [`province-plots.md`](province-plots.md) (the plot layer P2
@@ -58,6 +59,22 @@ The codebase is better positioned for this than it looks:
 
 ## P0 — Vendor Pixi, stand up an empty stage
 
+**Status: BUILT.** `web/js/vendor/pixi.min.mjs` (pixi.js 8.19.0, pinned devDependency),
+`web/js/pixi.mjs`, `canvas#gl` in `index.html`/`styles.css`, and the resize/render wiring in
+`main.mjs`. Two verifiers landed beside it: `tools/webverify/pixi-harness.mjs` (does the vendored
+bundle boot at all, and on which backend — no server needed) and `tools/webverify/pixi-p0-verify.mjs`
+(the full assertion set below). Verified on a local server against the committed world-bundle
+fixture: **WebGPU**, roots empty, both canvases agreeing on backing store before and after a resize,
+no console errors, `boot-check` green, 123/123 web unit tests passing.
+
+Two deviations from what this section originally specified, both deliberate:
+- **Transparent clear, not `#070a10`.** A background colour would paint a dark rectangle beneath
+  `#map`, and P0's whole claim is that the page is pixel-identical. The clear colour becomes real at
+  P7, when `#map` goes away and `#gl` owns the void fill.
+- **`autoDensity: false`.** It would write inline px width/height onto the canvas and fight
+  `styles.css` (which sizes `#gl` `inset:0`/100%×100%, exactly like `#map`). `resizePixi` sizes the
+  backing store only — mirroring what `main.resize` does for the 2D canvas.
+
 **Goal.** The renderer exists and draws nothing. Zero visual change, zero fps change.
 
 1. Vendor `web/js/vendor/pixi.min.mjs` (ESM, pinned to an exact 8.x — record the version in
@@ -72,6 +89,36 @@ The codebase is better positioned for this than it looks:
 fps readout unchanged, no console errors on both WebGPU and WebGL2 (force each via `preference`).
 
 ## P1 — The camera seam, provably in agreement
+
+**Status: BUILT.** `web/js/pixi-cam.mjs` (`worldTransform` / `applyWorldTransform` / `mapClipRect`,
+pure and zero-import), `pixi.syncCamera(cam, VIEW)` called first in `main.paintScene`, the clip mask,
+5 tests in `pixi-cam.test.mjs` (128 total in `web/`), and `tools/webverify/pixi-p1-verify.mjs`.
+
+**Result: 105 samples, `worstXY = 0` — exact agreement**, not merely sub-pixel. The verifier compares
+**Pixi's own container matrix** (`world.toGlobal`, i.e. what the GPU will use) against the **real
+`core.pxr`/`pyr`**, across k ∈ {1, 1.7, 5, 16, 64, 233, 512} × three pans × five source pixels.
+Nothing in it is transcribed, which is why it — not the node tests — is the authority.
+
+Three things worth recording:
+
+- **`worldTransform` is a near-identity**, and that is the finding, not a disappointment.
+  `pxr(sp) = cam.x + cam.k · baseXr(sp)` is already affine in base space, so the codebase always had
+  the right split — it just applied the camera half by hand, per drawn thing, per frame. It still
+  earns a named module with a test: it is the one place an isometric shear would go, and a silent
+  drift between the two renderers is the worst bug class this migration can produce.
+- **The clip mask got simpler than specified.** The plan said "a rectangular `Graphics` mask on
+  `world`"; making it a **child** of `world` puts its geometry in base space, where it is just the fit
+  rectangle (`VIEW.dx/dy/dw/dh`) and the camera carries it for free. `main.paintScene` re-derives the
+  same rectangle in screen space every frame; this cannot fall out of step with the layers it clips.
+  Rebuilt only when the fit rect moves (resize / realm switch), not on pan or zoom.
+- **The mask is a child of `world` but is not a layer**, so P0's "the scene is empty" assertion still
+  holds — `pixi-p0-verify.mjs` now filters on `label !== "mapClip"`. That claim expires at P2.
+
+**Verifier gotcha, fixed.** Mutating `cam` to stress the transform can race a repaint the app
+schedules for its own reasons (an SSE snapshot, the clock): the 2D canvas then paints at a stress
+camera, and restoring `cam` without repainting leaves that stale frame for the screenshot — which
+looked exactly like a rendering regression. The verifier now calls `repaint.draw()` after restoring
+and waits for the frame. Any later phase that drives the camera from a test needs the same care.
 
 **Goal.** `world`'s transform tracks `cam`, and it demonstrably agrees with `pxr`/`pyr` — because
 for the whole migration two renderers draw one scene, and a disagreement is a subtle drift bug.

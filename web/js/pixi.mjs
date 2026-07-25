@@ -30,13 +30,25 @@
 // The vendored bundle is js/vendor/pixi.min.mjs (pinned; see web/README.md for the re-vendor
 // recipe). There is no bundler — the site still ships raw .mjs, which is why this imports a file
 // rather than a package name.
-import { Application, Container } from "./vendor/pixi.min.mjs";
+import { Application, Container, Graphics } from "./vendor/pixi.min.mjs";
+import { worldTransform, mapClipRect } from "./pixi-cam.mjs";
 
-// The three scene roots, live from module eval so importers never deal with a null. Empty until P2.
+// The three scene roots, live from module eval so importers never deal with a null. Empty of
+// migrated layers until P2 — `world` does carry the clip mask below, which is not a layer.
 export const screenBelow = new Container();
 export const world = new Container();
 export const screenAbove = new Container();
 screenBelow.label = "screenBelow"; world.label = "world"; screenAbove.label = "screenAbove";
+
+// The map clip (P1): the imported map's raster extent, beyond which there is no real data. A child
+// of `world`, so its geometry is in BASE space and the camera transform carries it — where
+// main.paintScene re-derives the same rectangle in screen space every frame. Being a mask it is
+// never itself drawn; being a child it cannot fall out of step with the layers it clips.
+const mapClip = new Graphics();
+mapClip.label = "mapClip";
+world.addChild(mapClip);
+world.mask = mapClip;
+let clipFor = "";   // the VIEW rect the mask geometry was last built for
 
 let app = null;                 // the Application, once init resolves
 let booting = null;             // the in-flight init promise (initPixi is idempotent)
@@ -103,6 +115,32 @@ export function resizePixi(w, h, dpr) {
   if (!(w > 0) || !(h > 0)) return;              // same degenerate-size guard as main.resize
   if (!app) { pending = { w, h, dpr }; return; }
   app.renderer.resize(w, h, dpr);
+}
+
+/**
+ * Push the camera onto `world` and keep the clip mask sized — P1 of the migration plan.
+ *
+ * Called from main.paintScene() with core's live `cam` and `VIEW`. They are passed IN rather than
+ * imported so this module stays free of core.mjs (which reads window.BUNDLE at eval and therefore
+ * cannot load outside a browser) — the same argument-passing discipline band-math.mjs uses, and what
+ * lets tools/webverify/pixi-harness.mjs boot the renderer with no app at all.
+ *
+ * Three property writes replace the per-point `cam.x + cam.k * baseXr(sp)` the 2D path runs for
+ * every drawn thing on every frame. The arithmetic itself, and its agreement with core.pxr/pyr,
+ * lives in js/pixi-cam.mjs.
+ */
+export function syncCamera(cam, VIEW) {
+  const t = worldTransform(cam);
+  world.position.set(t.x, t.y);
+  world.scale.set(t.k);
+  // The clip is base-space, so it depends on VIEW alone — rebuild only when the fit rectangle
+  // actually moves (resize / realm switch), not on every pan and zoom.
+  const key = VIEW.dx + ":" + VIEW.dy + ":" + VIEW.dw + ":" + VIEW.dh;
+  if (key !== clipFor) {
+    const r = mapClipRect(VIEW);
+    mapClip.clear().rect(r.x, r.y, r.w, r.h).fill(0xffffff);   // a mask reads coverage, not colour
+    clipFor = key;
+  }
 }
 
 /** Render the Pixi scene once. Called from main.paintScene(); a no-op until the renderer exists.

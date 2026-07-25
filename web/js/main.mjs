@@ -9,7 +9,7 @@ import { initMinimap, drawMinimap } from "./minimap.mjs";
 import { currentCaption, scheduleCaptionRefresh, refreshCaptionNow } from "./bandcaption.mjs";   // the chip's viewport-context text
 import { escHtml } from "./plotlabel.mjs";
 import { draw, setFrame } from "./repaint.mjs";   // the repaint scheduler owns draw(); we install the frame body
-import { initPixi, resizePixi, renderPixi } from "./pixi.mjs";   // the second (Pixi) canvas — docs/pixi-migration-plan.md
+import { initPixi, resizePixi, renderPixi, syncCamera } from "./pixi.mjs";   // the second (Pixi) canvas — docs/pixi-migration-plan.md
 import { noteFrame } from "./diag.mjs";                        // the top bar's fps readout times real paints
 // the baked terrain raster (a real image asset), drawn over the water; its ocean pixels are
 // transparent so the sea layer below shows through, land is opaque.
@@ -143,6 +143,10 @@ function paint() {
   noteFrame(performance.now() - t0);
 }
 function paintScene() {
+  // The Pixi camera, first: `world`'s transform IS cam (js/pixi-cam.mjs), so from here on anything
+  // added under it is placed in BASE space and needs no per-point camera arithmetic. The 2D path
+  // below still does that by hand — the two agree, asserted by tools/webverify/pixi-p1-verify.mjs.
+  syncCamera(cam, VIEW);
   updateRegimeSignal();   // top-bar band-name chip + regime cursor + boundary pulse (replaces the raw × readout)
   S.markers = [];   // cave-entrance / teleporter hit-targets, repopulated this frame (hover reads them)
   const w=VIEW.w, h=VIEW.h, dpr=VIEW.dpr;

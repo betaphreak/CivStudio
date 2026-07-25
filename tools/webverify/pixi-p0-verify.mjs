@@ -68,9 +68,11 @@ const state = await page.evaluate(async () => {
     const m = await import('./js/pixi.mjs');
     out.backend = m.pixiBackend();
     out.appUp = !!m.pixiApp();
+    // P1 added the clip mask as a child of `world`. It is not a migrated LAYER, so it does not
+    // count against "the scene is empty" — that claim holds until P2 moves the plot layer over.
     out.roots = {
       screenBelow: m.screenBelow.children.length,
-      world: m.world.children.length,
+      world: m.world.children.filter(c => c.label !== "mapClip").length,
       screenAbove: m.screenAbove.children.length,
     };
     out.worldTransform = [m.world.x, m.world.y, m.world.scale.x];
