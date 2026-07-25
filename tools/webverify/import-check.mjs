@@ -56,5 +56,48 @@ for (const f of files) {
     }
   }
 }
-console.log(bad ? `\n${bad} problem(s)` : `\nOK — ${files.length} modules, all named imports resolve and are used`);
+// The MIRROR of the checks above, and the one that actually bites. The two directions are not the same
+// question: above is "is every import real and used?", this is "is every USE imported?" — a module that calls
+// `project(...)` while its import list from core.mjs only names `pxr` passes every check above and then throws
+// ReferenceError on the first paint. That happened twice during the terrain-3d P2 call-site conversion
+// (`pll`, then `project`), each time costing a full headless round to diagnose from a blank page.
+//
+// Deliberately conservative, because a false positive here is worse than a miss: only identifiers that the
+// module CALLS as functions, that a module it already imports from exports, and that are not declared locally.
+// A shadowing local (`const project = ...`) is therefore not flagged, and neither is anything reached through a
+// namespace or a property.
+const DECL = n => new RegExp(`(?:function|const|let|var|class)\\s+${n}\\b|\\b${n}\\s*(?:,[^=]*)?=[^=>]|\\(\\s*(?:[^)]*,\\s*)?${n}\\s*[,)]`);
+// COMMENTS MUST GO FIRST. This codebase comments densely and names the symbols it discusses — half of
+// terrain3d.mjs's prose mentions project() and K_TEX — so scanning raw source reports the documentation as
+// dead code. Strings go too: a name inside a template or a selector is not a call.
+const stripped = s => s
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')                       // block comments (incl. the file headers)
+  .replace(/(^|[^:])\/\/[^\n]*/g, '$1')                    // line comments, but not the // in a URL
+  .replace(/`(?:\\[\s\S]|[^`\\])*`/g, '``')                // template literals
+  .replace(/'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, '""');  // plain strings
+for (const f of files) {
+  const src = srcOf.get(f);
+  let body = stripped(src);
+  for (const imp of importsOf.get(f)) body = body.replace(stripped(imp.raw), '');
+  const imported = new Set();
+  for (const imp of importsOf.get(f)) for (const n of imp.names) imported.add(n.local);
+  const reachable = new Map();     // exported name → the module that exports it
+  for (const imp of importsOf.get(f)) {
+    if (!imp.from.startsWith('.')) continue;
+    const target = resolve(dirname(f), imp.from);
+    const ex = exportsOf.get(target);
+    if (ex) for (const name of ex) if (!reachable.has(name)) reachable.set(name, imp.from);
+  }
+  for (const [name, from] of reachable) {
+    if (imported.has(name)) continue;
+    // A CALL, not a member access and not a property key: `o.project(x)` is someone else's method and
+    // `{ project: (x) => … }` is a definition, so neither may be preceded by `.` or `:`.
+    if (!new RegExp(`(^|[^.:\\w$])${name}\\s*\\(`).test(body)) continue;
+    if (DECL(name).test(body)) continue;                            // declared locally — shadowing, not a bug
+    console.log(`NOT IMPORTED    ${f}: calls '${name}' — exported by ${from} but absent from its import list`);
+    bad++;
+  }
+}
+
+console.log(bad ? `\n${bad} problem(s)` : `\nOK — ${files.length} modules; imports resolve, are used, and every called import is declared`);
 process.exit(bad ? 1 : 0);

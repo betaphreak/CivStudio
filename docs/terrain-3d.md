@@ -1,9 +1,10 @@
 # 3D terrain — the target look, the spike that validated it, and the plan
 
 **Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`), **PLANNED** P0–P5 (§The plan),
-and **P0 + P1 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, at tilt 0, gated on a frame
-diff against the 2D path it replaces (mean delta 0.71/255 at z=120). P2 (the tilt) is next and is where
-the look actually arrives.
+and **P0 + P1 + P2 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up and PITCHES OVER to 34° by
+band 6.5, with the whole 2D layer stack projected through the tilted camera. Gated on a frame diff at the
+seam against the 2D path it replaces (mean 5.12/255 at band 5.0, where tilt is 0). P3 (upright props) is
+next, and is the largest single piece left.
 
 ## The target
 
@@ -232,7 +233,57 @@ frame: the renderer was fine and the measurement was lying. Render and read in t
 The Pixi effort's lesson was "test for pixels, not placement"; the sequel is **make sure the pixels you
 test are the ones that were drawn.**
 
-### P2 — the tilt
+### P2 — the tilt — SHIPPED
+
+`band-math.tiltAt` pitches the camera 0° → 34° over bands 5 → 6.5 (smoothstep, so both ends ease), and the
+ground projection is handed to the 2D layers through P0's seam. Verified: tilt 34° at band 6.9, projector
+installed and non-separable, the focus holding the viewport centre to **[0, 0] px**, horizontal magnification
+**52.76 px/plot against the 2D camera's 52.76** — so crossing the seam neither pans nor zooms the world — and
+the seam frame diff still passing (mean 5.12/255).
+
+Four things that decided the design, none of which were in the plan:
+
+- **The ground projection is a HOMOGRAPHY, and that is what makes the tilt affordable.** A perspective
+  camera's projection of one PLANE is a 3×3 projective transform, and nearly everything the 2D layers project
+  — rings, plot boxes, bboxes, label anchors, icons — lives on the ground. So the tilt costs them six
+  multiplies and a divide, not a 4×4 and a `Vector3`. It has to: `provOnScreen` runs ~50k times a frame and
+  must now project FOUR corners, because a tilted camera maps a rectangle to a trapezoid that two corners no
+  longer bound. 200k matrix transforms a frame is not affordable; 200k homography applications are. It also
+  keeps screen→ground a closed-form 3×3 inverse instead of a raycast.
+- **ONE camera at every tilt, including zero — and the LENS LENGTHENS AS IT FLATTENS.** A perspective camera
+  looking straight down projects the ground plane as a pure uniform scale, indistinguishable from an
+  orthographic one, so no ortho→perspective blend is needed (there is no continuous family between them).
+  But geometry ABOVE the ground gets parallax of r/(r−h), and r falls out of the scale requirement: at band 5,
+  r ≈ 164 source px against 6.4 px of terrain is 4% magnification on peaks — tens of pixels near the frame
+  edge. **The P1 frame diff caught exactly this**, going from mean 0.7 to 24.8 the moment the camera became
+  perspective. Tying FOV to the tilt fixes it at the root: 1° at tilt 0 (r ≈ 3.7k px, parallax under 0.2% —
+  which *is* P1's orthographic camera, to a fifth of a pixel) opening to 22° at full tilt. Both ends are what
+  they must be and the middle is continuous. Mean went back to 5.12.
+- **Relief must be exaggerated LESS as you zoom in** (`band-math.heightScaleAt`). Terrain height is fixed in
+  world units, so a peak's screen height grows with zoom exactly as a plot's width does and the ratio is
+  constant — which sounds like it should look right everywhere, and does not. The spike tuned PEAK = 3.4
+  plot-widths while looking at a whole 45×45 province, where it reads as a mountain range; four bands deeper
+  the viewport holds ~23 plots and the same ratio puts a 180-pixel cliff across a 52-pixel plot. The eye
+  judges relief against the FRAME, not against a plot. Halving every two bands keeps landforms growing on
+  approach at about half the rate, and it is applied as a per-mesh Y scale — one transform per province per
+  frame, no rebuild.
+- **`plotAt` had to become a raycast.** The ground-plane inverse is wrong by tan(tilt) × height — about 2.3
+  plots downhill on a PEAK at 34° — so hovering a mountain would name a cell two away. `terrain3d.pickGround`
+  raycasts the meshes; the box interpolation survives underneath for the untilted path.
+
+Gated OUT of 3D, both for the same underlying reason — the plot layer never builds a texture there, so the
+mesh would have nothing to drape: the **underworld** (its plots come through `drawPlots(isUnderground)` and
+terrain3d builds no z=−1 meshes) and **political overlays** (the layer is gated `notPolitical`, and an opaque
+ownership wash has no relief to show anyway).
+
+**The honest remaining flaw:** the terrain reads as *terraced plates* at deep zoom. A PEAK plot beside a FLAT
+one is a genuine one-plot cliff, and a single smoothing pass over corner heights cannot round it. The
+exaggeration curve makes it far better than it was but does not dissolve it; a wider smoothing kernel would,
+at the cost of the order-independence that lets corners be derived on demand (see the height-field note
+above). Worth revisiting with P3's props in place, since upright content on the slopes will change how much
+the stepping actually reads.
+
+#### The original P2 plan, for reference
 
 `tiltAt(band)` lands in `band-math.mjs` (pure and unit-tested, like everything else there): 0° at band
 5 → ~32° at band 6.5. The projector swaps to the camera matrix, and the point-anchored half of `LAYERS`

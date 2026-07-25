@@ -78,3 +78,115 @@ test("scaleAt measures along the projected edge, not just its x component", () =
   const rot = (sx, sy) => [(sx - sy) / Math.SQRT2, (sx + sy) / Math.SQRT2];
   assert.ok(Math.abs(scaleAt(rot, 100, 100) - 1) < 1e-12);
 });
+
+// ---- the tilted ground projection (P2) ----
+import { groundHomography, applyH, invertH, unapplyH } from "./project-math.mjs";
+
+// Camera matrices are column-major, as three's Matrix4.elements is: e[col * 4 + row].
+const M = (...rows) => {                                  // write rows, store columns
+  const e = new Array(16).fill(0);
+  rows.forEach((r, row) => r.forEach((v, col) => { e[col * 4 + row] = v; }));
+  return e;
+};
+
+test("groundHomography deletes the HEIGHT column and keeps the x, y, w rows", () => {
+  // An identity PV maps world (sx, h, sy, 1) → clip (sx, h, sy, 1), so its clip y IS the height. Dropping
+  // the height column therefore leaves a ground map whose y row is all zeros — which is the point: on the
+  // ground plane, height contributes nothing, so it is removed from the arithmetic rather than passed as 0.
+  const ident = M([1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]);
+  assert.deepEqual(groundHomography(ident), [1, 0, 0, 0, 0, 0, 0, 0, 1]);
+});
+
+test("applyH folds clip → NDC → screen, flipping y so north is at the top", () => {
+  // A camera looking straight DOWN: world +X → clip x, world +Z (SOUTH, since source y grows southward) →
+  // clip -y, so that after applyH's flip it comes out screen-down. This is the arrangement terrain3d's
+  // camera produces via `up = -Z`, reduced to its essentials.
+  const H = groundHomography(M([1, 0, 0, 0], [0, 0, -1, 0], [0, 0, 0, 0], [0, 0, 0, 1]));
+  const W = 1600, Hh = 900;
+  assert.deepEqual(applyH(H, 0, 0, W, Hh), [800, 450], "the origin lands at the viewport centre");
+  assert.deepEqual(applyH(H, -1, -1, W, Hh), [0, 0], "north-west is TOP-left");
+  assert.deepEqual(applyH(H, 1, 1, W, Hh), [1600, 900], "south-east is bottom-right");
+  assert.deepEqual(applyH(H, 0, -1, W, Hh), [800, 0], "due north is straight up the screen");
+});
+
+test("applyH pushes points behind the camera off-screen instead of wrapping them", () => {
+  // w row = -1, so every point has W < 0: geometry behind the viewer. Projecting it naively would place it
+  // mirrored through the centre, i.e. plausibly ON SCREEN, and a layer would draw it.
+  const H = [1, 0, 0, 0, 1, 0, 0, 0, -1];
+  const [x, y] = applyH(H, 0.5, 0.5, 1600, 900);
+  assert.ok(x < -1e6 && y < -1e6, `expected far off-screen, got ${x},${y}`);
+});
+
+test("invertH round-trips a real perspective-style homography", () => {
+  // a homography with genuine perspective: the w row depends on sy, so scale falls off with distance —
+  // exactly the structure a tilted camera produces
+  const H = [1.4, 0.1, -20, 0.05, 1.1, 8, 0.0004, 0.0011, 1];
+  const Hi = invertH(H);
+  assert.ok(Hi, "should be invertible");
+  const W = 1400, Hh = 900;
+  for (const [sx, sy] of [[0, 0], [120, -300], [-900, 450], [2000, 1700]]) {
+    const [mx, my] = applyH(H, sx, sy, W, Hh);
+    const [rx, ry] = unapplyH(Hi, mx, my, W, Hh);
+    assert.ok(Math.abs(rx - sx) < 1e-6 && Math.abs(ry - sy) < 1e-6,
+      `round trip ${sx},${sy} → ${mx},${my} → ${rx},${ry}`);
+  }
+});
+
+test("invertH reports a singular homography rather than returning garbage", () => {
+  assert.equal(invertH([1, 2, 3, 2, 4, 6, 1, 1, 1]), null, "rank-deficient (row 2 = 2× row 1)");
+  assert.equal(invertH([0, 0, 0, 0, 0, 0, 0, 0, 0]), null);
+});
+
+test("a perspective ground homography foreshortens with distance", () => {
+  // the property that distinguishes the tilt from a shear: equal steps in source space do NOT map to equal
+  // steps on screen once the w row varies
+  const H = [1, 0, 0, 0, 1, 0, 0, 0.001, 1];
+  const near = applyH(H, 0, 0, 1400, 900), mid = applyH(H, 0, 400, 1400, 900), far = applyH(H, 0, 800, 1400, 900);
+  const d1 = Math.abs(mid[1] - near[1]), d2 = Math.abs(far[1] - mid[1]);
+  assert.ok(d2 < d1, `the far step (${d2.toFixed(1)}px) must be smaller than the near one (${d1.toFixed(1)}px)`);
+});
+
+// ---- tiltAt ----
+import { tiltAt, TILT_MAX, TILT_IN, TILT_FULL } from "./band-math.mjs";
+
+test("tiltAt holds flat below the 3D band and maxes out inside Ground", () => {
+  assert.equal(tiltAt(0), 0, "Atlas is straight down");
+  assert.equal(tiltAt(4.99), 0);
+  assert.equal(tiltAt(TILT_IN), 0, "at the seam the camera is still exactly overhead");
+  assert.equal(tiltAt(TILT_FULL), TILT_MAX);
+  assert.equal(tiltAt(9), TILT_MAX, "and stays there to the zoom cap");
+});
+
+test("tiltAt is monotonic and eased at both ends", () => {
+  let prev = -1;
+  for (let b = 4.5; b <= 7; b += 0.05) { const t = tiltAt(b); assert.ok(t >= prev - 1e-12, `monotonic at ${b}`); prev = t; }
+  // the eased entry is what keeps the 2D layers from jumping as they hand over to the projected path:
+  // just past the seam the pitch must still be a small fraction of a degree
+  assert.ok(tiltAt(TILT_IN + 0.05) < 0.2, `entry too abrupt: ${tiltAt(TILT_IN + 0.05)}°`);
+  assert.ok(TILT_MAX - tiltAt(TILT_FULL - 0.05) < 0.2, `exit too abrupt: ${tiltAt(TILT_FULL - 0.05)}°`);
+  assert.ok(Math.abs(tiltAt((TILT_IN + TILT_FULL) / 2) - TILT_MAX / 2) < 1e-9, "half way through is half tilted");
+});
+
+// ---- heightScaleAt ----
+import { heightScaleAt } from "./band-math.mjs";
+
+test("heightScaleAt is 1 where the height model was tuned, and eases off going deeper", () => {
+  assert.equal(heightScaleAt(TILT_IN), 1, "band 5 is the spike's own scale");
+  assert.equal(heightScaleAt(3), 1, "clamped above — nothing below band 5 renders in 3D anyway");
+  assert.ok(Math.abs(heightScaleAt(7) - 0.5) < 1e-9, "two bands deeper, half the exaggeration");
+  assert.ok(heightScaleAt(6) < 1 && heightScaleAt(6) > 0.5, "one band deeper, in between");
+});
+
+test("heightScaleAt still grows a landform on approach, just slower than the zoom", () => {
+  // The property that makes descending feel like descending: a peak's SCREEN height must keep increasing
+  // with zoom, or the terrain would appear to flatten as you close in. Screen height ∝ 2^b · scale(b), and
+  // halving every two bands leaves a net 2^(b/2).
+  const screenH = b => Math.pow(2, b) * heightScaleAt(b);
+  for (let b = 5; b < 8; b += 0.25)
+    assert.ok(screenH(b + 0.25) > screenH(b), `a peak must still grow between bands ${b} and ${b + 0.25}`);
+});
+
+test("heightScaleAt keeps real relief at the deepest zoom", () => {
+  assert.ok(heightScaleAt(9) >= 0.3, "clamped — the deep end must not flatten back into a map");
+  assert.equal(heightScaleAt(1e6), 0.3, "and the clamp holds however far the cap moves");
+});

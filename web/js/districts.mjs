@@ -10,7 +10,7 @@
 //
 // Two sources: the map's urban plots (BUNDLE, geographic — every city) and the live session
 // snapshot (the POV colony's placed buildings, from the D3 district feed). Both fade in deep.
-import { P, ctx, pxr, pyr, px, py, plotPxAt, provOnScreen, isPolitical, BUNDLE } from "./core.mjs";
+import { P, ctx, pll, project, plotPxAt, provOnScreen, isPolitical, BUNDLE } from "./core.mjs";
 import { drawBuildIcon } from "./build-catalog.mjs";
 import { bandAlpha } from "./bands.mjs";
 import { liveColony } from "./overlays/live.mjs";
@@ -36,8 +36,9 @@ function iconSize(plotPx) { return Math.max(10, Math.min(plotPx * 0.55, 46)); }
 // reached for a colony whose centre plot isn't laid yet, or an older server that omits the fields.
 function centerPx(colony, plotPx) {
   if (Number.isFinite(colony.centerX) && Number.isFinite(colony.centerY))
-    return { x: pxr(colony.centerX) + plotPx / 2, y: pyr(colony.centerY) + plotPx / 2 };
-  return { x: px(colony.longitude), y: py(colony.latitude) };
+    { const [cx, cy] = project(colony.centerX + 0.5, colony.centerY + 0.5); return { x: cx, y: cy }; }
+  const [lx, ly] = pll(colony.longitude, colony.latitude);
+  return { x: lx, y: ly };
 }
 
 // the province that hosts the live colony (so its urban plots read as ACTIVE, not abandoned). The
@@ -60,7 +61,7 @@ function livePlots(prov, colony, plotPx) {
   const n = Math.max(0, colony.startingDistricts | 0);
   const urban = prov._plots.filter(q => q.urban);
   const c = centerPx(colony, plotPx);
-  return nearestPlots(urban, n, c.x, c.y, q => pxr(q.x) + plotPx / 2, q => pyr(q.y) + plotPx / 2);
+  return nearestPlots(urban, n, c.x, c.y, q => project(q.x + 0.5, q.y + 0.5)[0], q => project(q.x + 0.5, q.y + 0.5)[1]);
 }
 
 // is `q` the colony's city-center plot?
@@ -174,7 +175,7 @@ export function drawDistricts() {
     for (const q of p._plots) {
       if (!q.urban) continue;
       const active = live && (!built || built.has(q));
-      drawNeighborhood(active, pxr(q.x) + plotPx / 2, pyr(q.y) + plotPx / 2, s, live && isCenter(q, colony));
+      drawNeighborhood(active, ...project(q.x + 0.5, q.y + 0.5), s, live && isCenter(q, colony));
     }
   }
 
@@ -189,8 +190,8 @@ export function drawDistricts() {
       // the static site can be a deploy ahead of the server, and a colony that suddenly has no
       // buildings at all reads as a broken sim, which is a worse lie than the old one.
       const has = Number.isFinite(dist.x) && Number.isFinite(dist.y);
-      const x0 = has ? pxr(dist.x) : centre.x - plotPx / 2;
-      const y0 = has ? pyr(dist.y) : centre.y - plotPx / 2;
+      const [px0, py0] = has ? project(dist.x, dist.y) : [centre.x - plotPx / 2, centre.y - plotPx / 2];
+      const x0 = px0, y0 = py0;
       if (icons > 0.01) {
         ctx.globalAlpha = icons;
         drawPlotIcons(dist, x0 + plotPx / 2, y0 + plotPx / 2, plotPx);

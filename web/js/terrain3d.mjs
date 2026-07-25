@@ -21,11 +21,14 @@
 // THREE IS LOADED LAZILY. The vendored build is 751 KB (188 KB gzipped) and `web/` has no bundler, so a
 // static import would put it on every page load's critical path to serve a band most sessions never
 // reach. It is fetched by dynamic import the first time the camera crosses into band 5.
-import { P, MAP, VIEW, unproject, latAtSourceY, isUnderground, provSrcBox, SEA_BANDS } from "./core.mjs";
-import { ground3D, set3DAvailable } from "./bands.mjs";
+import { P, MAP, VIEW, cam, affineUnproject, setProjector, latAtSourceY, isUnderground, provSrcBox,
+         SEA_BANDS } from "./core.mjs";
+import { ground3D, set3DAvailable, band } from "./bands.mjs";
+import { tiltAt, heightScaleAt, TILT_MAX } from "./band-math.mjs";
 import { draw } from "./repaint.mjs";
 import { seaColorAt } from "./sea.mjs";
 import { HEIGHT, indexPlots, smoothCornerAt } from "./heightfield.mjs";
+import { groundHomography, applyH, invertH, unapplyH } from "./project-math.mjs";
 
 let THREE = null;                 // the vendored module namespace, once loaded
 let loading = false, failed = false;
@@ -40,8 +43,13 @@ const indexed = new Set();        // province ids already folded into `heights`
 const meshes = new Map();         // province id → THREE.Mesh
 const dirty = new Set();          // province ids whose geometry must be rebuilt (a neighbour landed)
 
-const CAM_Y = 20000;              // ortho: the height only has to clear the terrain and stay in near/far
 const SEA_Y = 0;                  // sea level. plotHeight puts all land above it (no floor subtraction)
+// How far the sea plane reaches BEYOND the imported map, in source pixels. At tilt 0 clampPan guarantees the
+// map fills the viewport, so this is dead margin; once the camera pitches over it is looking toward a horizon
+// that lies past the map's edge, and without it the world would end in a hard line against the void a few
+// hundred pixels up the screen. The gradient texture clamps at its edges, so the overhang carries the polar
+// deep-ocean colour and fog swallows it.
+const SEA_OVERHANG = 6000;
 const RASTER_Y = 0.02;            // the blurred fallback raster, a hair above the water
 // ---- lighting, from the spike's tuning (tools/spike-iso3d → shot-civ-oblique.png) ----
 //
@@ -127,12 +135,13 @@ function build() {
   renderer.toneMapping = THREE.NoToneMapping;
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   scene = new THREE.Scene();
-  // Looking straight down -Y with up = -Z, so world +X is screen-right and world +Z is screen-DOWN,
-  // matching source-pixel space where y grows southward. syncCamera then only sets the frustum.
-  camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, CAM_Y + 1000);
-  camera.position.set(0, CAM_Y, 0);
+  // A PERSPECTIVE camera even at tilt 0, where it reduces to P1's orthographic view on the ground — see
+  // syncCamera, which does all the placing. Fog hides the finite map's far edge as the camera pitches over
+  // toward the horizon; its colour is the polar deep-ocean end of the sea gradient, so open water fades into
+  // haze rather than into a hard line against the void.
+  camera = new THREE.PerspectiveCamera(FOV_FLAT, 1, 1, 1e5);
   camera.up.set(0, 0, -1);
-  camera.lookAt(0, 0, 0);
+  scene.fog = new THREE.Fog(0x0c121c, 1, 2);   // range is set per frame in syncFog
 
   sun = new THREE.DirectionalLight(SUN.colour, SUN.intensity);
   ambient = new THREE.AmbientLight(AMBIENT.colour, AMBIENT.intensity);
@@ -198,9 +207,25 @@ function buildSeaPlane() {
   const tex = groundTexture(c);
   tex.minFilter = THREE.LinearFilter;                          // no mips on a 1×512 strip
   tex.generateMipmaps = false;
-  const m = new THREE.Mesh(quadXZ(MAP.x0, MAP.y0, MAP.x1, MAP.y1, SEA_Y),
-    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
-  scene.add(m);
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;           // the overhang keeps the polar colours
+  // The plane runs SEA_OVERHANG past the map on every side, with UVs that go correspondingly outside 0..1 so
+  // the clamped gradient extends rather than repeating. `fog: true` is what dissolves the far edge.
+  const O = SEA_OVERHANG, w = MAP.x1 - MAP.x0, h = MAP.y1 - MAP.y0;
+  const geo = quadXZ(MAP.x0 - O, MAP.y0 - O, MAP.x1 + O, MAP.y1 + O, SEA_Y);
+  geo.setAttribute("uv", new THREE.Float32BufferAttribute([
+    -O / w, -O / h,   1 + O / w, -O / h,   1 + O / w, 1 + O / h,   -O / w, 1 + O / h,
+  ], 2));
+  scene.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, fog: true })));
+}
+
+// Fog range, per frame: it must scale with the camera's standoff, or a distance that veils the horizon when
+// zoomed in would swallow the whole scene when zoomed out. Anchored to the camera height so the near edge sits
+// comfortably past the focus and the far edge lands around the map's own scale. Disabled at tilt 0, where
+// nothing distant is visible and any fog at all would be a change to a frame P1 proved correct.
+function syncFog() {
+  const r = camera.position.y || 1;
+  scene.fog.near = tiltNow ? r * 2 : 1e9;
+  scene.fog.far = tiltNow ? r * 2 + 1200 + r * 22 : 1e9 + 1;
 }
 
 // ---- 2) the baked raster ----
@@ -286,17 +311,68 @@ function indexProvince(p) {
 }
 
 // ---- the camera ----
-// EXACT, not approximate. The 2D camera maps a source pixel to screen affinely and isotropically, so the
-// visible world is a RECTANGLE in source space: read it off with core.unproject — the projector's own
-// inverse from P0 — and make it the ortho frustum. With up = -Z, screen-right is +X and screen-DOWN is
-// +Z, so the top of the viewport is the SMALLER source y and the frustum's `top` is its negation. Get
-// that sign wrong and the world is mirrored north-south, which on a fictional map is easy to miss.
+// ONE PerspectiveCamera at every tilt, INCLUDING zero — which is the trick that makes the handover from the
+// canvas-2D ground invisible.
+//
+// A perspective camera looking straight down at a plane perpendicular to its axis projects that plane as a
+// pure uniform SCALE: every ground point is the same distance along the axis, so there is no foreshortening
+// to distinguish it from an orthographic camera. So at tilt 0 this reproduces P1's ortho exactly on the
+// ground, and no ortho→perspective blend is needed (there is no continuous family between the two, which
+// would have been the alternative and a bad one). Only geometry ABOVE the ground gains parallax, growing
+// with tilt, which is the whole point.
+//
+// The camera is placed by working BACKWARDS from the 2D camera, so the two agree by construction rather than
+// by tuning:
+//   focus   the source-space point under the viewport centre, via the AFFINE inverse — not core.unproject,
+//           which by then is this camera's own inverse and would be circular.
+//   scale   m = screen px per source px, straight off cam.k. The distance r that makes a perspective camera
+//           of vertical FOV f show that scale is r = H / (2 m tan(f/2)).
+//   pitch   tiltAt(band), rotating the camera back over +Z (south) so the top of the screen looks north
+//           toward the horizon, matching the map's north-up convention.
+// Horizontal magnification at the focus therefore stays continuous with the 2D map across the seam; the
+// vertical compresses by cos(tilt), which is simply what tilting looks like and what Civ4 does too.
+//
+// up = (0, 0, -1) throughout, as in P1: with a view direction of (0, -cos, -sin) it stays non-parallel for
+// every tilt below 90°, and yields screen-up = (0, sin, -cos) — north, tipping toward vertical as the camera
+// pitches over. The obvious alternative, up = +Y, is degenerate at tilt 0.
+// The LENS LENGTHENS AS THE CAMERA FLATTENS, and this is not a nicety — it is what keeps the seam exact.
+//
+// A perspective camera projects the ground plane as a pure scale (see above), but geometry ABOVE the ground
+// gets parallax of r/(r−h), and r falls out of the scale requirement: at band 5, r ≈ 164 source px against
+// terrain 6.4 px tall, i.e. 4% magnification on peaks — tens of pixels near the frame edge. That is invisible
+// in isolation and glaring at the seam, where the 2D ground hands over: mountains would pop sideways the
+// instant the 3D ground took the frame. It is exactly what the P1 frame diff caught (mean 0.7 → 24.8) when
+// this file swapped its orthographic camera for a perspective one.
+//
+// So the FOV rides the tilt. At tilt 0 it is a 1° long lens — r ≈ 3.7k source px, parallax under 0.2%, which
+// IS the orthographic camera P1 verified, to within a fifth of a pixel. By full tilt it has opened to 22° and
+// the perspective is real. Both ends are what they need to be and the middle is continuous, which no
+// ortho→perspective switch could have given.
+const FOV_FLAT = 1;           // vertical FOV at tilt 0 — effectively orthographic
+const FOV_TILTED = 22;        // at full tilt — how strongly relief parallax reads
+let tiltNow = 0;              // the pitch used for the current frame, degrees (0 = straight down)
+
 function syncCamera() {
-  const [sx0, sy0] = unproject(0, 0);
-  const [sx1, sy1] = unproject(VIEW.w, VIEW.h);
-  camera.left = sx0; camera.right = sx1;
-  camera.top = -sy0; camera.bottom = -sy1;
+  const span = MAP.x1 - MAP.x0;
+  const m = cam.k * VIEW.dw / span;                       // screen px per source px (isotropic; see fitView)
+  const [fx, fz] = affineUnproject(VIEW.w / 2, VIEW.h / 2);
+  tiltNow = tiltAt(band());
+  const th = tiltNow * Math.PI / 180;
+  const fov = FOV_FLAT + (FOV_TILTED - FOV_FLAT) * (tiltNow / TILT_MAX);
+  const r = VIEW.h / (2 * m * Math.tan(fov * Math.PI / 360));
+
+  camera.fov = fov;
+  camera.aspect = VIEW.w / VIEW.h;
+  camera.near = Math.max(0.01, r * 0.02);
+  // far has to reach the map's far corner once the camera looks toward the horizon, or the ground is clipped
+  // away mid-frame; the diagonal plus the standoff is generous and costs nothing on an empty scene.
+  camera.far = r + Math.hypot(span, MAP.y1 - MAP.y0) + 1000;
+  camera.position.set(fx, r * Math.cos(th), fz + r * Math.sin(th));
+  camera.up.set(0, 0, -1);
+  camera.lookAt(fx, 0, fz);
   camera.updateProjectionMatrix();
+  camera.updateMatrixWorld();
+  syncProjector();
 }
 
 // GUARDED, because it is called every frame: setSize reallocates the drawing buffer, so doing it
@@ -304,6 +380,90 @@ function syncCamera() {
 // event, so the canvas cannot drift out of step with the 2D one whatever caused the size to change (the
 // rail opening, a panel drag, a devicePixelRatio change on monitor switch).
 let sizedW = 0, sizedH = 0, sizedDpr = 0;
+// ---- handing the tilt to the 2D layers ----
+// Everything still drawn on #map — labels, resource and trade-good icons, city plates, districts, caravans,
+// province outlines, the hover ring — is anchored to the GROUND. Install a projector (P0's seam) built from
+// this camera and all of it follows the tilt without being touched; project-math explains why the ground
+// projection is a 3×3 homography and therefore cheap enough for the ~50k culling calls a frame that
+// provOnScreen makes.
+//
+// Installed ONLY while the tilt is non-zero. At tilt 0 the homography is algebraically the affine map but
+// not bit-identical to it, so leaving the affine projector in place there keeps the 2D↔3D seam exact — which
+// is what P1's frame diff measures — and means the separable fast path stays live for the whole of bands 0-5.
+// tiltAt eases in with zero derivative, so the first frames past the seam are sub-pixel and the swap cannot
+// be seen.
+let H = null, Hinv = null, installed = false;
+const PV = new Float64Array(16);
+
+function syncProjector() {
+  if (!tiltNow) {
+    if (installed) { installed = false; H = Hinv = null; setProjector(); }
+    return;
+  }
+  // projection × view, as one column-major 4×4
+  const p = camera.projectionMatrix.elements, v = camera.matrixWorldInverse.elements;
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) s += p[k * 4 + r] * v[c * 4 + k];
+    PV[c * 4 + r] = s;
+  }
+  H = groundHomography(PV);
+  Hinv = invertH(H);
+  if (!Hinv) return;                       // degenerate camera — keep whatever was installed rather than
+                                           // handing every layer a NaN and blanking the frame
+  if (!installed) { installed = true; setProjector(projector3d); }
+}
+
+const projector3d = {
+  separable: false,
+  project: (sx, sy, h) => {
+    if (!h) return applyH(H, sx, sy, VIEW.w, VIEW.h);
+    // off the ground plane the homography no longer applies, so pay the full 4×4 — written out rather than
+    // via a Vector3 so a per-plot caller does not allocate
+    const W = PV[3] * sx + PV[7] * h + PV[11] * sy + PV[15];
+    if (W <= 1e-9) return [-1e7, -1e7];
+    const X = (PV[0] * sx + PV[4] * h + PV[8] * sy + PV[12]) / W;
+    const Y = (PV[1] * sx + PV[5] * h + PV[9] * sy + PV[13]) / W;
+    return [(X + 1) * 0.5 * VIEW.w, (1 - Y) * 0.5 * VIEW.h];
+  },
+  unproject: (mx, my) => unapplyH(Hinv, mx, my, VIEW.w, VIEW.h),
+};
+
+/**
+ * The plot under the cursor, by RAYCAST against the terrain — what hittest.plotAt delegates to once the
+ * ground is tilted.
+ *
+ * The ground-plane inverse is not good enough here, and the error is not subtle: a point on a PEAK 3.4
+ * plot-widths high, seen at 34°, sits 3.4·tan(34°) ≈ 2.3 plots away from where its sea-level position
+ * projects. Hovering a mountain would report a plot two cells downhill. Returns [sx, sy] as fractional
+ * source pixels, or null when the ray misses the terrain (open sea, or off the map).
+ */
+export function pickGround(mx, my) {
+  if (!renderer || !tiltNow) return null;
+  if (!raycaster) raycaster = new THREE.Raycaster();
+  ndc.set(mx / VIEW.w * 2 - 1, 1 - my / VIEW.h * 2);
+  raycaster.setFromCamera(ndc, camera);
+  const hit = raycaster.intersectObjects([...meshes.values()], false)[0];
+  return hit ? [hit.point.x, hit.point.z] : null;
+}
+let raycaster = null;
+const ndc = { x: 0, y: 0, set(a, b) { this.x = a; this.y = b; } };
+
+/**
+ * The RENDERED ground height at a source-space point — the height model's answer times the current vertical
+ * exaggeration, i.e. the world y a thing standing on that plot must sit at.
+ *
+ * Exported because `project(sx, sy, h)` takes a WORLD height, and the exaggeration lives in a mesh transform,
+ * so a caller that reads the model directly would place content at the terrain's un-exaggerated height and
+ * watch it sink into the ground as you zoom. P3's billboards are the reason this exists; today it is also what
+ * makes the exaggeration a single source of truth rather than a renderer-local trick.
+ */
+export function groundHeightAt(sx, sy) {
+  const h = smoothCornerAt(heights, Math.round(sx), Math.round(sy));
+  return h === null ? 0 : h * exagNow;
+}
+let exagNow = 1;
+
 function resize() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
   if (!renderer || (VIEW.w === sizedW && VIEW.h === sizedH && dpr === sizedDpr)) return;
@@ -339,6 +499,11 @@ function syncMeshes() {
     meshes.set(p.id, m);
     scene.add(m);
   }
+  // Vertical exaggeration, per frame, as a transform — see band-math.heightScaleAt for why relief has to be
+  // judged against the frame rather than against a plot. A scale, not a rebuild: the geometry holds the model's
+  // true heights and this is the only thing that moves with zoom.
+  exagNow = heightScaleAt(band());
+  for (const m of meshes.values()) if (m.scale.y !== exagNow) m.scale.y = exagNow;
   // ids queued for provinces already passed this frame: one more paint picks them up, and the pass after
   // that finds the set empty, so this terminates rather than spinning.
   if (dirty.size) draw();
@@ -357,20 +522,36 @@ function drop(id) {
  * before the 2D layers, which paint on #map above this.
  */
 export function renderTerrain3D() {
-  if (!ground3D()) { if (canvas) canvas.classList.add("off"); return; }
+  if (!ground3D()) {
+    if (canvas) canvas.classList.add("off");
+    // Hand the camera back. Leaving a 3D projector installed after the 2D ground resumes would have every
+    // label and icon on the map projected through a camera that is no longer drawing anything.
+    if (installed) { installed = false; tiltNow = 0; H = Hinv = null; setProjector(); }
+    return;
+  }
   if (!ensureRenderer()) return;
   canvas.classList.remove("off");
   resize();
   syncCamera();
+  syncFog();
   syncMeshes();
   renderer.render(scene, camera);
 }
 
 /** What the renderer actually put on screen this frame — read by tools/webverify/terrain3d-verify.mjs. */
 export function terrain3dStats() {
-  let triangles = 0;
-  for (const m of meshes.values()) triangles += m.geometry.index.count / 3;
-  return { ready: !!renderer, failed, loading, flatLit, triangles,
+  let triangles = 0, yMin = Infinity, yMax = -Infinity;
+  for (const m of meshes.values()) {
+    triangles += m.geometry.index.count / 3;
+    // The vertex heights AS BUILT. Worth reporting rather than trusting: everything upstream of this can
+    // look right — the index populated, the model returning sane numbers, the projection exact — while the
+    // mesh is still flat, and from a screenshot a flat mesh under a correct camera is hard to tell from a
+    // shallow one. This is the number that says whether there is any relief in the scene at all.
+    const pos = m.geometry.attributes.position.array;
+    for (let i = 1; i < pos.length; i += 3) { if (pos[i] < yMin) yMin = pos[i]; if (pos[i] > yMax) yMax = pos[i]; }
+  }
+  return { ready: !!renderer, failed, loading, flatLit, triangles, tilt: tiltNow, installed, exag: +exagNow.toFixed(3),
            meshes: meshes.size, indexedProvinces: indexed.size, indexedPlots: heights.size,
+           vertexY: Number.isFinite(yMin) ? [+yMin.toFixed(3), +yMax.toFixed(3)] : null,
            height: { ...HEIGHT } };
 }

@@ -14,7 +14,7 @@
 //      or invented value.
 //
 // See docs/zoom-bands.md §Band caption.
-import { P, VIEW, TRADE_GOODS, provGeo, S, provOnScreen, isUnderground, px, py } from "./core.mjs";
+import { P, VIEW, TRADE_GOODS, provGeo, S, provOnScreen, isUnderground, pll } from "./core.mjs";
 import { band, BAND, BAND_NAMES } from "./bands.mjs";
 import { prettyKey } from "./plotlabel.mjs";
 import { landPlots, plotsPending, majorityTerrain, urbanCount } from "./plotstats.mjs";
@@ -90,9 +90,9 @@ const tierLabel = t => (t ? prettyKey(t) : null);
 function colonyInView() {
   const c = liveColony();
   if (!c || !c.name || c.latitude == null || c.longitude == null) return null;
-  const y = py(c.latitude);
+  const y = pll(c.longitude, c.latitude)[1];
   if (y < 0 || y > VIEW.h) return null;
-  const x = px(c.longitude);
+  const x = pll(c.longitude, c.latitude)[0];
   return (x >= 0 && x <= VIEW.w) ? c : null;
 }
 

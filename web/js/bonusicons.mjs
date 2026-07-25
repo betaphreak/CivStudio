@@ -2,7 +2,8 @@
 // Resource iconography, both scales: the per-PLOT bonus glyphs (drawn as a screen-space overlay over
 // the province grids drawPlots just painted) and the per-PROVINCE trade-good icon (one per province,
 // its own layer). Split out of plots.mjs — they share the two GameFont-style atlases and nothing else.
-import { P, BONUS_ICONS, TRADE_GOODS, cam, ctx, px, py, pxr, pyr, plotPxAt, provSrcBox, provOnScreen } from "./core.mjs";
+import { P, BONUS_ICONS, TRADE_GOODS, cam, ctx, pll, project, plotPxAt, provSrcBox, provOnScreen } from "./core.mjs";
+import { screenAABB } from "./project-math.mjs";
 import { bandAlpha, kBand, atLeast, BAND } from "./bands.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
@@ -39,7 +40,8 @@ export function drawBonusOverlay(vis) {
   for (const p of vis) {                               // already culled to the viewport by drawPlots
     for (const q of p._plots) {
       if (!q.bonus) continue;
-      const x = pxr(q.x) + inset, y = pyr(q.y + 1) - inset - size;      // plot bottom-left corner
+      const [qx0, qy0] = project(q.x, q.y + 1);                          // plot bottom-left corner
+      const x = qx0 + inset, y = qy0 - inset - size;
       const idx = useIcons ? BONUS_ICONS.index[q.bonus] : undefined;
       if (idx !== undefined) {                          // real Civ4 GameFont symbol
         const cell = BONUS_ICONS.cell, cols = BONUS_ICONS.cols;
@@ -64,7 +66,8 @@ export function bonusIconRect(q) {
   // so when a tilted projector makes plot size vary with position (docs/terrain-3d.md §P2) these two
   // move to a per-plot probe TOGETHER — converting either one alone is the silent-drift bug.
   const plotPx = plotPxAt(), size = bonusIconSize(), inset = Math.max(0.5, plotPx * 0.06);
-  const x = pxr(q.x) + inset, y = pyr(q.y + 1) - inset - size;
+  const [qx0, qy0] = project(q.x, q.y + 1);
+  const x = qx0 + inset, y = qy0 - inset - size;
   return [x, y, x + size, y + size];
 }
 
@@ -126,9 +129,10 @@ export function drawTradeGoodIcons() {
     if (idx === undefined || !provOnScreen(p)) continue;
     const box = provSrcBox(p);
     if (!box) continue;
-    const w = Math.abs(pxr(box.x1) - pxr(box.x0)), h = Math.abs(pyr(box.y1) - pyr(box.y0));
-    if (Math.min(w, h) < TG_MIN_PROV_PX) continue;          // too small on screen → skip (declutter)
-    const cx = px(p.lon), cy = py(p.lat);
+    // on-screen extent, via the projected AABB so a tilted camera measures the shape it actually draws
+    const sb = screenAABB(project, box.x0, box.y0, box.x1, box.y1);
+    if (Math.min(sb.x1 - sb.x0, sb.y1 - sb.y0) < TG_MIN_PROV_PX) continue;   // too small → skip (declutter)
+    const [cx, cy] = pll(p.lon, p.lat);
     // a soft dark disc so the icon reads on any terrain/colour
     ctx.beginPath();
     ctx.arc(cx, cy, r * 0.92, 0, 7);

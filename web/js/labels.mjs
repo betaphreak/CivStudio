@@ -1,4 +1,4 @@
-import { P, BUNDLE, px, py, pxr, pyr, cam, VIEW, ctx, LABEL_FONT } from "./core.mjs";
+import { P, BUNDLE, px, cam, VIEW, ctx, LABEL_FONT, pll, project } from "./core.mjs";
 import { bandAlpha, kBand, GEO_TIER_ENV } from "./bands.mjs";
 
 // Stellaris-style map lettering: the shared bundled geometric sans (see core.LABEL_FONT).
@@ -139,7 +139,7 @@ function drawLabels() {
   const drawProvLabel = (p, o) => {
     const lp = labelPath(p);
     if (!lp) return;
-    let spts = lp.pts.map(([x, y]) => [pxr(x), pyr(y)]);    // source → screen
+    let spts = lp.pts.map(([x, y]) => project(x, y));       // source → screen (projected: may be tilted)
     if (spts.length > 2) spts = smoothPolyline(spts, 5);    // smooth a curved (phase-b) baseline
     if (spts[spts.length - 1][0] < spts[0][0]) spts.reverse();   // keep text left-to-right (never upside-down)
     // arc length on screen (for scale + text spanning) and in source (for the thickness scale)
@@ -175,7 +175,7 @@ function drawLabels() {
       const inView = [];
       for (const p of P) {
         if (p.type!=="LAND") continue;
-        const x = px(p.lon), y = py(p.lat);
+        const [x, y] = pll(p.lon, p.lat);
         if (x < -40 || y < -20 || x > VIEW.w+40 || y > VIEW.h+20) continue;   // cull to viewport
         inView.push({ p, x, y });
       }
@@ -191,7 +191,7 @@ function drawLabels() {
         const water = [];
         for (const p of P) {
           if (p.type!=="SEA" && p.type!=="LAKE") continue;
-          const x = px(p.lon), y = py(p.lat);
+          const [x, y] = pll(p.lon, p.lat);
           if (x < -40 || y < -20 || x > VIEW.w+40 || y > VIEW.h+20) continue;
           water.push({ p, x, y });
         }
@@ -235,7 +235,7 @@ function drawGeoLabels() {
     ctx.lineJoin = "round";
     for (const g of items) {         // pre-sorted largest-first = priority
       const name = t.upper ? g.name.toUpperCase() : g.name;
-      const cx = px(g.lon), cy = py(g.lat), tw = ctx.measureText(name).width;
+      const [cx, cy] = pll(g.lon, g.lat), tw = ctx.measureText(name).width;
       const box = { x: cx - tw/2, y: cy - t.size/2 - 1, w: tw, h: t.size + 2 };
       if (box.x < 3 || box.y < 3 || box.x+box.w > VIEW.w-3 || box.y+box.h > VIEW.h-3) continue;
       if (placed.some(q => box.x < q.x+q.w && box.x+box.w > q.x && box.y < q.y+q.h && box.y+box.h > q.y)) continue;

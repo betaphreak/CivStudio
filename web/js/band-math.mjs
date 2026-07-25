@@ -56,6 +56,55 @@ export const GEO_TIER_ENV = {
   regions:      kBand([3.6, 4.7, 7.0, 9.5]),
 };
 
+// ---- the camera's TILT (docs/terrain-3d.md §The plan → P2) ----
+// The 3D ground engages at band 5 looking straight DOWN, so the handover from the canvas-2D ground is
+// invisible, and pitches over to an oblique view as you descend into Ground. Tying the tilt to the band
+// rather than to a user control is deliberate: the Overland→Ground regime seam (regimeAt, b=6) sits inside
+// this ramp, so the camera pitching over IS the transition between playing a map and playing a place.
+export const TILT_MAX = 34;        // degrees from vertical at full tilt — the target screenshot's angle
+export const TILT_IN = 5;          // band where the pitch starts (BAND.LOCALE, where 3D takes the ground)
+export const TILT_FULL = 6.5;      // band where it reaches TILT_MAX (half way through PLOT)
+
+/**
+ * Camera pitch in DEGREES from straight-down at band `b`: 0 below TILT_IN, TILT_MAX above TILT_FULL, and
+ * a smoothstep between them.
+ *
+ * Smoothstep rather than linear because the ramp's ENDS are what you feel. A linear pitch starts and stops
+ * abruptly, which reads as the camera being yanked at exactly the two zoom levels a player crosses most
+ * often; easing both ends means the horizon rolls in. It also matters for correctness at the bottom end:
+ * tiltAt is what decides whether the 3D projector is installed at all, and a zero derivative at TILT_IN
+ * keeps the first frames of tilt sub-pixel, so the 2D layers do not visibly jump as they hand over from
+ * the separable fast path to the projected one.
+ */
+export function tiltAt(b) {
+  if (b <= TILT_IN) return 0;
+  if (b >= TILT_FULL) return TILT_MAX;
+  const t = (b - TILT_IN) / (TILT_FULL - TILT_IN);
+  return TILT_MAX * t * t * (3 - 2 * t);
+}
+
+/**
+ * VERTICAL EXAGGERATION at band `b` — a multiplier on terrain height, 1.0 at the band the height model was
+ * tuned for and falling as you zoom in.
+ *
+ * Why this has to exist. Terrain height is fixed in world units (PEAK = 3.4 plot-widths), so a peak's screen
+ * height grows with zoom exactly as a plot's screen width does — the RATIO is constant. That sounds like it
+ * should look right at every zoom, and it does not: the spike tuned 3.4 while looking at a whole 45×45
+ * province, where it reads as a mountain range. Four bands deeper the viewport holds ~23 plots, the same
+ * ratio puts a 180-pixel cliff across a 52-pixel plot, and the terrain reads as stacked slabs rather than as
+ * landscape. The eye judges relief against the FRAME, not against a plot.
+ *
+ * Halving every two bands is the compromise: a landform keeps growing as you approach it — so descending
+ * still feels like descending — but at roughly half the rate, so it never becomes a wall. Clamped so the deep
+ * end keeps real relief instead of flattening back to a map.
+ *
+ * Applied as a per-mesh Y SCALE rather than baked into the geometry, so it costs one transform per province
+ * per frame and no rebuild (terrain3d.syncMeshes).
+ */
+export function heightScaleAt(b) {
+  return Math.max(0.3, Math.min(1, Math.pow(2, -(b - TILT_IN) / 2)));
+}
+
 // ---- the three interaction regimes ----
 export const REGIME = { ATLAS: "atlas", OVERLAND: "overland", GROUND: "ground" };
 // display metadata for the mode chip / signal (the accent colour + cursor live in CSS, keyed by the

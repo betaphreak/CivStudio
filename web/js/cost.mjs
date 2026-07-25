@@ -9,7 +9,7 @@
 // Flat ground (factor ≈ 1) stays clear; ridges and steep faces glow amber→red, showing where corridors
 // slow and bend. Constants track ProvincePlotPool exactly, so the overlay is faithful to the routing
 // it explains.
-import { P, K_PLOT, NB4, VIEW, ctx, provSrcBox, pxr, pyr, lerp, S } from "./core.mjs";
+import { P, K_PLOT, NB4, ctx, provSrcBox, lerp, S, provOnScreen } from "./core.mjs";
 import { bandAlpha, kBand } from "./bands.mjs";
 import { buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 
@@ -53,8 +53,7 @@ export function drawCostOverlay() {
   for (const p of P) {
     if (!p._plots || !p._plots.length) continue;            // unloaded (drawPlots requests it) or empty
     const bb = provSrcBox(p); if (!bb) continue;
-    const sx0 = pxr(bb.x0), sy0 = pyr(bb.y0), sx1 = pxr(bb.x1), sy1 = pyr(bb.y1);
-    if (sx1 < 0 || sy1 < 0 || sx0 > VIEW.w || sy0 > VIEW.h) continue;
+    if (!provOnScreen(p)) continue;   // projected AABB, so the cull is right under a tilted camera too
     if (!p._mcanvas) buildCostCanvas(p, p._plots);
     blitProvinceCanvas(p._mcanvas, p._mbox);
   }

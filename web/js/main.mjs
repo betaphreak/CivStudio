@@ -1,4 +1,4 @@
-import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, py, pxr, pyr, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm } from "./core.mjs";
+import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm, pll, project } from "./core.mjs";
 import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO, ground3D } from "./bands.mjs";
 import { renderTerrain3D } from "./terrain3d.mjs";   // the 3D ground, band 5 and deeper
 import { drawPlots } from "./plots.mjs";                       // still used directly by drawCavernPlots
@@ -293,7 +293,7 @@ function drawHoverHighlight() {
     ctx.fillStyle = "rgba(231,236,244,.12)"; ctx.fill(hp);
     ctx.strokeStyle = "#eef2f8"; ctx.lineWidth = 1.6 * s; ctx.stroke(hp);
   } else {
-    ctx.beginPath(); ctx.arc(px(S.hoverProv.lon), py(S.hoverProv.lat), 6, 0, 7);
+    ctx.beginPath(); { const [hx, hy] = pll(S.hoverProv.lon, S.hoverProv.lat); ctx.arc(hx, hy, 6, 0, 7); }
     ctx.strokeStyle = "#eef2f8"; ctx.lineWidth = 1.4 * s; ctx.stroke();
   }
 }
@@ -306,7 +306,7 @@ function drawSelectedHighlight() {
     ctx.fillStyle = "rgba(232,183,106,.12)"; ctx.fill(sp);
     ctx.strokeStyle = cssVar("--accent") || "#e8b76a"; ctx.lineWidth = 2.2 * s; ctx.stroke(sp);
   } else {
-    ctx.beginPath(); ctx.arc(px(S.selectedProv.lon), py(S.selectedProv.lat), 7, 0, 7);
+    ctx.beginPath(); { const [sx, sy] = pll(S.selectedProv.lon, S.selectedProv.lat); ctx.arc(sx, sy, 7, 0, 7); }
     ctx.strokeStyle = cssVar("--accent") || "#e8b76a"; ctx.lineWidth = 2 * s; ctx.stroke();
   }
 }
@@ -368,7 +368,8 @@ function drawCaveEntrances() {
       const nb = Pby.get(nbId);
       if (!nb || !isUnderground(nb)) continue;
       // the shared border is ~midway between the two centroids; bias toward the cave side
-      const mx = px(p.lon) * 0.45 + px(nb.lon) * 0.55, my = py(p.lat) * 0.45 + py(nb.lat) * 0.55;
+      const [ax0, ay0] = pll(p.lon, p.lat), [bx0, by0] = pll(nb.lon, nb.lat);
+      const mx = ax0 * 0.45 + bx0 * 0.55, my = ay0 * 0.45 + by0 * 0.55;
       ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_R, 0, 7);
       ctx.fillStyle = "rgba(232,183,106,0.9)"; ctx.fill();
       ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_IN, 0, 7);
@@ -423,14 +424,14 @@ function drawAdjacencies() {
     if (teleport) {
       // too far for a sensible line — a teleporter: mark each endpoint instead (cave-entrance style),
       // each labelled with the province it warps to
-      teleportMark(px(a.lon), py(a.lat), b.name);
-      teleportMark(px(b.lon), py(b.lat), a.name);
+      teleportMark(...pll(a.lon, a.lat), b.name);
+      teleportMark(...pll(b.lon, b.lat), a.name);
       continue;
     }
     // span the two provinces' nearest coasts; centroids only if a ring is missing
     const e = nearestEdgePair(a, b);
-    const x1 = e ? pxr(e.ax) : px(a.lon), y1 = e ? pyr(e.ay) : py(a.lat);
-    const x2 = e ? pxr(e.bx) : px(b.lon), y2 = e ? pyr(e.by) : py(b.lat);
+    const [x1, y1] = e ? project(e.ax, e.ay) : pll(a.lon, a.lat);
+    const [x2, y2] = e ? project(e.bx, e.by) : pll(b.lon, b.lat);
     if (Math.max(x1, x2) < 0 || Math.min(x1, x2) > VIEW.w
         || Math.max(y1, y2) < 0 || Math.min(y1, y2) > VIEW.h) continue;   // off-screen cull
     ctx.setLineDash([5, 4]);
@@ -477,14 +478,15 @@ function drawRealmArrows() {
     else continue;   // both in this realm (the 86 Deepwoods rows) — not a crossing
     let a = arrows.get(near.id);
     if (!a) { a = { p: near, otherRealm: far.realm, farId: far.id, fx: 0, fy: 0, n: 0 }; arrows.set(near.id, a); }
-    a.fx += px(far.lon); a.fy += py(far.lat); a.n++;   // far endpoint projects off-crop → a direction
+    const [fx0, fy0] = pll(far.lon, far.lat);          // far endpoint projects off-crop → a direction
+    a.fx += fx0; a.fy += fy0; a.n++;
   }
   if (!arrows.size) return;
   ctx.save();
   ctx.font = "700 12px " + LABEL_FONT;   // set once, for measureText and the labels
   const placed = [];                      // label rects already drawn — de-clutters the Deepwoods cluster
   for (const a of arrows.values()) {
-    const ox = px(a.p.lon), oy = py(a.p.lat);
+    const [ox, oy] = pll(a.p.lon, a.p.lat);
     if (ox < -40 || ox > VIEW.w + 40 || oy < -40 || oy > VIEW.h + 40) continue;
     let dx = a.fx / a.n - ox, dy = a.fy / a.n - oy;
     const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;

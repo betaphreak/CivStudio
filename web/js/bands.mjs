@@ -7,7 +7,7 @@
 // seam that binds it to the camera; the constants (BAND, BAND_NAMES, REGIME, REGIME_INFO,
 // GEO_TIER_ENV, kBand) are re-exported below so every caller still imports them from "./bands.mjs"
 // and nothing outside needs to know about the split. See docs/zoom-bands.md.
-import { cam, S } from "./core.mjs";
+import { cam, S, isPolitical } from "./core.mjs";
 import { bandAlphaAt, bandNameAt, regimeAt, REGIME, BAND } from "./band-math.mjs";
 
 export { BAND, BAND_NAMES, REGIME, REGIME_INFO, GEO_TIER_ENV, kBand } from "./band-math.mjs";
@@ -57,4 +57,9 @@ export const ground3D = () =>
   // meshes for z=-1, which is a second plane with its own veil and rims (docs/underworld.md). z-levels are
   // P2 territory; until then the plane toggle is also the 3D toggle.
   S.plane !== "underworld"
+  // POLITICAL overlays keep the 2D ground too, and for a sharper reason: the plot layer is gated
+  // `notPolitical`, so in nation/culture/faith mode no province ever builds a texture — the 3D ground would
+  // have nothing to drape and would render bare sea. Nor is anything lost: a political map is an opaque wash
+  // of ownership colour, with no relief to see underneath it.
+  && !isPolitical()
   && _has3D && (_force3D === "1" || atLeast(BAND.LOCALE));

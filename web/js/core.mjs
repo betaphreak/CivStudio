@@ -1,6 +1,6 @@
 "use strict";
 import { resolveBase } from "./server-base.mjs";
-import { invAffine1, scaleAt } from "./project-math.mjs";
+import { invAffine1, scaleAt, screenAABB } from "./project-math.mjs";
 
 const BUNDLE = window.BUNDLE;
 
@@ -57,6 +57,11 @@ const pxr = sp => cam.x + cam.k * baseXr(sp);
 const pyr = sp => cam.y + cam.k * baseYr(sp);
 const px = lon => pxr(sxSrc(lon));
 const py = lat => pyr(sySrc(lat));
+/** A lon/lat point → screen [x, y], through the ACTIVE projector — the paired form of px/py, and what a
+ *  layer must use once the camera can tilt. Most call sites were literally `px(p.lon), py(p.lat)` on one
+ *  line, so this is the same shape; the separable pair survives only for callers that genuinely have one
+ *  axis in hand (a viewport-wide fill, a scale probe). */
+const pll = (lon, lat) => PROJ.project(sxSrc(lon), sySrc(lat), 0);
 
 // ---- the projection seam (docs/terrain-3d.md §The plan → P0) ----
 // ONE swappable object mapping the map's source-pixel space to screen space. The 3D terrain renderer
@@ -76,6 +81,10 @@ const affineProjector = {
   ],
 };
 let PROJ = affineProjector;
+/** The 2D camera's inverse, WHICHEVER projector is installed. The 3D camera is placed by working backwards
+ *  from the 2D one (terrain3d.syncCamera), so it needs the affine answer specifically: asking through
+ *  unproject would ask the camera being placed where it is looking, which is circular. */
+const affineUnproject = (mx, my) => affineProjector.unproject(mx, my);
 /** Install a projector (the 3D renderer's camera); no argument restores the 2D one. Bumps baseVersion,
  *  because every cached province Path2D and every debounced readout keys off it — a projector swap that
  *  forgot to would paint the new projection through stale geometry. */
@@ -199,6 +208,10 @@ function provSrcBox(p) {
 function provOnScreen(p) {
   const box = provSrcBox(p);
   if (!box) return false;
+  if (!PROJ.separable) {   // tilted: the box projects to a trapezoid, so all four corners must be bounded
+    const bb = screenAABB(project, box.x0, box.y0, box.x1, box.y1);
+    return bb.x1 >= 0 && bb.x0 <= VIEW.w && bb.y1 >= 0 && bb.y0 <= VIEW.h;
+  }
   const ax = pxr(box.x0), bx = pxr(box.x1), ay = pyr(box.y0), by = pyr(box.y1);
   return Math.max(ax, bx) >= 0 && Math.min(ax, bx) <= VIEW.w
       && Math.max(ay, by) >= 0 && Math.min(ay, by) <= VIEW.h;
@@ -217,6 +230,10 @@ function provOnScreen(p) {
 function provBoxHas(p, sx, sy, margin = 0) {
   const box = provSrcBox(p);
   if (!box) return false;
+  if (!PROJ.separable) {   // see provOnScreen: two corners no longer bound a projected rectangle
+    const bb = screenAABB(project, box.x0, box.y0, box.x1, box.y1);
+    return sx >= bb.x0 - margin && sx <= bb.x1 + margin && sy >= bb.y0 - margin && sy <= bb.y1 + margin;
+  }
   const ax = pxr(box.x0), bx = pxr(box.x1), ay = pyr(box.y0), by = pyr(box.y1);
   return sx >= Math.min(ax, bx) - margin && sx <= Math.max(ax, bx) + margin
       && sy >= Math.min(ay, by) - margin && sy <= Math.max(ay, by) + margin;
@@ -357,5 +374,5 @@ export const S = {
   camBeforeFocus: null,
 };
 
-export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py,
-  project, unproject, setProjector, separable, plotPxAt, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, pll,
+  project, unproject, setProjector, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };

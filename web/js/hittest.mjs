@@ -4,16 +4,17 @@
 // (hover/select) and bandcaption.mjs (viewport focus) can ask without pulling in the whole panel
 // module. The map is a finite sheet (docs/realms.md §Delete the wrap), so the cursor falls in exactly
 // one world — no east-west wrap copies to shift into and retry.
-import { P, pxr, pyr, px, py, provBoxHas } from "./core.mjs";
+import { P, pxr, pyr, pll, project, provBoxHas } from "./core.mjs";
 import { atLeast, BAND } from "./bands.mjs";
 import { bonusIconRect } from "./bonusicons.mjs";
+import { pickGround } from "./terrain3d.mjs";   // raycast the real terrain once the ground is tilted
 
 // point-in-polygon over a province's rings (even-odd, in screen space)
 function pointInProv(p, mx, my) {
   let inside = false;
   for (const ring of p.rings) {
     for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-      const xi = pxr(ring[i][0]), yi = pyr(ring[i][1]), xj = pxr(ring[j][0]), yj = pyr(ring[j][1]);
+      const [xi, yi] = project(ring[i][0], ring[i][1]), [xj, yj] = project(ring[j][0], ring[j][1]);
       if (((yi > my) !== (yj > my)) && (mx < (xj - xi) * (my - yi) / (yj - yi) + xi)) inside = !inside;
     }
   }
@@ -29,7 +30,7 @@ export function provinceAt(mx, my) {
   // province with no outline (deep ocean, never shipped) has none and is skipped. Only a province
   // whose bbox (grown by the 9.5px centroid radius, √90) reaches the cursor can win, so cull first.
   let best = null, bd = 1e9;
-  for (const p of P) { if (!p.rings || !provBoxHas(p, mx, my, 10)) continue; const dx = px(p.lon) - mx, dy = py(p.lat) - my, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } }
+  for (const p of P) { if (!p.rings || !provBoxHas(p, mx, my, 10)) continue; const [ax, ay] = pll(p.lon, p.lat); const dx = ax - mx, dy = ay - my, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } }
   return bd < 90 ? best : null;
 }
 
@@ -38,6 +39,18 @@ export function provinceAt(mx, my) {
 // resources tooltip like land ones. Returns the plot record, or null.
 export function plotAt(mx, my) {
   if (!atLeast(BAND.TERRAIN)) return null;
+  // TILTED: ask the terrain, not the arithmetic. Once the ground has relief and the camera is oblique, a
+  // plot's screen position depends on its HEIGHT, and the box interpolation below — which assumes the plot
+  // grid maps to an axis-aligned screen rectangle — is wrong by tan(tilt) × height: about 2.3 plots
+  // downhill on a PEAK at 34°, so hovering a mountain would report the wrong cell entirely. pickGround
+  // raycasts the actual mesh and returns null off the terrain (open sea, or past the map's edge), where
+  // there is no plot to name anyway. docs/terrain-3d.md §The plan → P2.
+  const hit = pickGround(mx, my);
+  if (hit) {
+    const gx = Math.floor(hit[0]), gy = Math.floor(hit[1]);
+    for (const p of P) { const q = p._grid && p._grid.get(gx * 1e5 + gy); if (q) return q; }
+    return null;
+  }
   for (const p of P) {
     if (!p._grid || !p._tbox) continue;                       // only provinces whose texture canvas is built
     const b = p._tbox, X0 = pxr(b.x0), X1 = pxr(b.x0 + b.w), Y0 = pyr(b.y0), Y1 = pyr(b.y0 + b.h);

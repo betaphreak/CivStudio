@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, px, py, pxr, pyr, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -136,11 +136,11 @@ function drawPlots(only) {
   let deferred = false;
   for (const p of P) {
     if (only && !only(p)) continue;
-    const bb = provSrcBox(p);
-    let sx0, sy0, sx1, sy1;
-    if (bb) { sx0 = pxr(bb.x0); sy0 = pyr(bb.y0); sx1 = pxr(bb.x1); sy1 = pyr(bb.y1); }
-    else { const x = px(p.lon), y = py(p.lat); sx0 = x - 20; sy0 = y - 20; sx1 = x + 20; sy1 = y + 20; }
-    if (sx1 < 0 || sy1 < 0 || sx0 > VIEW.w || sy0 > VIEW.h) continue;   // cull to viewport
+    // Cull to the viewport through the PROJECTOR, so this stays correct once the camera tilts — and it
+    // must, because this is also the pass that decides which provinces get their plots fetched at all.
+    if (provSrcBox(p)) { if (!provOnScreen(p)) continue; }
+    else { const [x, y] = pll(p.lon, p.lat);                    // ring-less: a 40px box round its anchor
+           if (x + 20 < 0 || y + 20 < 0 || x - 20 > VIEW.w || y - 20 > VIEW.h) continue; }
     if (!p._plots) { loadPlots(p); continue; }   // request the server-generated grid on first sight
     if (!p._plots.length) continue;              // loaded-empty (deep ocean): nothing to draw
     vis.push(p);
