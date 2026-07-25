@@ -195,8 +195,25 @@ export function getOptional(committedRelativePath) {
  * from the warm cache (see prefetch); on a cold miss it resolves + fetches synchronously via `gh`.
  * Returns null if absent / unfetchable, so bakes degrade to their fallbacks.
  */
+// Art extracted from the installed game's FPK archives by tools/fpk/unpack.mjs, if it is there. This is the
+// ONLY source for anything the game ships packed rather than loose: C2C's UnpackedArt tree holds only what C2C
+// itself overrides, so e.g. art/terrain/features/peak/* — Civ4's mountain and hill models — exists nowhere the
+// GitHub fetch can see it (docs/terrain-3d.md §Relief is props).
+//
+// Checked FIRST, so a locally extracted file beats a fetch, and gitignored, so it is never committed: it is the
+// publisher's art. A bake that depends on it must therefore commit its OUTPUT, because CI has no game install
+// — which is already how the tree and flag atlases work.
+const FPK = path.join(ROOT, '.civ4-fpk');
+function resolveFpk(artPath) {
+  const rel = artPath.replace(/^Art\//i, 'art/').replace(/\\/g, '/').toLowerCase();
+  const p = path.join(FPK, rel);
+  return fs.existsSync(p) ? p : null;
+}
+
 export function resolveArt(artPath) {
   if (!artPath) return null;
+  const fromFpk = resolveFpk(artPath);
+  if (fromFpk) return fromFpk;
   const local = path.join(CACHE, artKey(artPath));
   if (fs.existsSync(local)) return local;                       // warmed by prefetch
   try {

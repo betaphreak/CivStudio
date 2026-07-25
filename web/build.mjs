@@ -1088,6 +1088,28 @@ function bakeFeatureSprites() {
   // the billboard groups, so every foliage sprite ships WebP too
   const emit = (n, w, h, rgba) => queueWebpRGBA(`trees/trees-${n}`, w, h, rgba, { quality: 90 });
   nif('kaktus/kaktus2.nif', 'kaktus/cactus01.dds', 'cactus', { size: 220, emit });
+  // PEAKS AND HILLS — Civ4's own mountain models, for the 3D ground's relief props (docs/terrain-3d.md
+  // §Relief is props, not displacement). The target screenshot keeps its terrain nearly flat and stands a
+  // mountain MODEL on each peak tile; these are those models.
+  //
+  // They come from the base game's Art0.FPK, extracted by tools/fpk/unpack.mjs into .civ4-fpk, because C2C's
+  // UnpackedArt has no Peaks directory and the on-demand GitHub fetch therefore cannot see them. resolveArt
+  // checks the extract first, so nothing here has to know that. Three variants per group so a range is not a
+  // stencil; rendered larger than the foliage because a mountain occupies its whole tile and then some.
+  const nifs = (rels, tex, name, size) => {
+    const texPath = resolveArt('Art/Terrain/features/' + tex);
+    const variants = rels.map(r => ({ nif: resolveArt('Art/Terrain/features/' + r), tex: texPath }))
+      .filter(v => v.nif && v.tex);
+    if (!variants.length) { console.log(`  ${name}: no art (run tools/fpk/unpack.mjs to extract it)`); return; }
+    try {
+      const g = bakeNifGroup(variants, name, path.join(WEB, 'assets'), size, { size, emit });
+      if (g) { out[name] = g; console.log(`  ${name}: ${variants.length} variant(s) baked`); }
+    } catch (e) { console.log(`  ${name}: nif render skipped (${e.message})`); }
+  };
+  nifs(['peak/peak_mountaina.nif', 'peak/peak_mountainb.nif', 'peak/peak_mountainc.nif'],
+       'peak/peak_all.dds', 'peak', 320);
+  nifs(['peak/peak_hilla.nif', 'peak/peak_hillb.nif', 'peak/peak_hillc.nif'],
+       'peak/peak_all.dds', 'hill', 260);
   // (tall grass no longer bakes a billboard — it was a muddy wheat crop; the plot layer draws grass
   //  procedurally now, plots.mjs stampGrass)
   // the city sprite: a real Civ4 city model (a medieval European city cluster) baked and

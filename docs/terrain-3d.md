@@ -460,8 +460,20 @@ game's own FPK archives, and `Assets/Art0.FPK` yields:
 | `art/terrain/features/peak/peak_all.dds`, `peak_single.dds`, `mountaincraggy01.dds` | their textures |
 | `art/terrain/textures/peakdetail.dds` | the peak ground detail texture |
 
-So P4b's remaining work is a bake, not an invention: run these through `tools/nifbake` — the same path that
-already produced the cactus and bamboo sprites — into a sprite atlas, and feed it to the prop layer P3 built.
+P4b's remaining work is therefore a bake rather than an invention — but the bake is **blocked on a NIF version**,
+and the reason is exact. `tools/nifbake/nif.mjs` reads **Gamebryo 20.0.0.4**, the version C2C's own models use,
+which is why the cactus and city sprites bake fine. The base game's peak models are the older **NetImmerse
+10.0.1.0**, which lays its block stream out differently, so the reader walks off and reports an absurd offset.
+Supporting it is a real extension to that reader.
+
+The textures alongside the models are not a substitute: `peak_all.dds` is a UV-mapped model SKIN — a rock-and-snow
+sheet with a soft alpha edge — not a billboard atlas of mountain cutouts, so the connected-component extractor
+that handles `trees_1024.dds` has nothing to cut out of it. Verified by decoding it.
+
+So the ordered remainder of P4b is: **(1) teach nif.mjs NetImmerse 10.0.1.0**, (2) bake peak/hill/peak_single
+through `tools/fpk/bake-peaks.mjs` (already wired, and wired into `web/build.mjs` so a CI bake picks it up),
+(3) drop the HEIGHT constants and add the props + contact shadows, which the reverted prototype already showed
+removes the terracing.
 
 **The bigger find behind it:** `C2C{0..3}.FPK` + `C2CPatch0.FPK` hold ~900 MB of C2C's OWN art, packed. Most of
 C2C's art was never in `UnpackedArt` either, which matters well beyond terrain — the building and unit models P5
