@@ -348,11 +348,28 @@ function propsOf(p) {
   return byGroup;
 }
 
+/**
+ * The camera's RIGHT and UP axes in world terms, for a pitch of `tilt` and a yaw of `yaw` (both degrees).
+ * Derived from the same lookAt basis three builds in syncCamera, rather than assumed:
+ *
+ *   zAxis = position − target = (sinθ sinψ, cosθ, sinθ cosψ)      the standoff direction
+ *   right = normalize(cross(up, zAxis)) = (cosψ, 0, −sinψ)         up = (−sinψ, 0, −cosψ)
+ *   up    = cross(zAxis, right)         = (−cosθ sinψ, sinθ, −cosθ cosψ)
+ *
+ * At yaw 0 these collapse to (1, 0, 0) and (0, sinθ, −cosθ) — which is what the billboards used to
+ * hard-code. That was fine while the camera only ever pitched; the moment it yaws, a quad spanning world
+ * +X stops facing the camera and every prop in the frame shears into a shard.
+ */
+function cameraBasis(tilt, yaw) {
+  const th = tilt * Math.PI / 180, ps = yaw * Math.PI / 180;
+  const st = Math.sin(th), ct = Math.cos(th), sp = Math.sin(ps), cp = Math.cos(ps);
+  return { rx: cp, rz: -sp, ux: -ct * sp, uy: st, uz: -ct * cp };
+}
+
 /** Build one group's quads at the current tilt. Positions are absolute source px; UVs index the atlas. */
 function propGeometry(items, key) {
   const { meta } = propAtlas[key];
-  const th = tiltNow * Math.PI / 180;
-  const uy = Math.sin(th), uz = -Math.cos(th);          // the camera's up vector, in world terms
+  const { rx, rz, ux, uy, uz } = cameraBasis(tiltNow, yawAt(tiltNow));
   const n = items.length;
   const pos = new Float32Array(n * 12), uv = new Float32Array(n * 8);
   const idx = new (n * 4 > 65535 ? Uint32Array : Uint16Array)(n * 6);
@@ -362,11 +379,13 @@ function propGeometry(items, key) {
     const by = (gh === null ? 0 : gh) * exagNow;
     const hw = it.w / 2, hh = it.h;
     const o = i * 12;
-    // base left/right, then top left/right — the top displaced along the camera's up by the sprite's height
-    pos[o]      = it.bx - hw; pos[o + 1]  = by;           pos[o + 2]  = it.bz;
-    pos[o + 3]  = it.bx + hw; pos[o + 4]  = by;           pos[o + 5]  = it.bz;
-    pos[o + 6]  = it.bx + hw; pos[o + 7]  = by + uy * hh; pos[o + 8]  = it.bz + uz * hh;
-    pos[o + 9]  = it.bx - hw; pos[o + 10] = by + uy * hh; pos[o + 11] = it.bz + uz * hh;
+    // base left/right along the camera's RIGHT axis, then top left/right displaced along its UP by the
+    // sprite's height. Both axes come from cameraBasis, so the quad stays square-on to the camera at every
+    // combination of pitch and yaw — which is the whole point of a billboard.
+    pos[o]      = it.bx - rx * hw;      pos[o + 1]  = by;           pos[o + 2]  = it.bz - rz * hw;
+    pos[o + 3]  = it.bx + rx * hw;      pos[o + 4]  = by;           pos[o + 5]  = it.bz + rz * hw;
+    pos[o + 6]  = it.bx + rx * hw + ux * hh; pos[o + 7]  = by + uy * hh; pos[o + 8]  = it.bz + rz * hw + uz * hh;
+    pos[o + 9]  = it.bx - rx * hw + ux * hh; pos[o + 10] = by + uy * hh; pos[o + 11] = it.bz - rz * hw + uz * hh;
     // flipY is off on the atlas, so v runs with the image's rows: the sprite's BOTTOM row goes on the base
     const u0 = it.sp[0] / meta.w, u1 = (it.sp[0] + it.sp[2]) / meta.w;
     const v0 = it.sp[1] / meta.h, v1 = (it.sp[1] + it.sp[3]) / meta.h;
@@ -460,20 +479,24 @@ function shadowTexture() {
  *
  * Each corner takes its own `groundAt`, so the shadow follows a slope instead of intersecting it — on the
  * gentle relief P4b leaves behind that is a small correction, but it is the difference between a shadow
- * lying on a hillside and one slicing through it. Squashed in Z because the prop's base straddles a plot
- * and a mountain's footprint is wider across than deep.
+ * lying on a hillside and one slicing through it. Squashed across the camera's view direction because a
+ * prop's footprint reads wider than it is deep, and ROTATED BY THE YAW so that squash stays aligned with
+ * the prop above it rather than with the world axes.
  */
 function shadowGeometry(items) {
   const n = items.length;
   const pos = new Float32Array(n * 12), uv = new Float32Array(n * 8);
   const idx = new (n * 4 > 65535 ? Uint32Array : Uint16Array)(n * 6);
+  const ps = yawAt(tiltNow) * Math.PI / 180, sp = Math.sin(ps), cp = Math.cos(ps);
   for (let i = 0; i < n; i++) {
     const it = items[i];
     const hw = it.w / 2 * SHADOW.grow, hd = hw * SHADOW.squash;
     const o = i * 12;
     const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
     for (let k = 0; k < 4; k++) {
-      const x = it.bx + corners[k][0], z = it.bz + corners[k][1];
+      // rotate the footprint into the camera's yaw: (a, b) → a·right + b·forward, both flattened to the ground
+      const a = corners[k][0], b = corners[k][1];
+      const x = it.bx + a * cp - b * sp, z = it.bz + a * -sp - b * cp;
       const gh = groundAt(heights, x, z);
       pos[o + k * 3] = x;
       pos[o + k * 3 + 1] = (gh === null ? 0 : gh) * exagNow + SHADOW.lift;
@@ -609,12 +632,35 @@ const FOV_FLAT = 1;           // vertical FOV at tilt 0 — effectively orthogra
 const FOV_TILTED = 22;        // at full tilt — how strongly relief parallax reads
 let tiltNow = 0;              // the pitch used for the current frame, degrees (0 = straight down)
 
+// ---- YAW: which way the camera leans, in the plane of the map ----
+// The pitch has to lean SOMEWHERE, and at yaw 0 it leans due south and looks north — so the axis it
+// compresses is north-south, and every east-west plot and province edge in the frame bunches together into
+// long screen-horizontal seams. That is what "looking down the seams between the plots" is: the grid is
+// axis-aligned with the screen, so one whole family of edges collapses.
+//
+// A yaw rotates the lean within the map plane, which is the only thing that breaks that alignment — no
+// amount of pitch does. 45° is the answer, and it is the classic isometric one for a reason: at 45° NEITHER
+// family of plot edges is screen-aligned, so both read as diagonals and nothing collapses. 90° merely swaps
+// which family collapses (a square grid is symmetric under it), which was checked and rejected on the
+// pictures — see the yaw comparison in docs/terrain-3d.md §The camera's yaw.
+//
+// Ramped WITH THE TILT rather than applied at every band, because a yaw at tilt 0 would rotate the flat
+// world map — and the whole seam guarantee is that band 5 hands over an identical picture. So the world map
+// stays north-up and the rotation arrives with the pitch, as part of the same move into Ground.
+const YAW_MAX = 45;           // degrees clockwise at full tilt (see docs/terrain-3d.md §The camera's yaw)
+const yawOverride = (() => {  // ?yaw=<deg> — a look-tuning knob, like ?props=0; NaN when absent
+  const v = parseFloat(new URLSearchParams(location.search).get("yaw"));
+  return Number.isFinite(v) ? v : NaN;
+})();
+const yawAt = tilt => (Number.isFinite(yawOverride) ? yawOverride : YAW_MAX) * (tilt / TILT_MAX);
+
 function syncCamera() {
   const span = MAP.x1 - MAP.x0;
   const m = cam.k * VIEW.dw / span;                       // screen px per source px (isotropic; see fitView)
   const [fx, fz] = affineUnproject(VIEW.w / 2, VIEW.h / 2);
   tiltNow = tiltAt(band());
   const th = tiltNow * Math.PI / 180;
+  const ps = yawAt(tiltNow) * Math.PI / 180;
   const fov = FOV_FLAT + (FOV_TILTED - FOV_FLAT) * (tiltNow / TILT_MAX);
   const r = VIEW.h / (2 * m * Math.tan(fov * Math.PI / 360));
 
@@ -624,8 +670,11 @@ function syncCamera() {
   // far has to reach the map's far corner once the camera looks toward the horizon, or the ground is clipped
   // away mid-frame; the diagonal plus the standoff is generous and costs nothing on an empty scene.
   camera.far = r + Math.hypot(span, MAP.y1 - MAP.y0) + 1000;
-  camera.position.set(fx, r * Math.cos(th), fz + r * Math.sin(th));
-  camera.up.set(0, 0, -1);
+  // The standoff direction is (sin yaw, ·, cos yaw): at yaw 0 that is +Z (south), so this reduces to what
+  // P2 shipped. `up` is the same direction negated and flattened, which keeps screen-up pointing back along
+  // the lean — north at yaw 0 — and stays non-parallel to the view axis at every tilt below 90°.
+  camera.position.set(fx + r * Math.sin(th) * Math.sin(ps), r * Math.cos(th), fz + r * Math.sin(th) * Math.cos(ps));
+  camera.up.set(-Math.sin(ps), 0, -Math.cos(ps));
   camera.lookAt(fx, 0, fz);
   camera.updateProjectionMatrix();
   camera.updateMatrixWorld();
@@ -858,7 +907,7 @@ export function terrain3dStats() {
   let props = 0, propGroups = 0;
   for (const list of propMeshes.values())
     for (const m of list) { propGroups++; props += m.geometry.index.count / 6; }
-  return { ready: !!renderer, failed, loading, flatLit, triangles, tilt: tiltNow, installed, exag: +exagNow.toFixed(3),
+  return { ready: !!renderer, failed, loading, flatLit, triangles, tilt: tiltNow, yaw: +yawAt(tiltNow).toFixed(2), installed, exag: +exagNow.toFixed(3),
            props, propGroups, atlases: Object.keys(propAtlas).filter(k => propAtlas[k].ready),
            meshes: meshes.size, indexedProvinces: indexed.size, indexedPlots: heights.size,
            vertexY: Number.isFinite(yMin) ? [+yMin.toFixed(3), +yMax.toFixed(3)] : null,

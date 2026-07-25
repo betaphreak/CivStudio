@@ -61,7 +61,18 @@ export const GEO_TIER_ENV = {
 // invisible, and pitches over to an oblique view as you descend into Ground. Tying the tilt to the band
 // rather than to a user control is deliberate: the Overland→Ground regime seam (regimeAt, b=6) sits inside
 // this ramp, so the camera pitching over IS the transition between playing a map and playing a place.
-export const TILT_MAX = 34;        // degrees from vertical at full tilt — the target screenshot's angle
+// TILT_MAX comes from CIV4'S OWN DATA, not from measuring a screenshot. `Assets/XML/GlobalDefines.xml`:
+//   CAMERA_UPPER_PITCH = -90   fully zoomed out — straight down
+//   CAMERA_LOWER_PITCH = -32   fully zoomed in  — 32° above the horizon, i.e. 58° FROM VERTICAL
+// so Civ4's camera sweeps 0 → 58° from vertical as you descend, which is exactly the shape of this ramp.
+//
+// It was 34, taken from measuring the tile aspect in tools/samples/test2.png. That measurement was sound and
+// the conclusion was wrong: test2.png is a STRATEGIC-zoom screenshot, near Civ4's zoomed-OUT end where the
+// camera is almost straight down — so ~0.89 aspect was the right reading of the wrong reference, and it got
+// applied as the FULL-tilt angle. At 34° the ground only foreshortens to cos(34°) = 0.83, a 17% squash that
+// does not read as oblique at all; 58° gives 0.53. (test.png, the other sample, is the CITY SCREEN, which
+// Civ4 renders with no pitch whatsoever — CAMERA_CITY_NO_PITCH = 1 — so it is not a reference for this.)
+export const TILT_MAX = 58;        // degrees from vertical at full tilt — Civ4's CAMERA_LOWER_PITCH
 export const TILT_IN = 5;          // band where the pitch starts (BAND.LOCALE, where 3D takes the ground)
 export const TILT_FULL = 6.5;      // band where it reaches TILT_MAX (half way through PLOT)
 

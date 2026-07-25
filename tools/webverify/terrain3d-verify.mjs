@@ -259,10 +259,22 @@ const tilted = await (async () => {
       }
     }
     const st = t3.terrain3dStats();
+    // MEASURED ALONG THE CAMERA'S RIGHT AXIS, not along due east.
+    //
+    // The invariant being tested is "the pitch must not secretly rezoom the world", and the direction it
+    // lives in is the one a pitched camera leaves unforeshortened — its own right axis. While the camera only
+    // pitched, that WAS due east (a pitch about the x axis preserves x distances), so plotPxAt's east step
+    // measured it for free. Once the camera also yaws, an east step runs partly into the screen and comes
+    // back short by exactly sqrt(cos²yaw + sin²yaw·cos²tilt) — 0.80 at yaw 45°/tilt 58°, which is the camera
+    // working correctly, not a zoom. In source space the right axis is (cos yaw, −sin yaw).
+    const yr = (st.yaw || 0) * Math.PI / 180;
+    const rd = [Math.cos(yr), -Math.sin(yr)];
+    const o = project(c[0], c[1], 0), e = project(c[0] + rd[0], c[1] + rd[1], 0);
+    const rightPx = Math.hypot(e[0] - o[0], e[1] - o[1]);
     return {
       band: +band().toFixed(2), tilt: +tiltAt(band()).toFixed(2), separable: separable(),
       focusOffset: [+(back[0] - VIEW.w / 2).toFixed(3), +(back[1] - VIEW.h / 2).toFixed(3)],
-      plotPx: +plotPxAt(c[0], c[1]).toFixed(3), affineScale: +affineScale.toFixed(3),
+      plotPx: +rightPx.toFixed(3), eastPx: +plotPxAt(c[0], c[1]).toFixed(3), affineScale: +affineScale.toFixed(3),
       lift: +lift.toFixed(1), peaks, st,
     };
   });
@@ -363,8 +375,9 @@ console.log(`  tilt ${tilted.tilt}° · projector installed=${tilted.st.installe
   ` · exaggeration ${tilted.st.exag}`);
 console.log(`  ${tilted.st.meshes} meshes / ${tilted.st.triangles} tris · vertex height range ` +
   `${JSON.stringify(tilted.st.vertexY)} source px`);
-console.log(`  focus holds the viewport centre to [${tilted.focusOffset}] px · ` +
-  `plot ${tilted.plotPx}px vs the 2D camera's ${tilted.affineScale}px`);
+console.log(`  focus holds the viewport centre to [${tilted.focusOffset}] px · yaw ${tilted.st.yaw}° · ` +
+  `plot ${tilted.plotPx}px along the camera's right axis vs the 2D camera's ${tilted.affineScale}px ` +
+  `(due east reads ${tilted.eastPx}px — foreshortened by the yaw, as it should be)`);
 if (!(tilted.tilt > 25)) fails.push(`tilted: expected a real pitch at band ${tilted.band}, got ${tilted.tilt}°`);
 if (tilted.separable) fails.push('tilted: the projector must be non-separable — pxr/pyr lie once pitched');
 if (!tilted.st.installed) fails.push('tilted: the 3D projector was never installed, so the 2D layers are unprojected');

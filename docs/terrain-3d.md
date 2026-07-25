@@ -1,13 +1,14 @@
 # 3D terrain — the target look, the spike that validated it, and the plan
 
 **Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`), **PLANNED** P0–P5 (§The plan),
-and **P0–P4b SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to 34° by band 6.5 with
-the whole 2D layer stack projected through the tilted camera, its foliage STANDS UP as ~12k billboards
-that lie flat at the seam and rise with the tilt, and **relief is props**: PEAK plots carry Civ4's own
-mountain models on nearly-flat ground, so the terracing is gone. Gated on a frame diff at the seam against
-the 2D path (mean **4.74**/255 — P4b improved it from 5.12) plus a geometric check that the props land on the
-2D bake's own rects, and a check that ground-anchored content stands on the terrain rather than on its
-sea-level shadow. P5 (prop art at the oblique angle) remains.
+and **P0–P4b SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to **58°** and SWINGS
+**45°** round by band 6.5 (both from Civ4's own `GlobalDefines.xml`; §The camera) with the whole 2D layer
+stack projected through the tilted camera, its foliage STANDS UP as ~12k billboards that lie flat at the seam
+and rise with the tilt, and **relief is props**: PEAK plots carry Civ4's own mountain models on nearly-flat
+ground, so the terracing is gone. Gated on a frame diff at the seam against the 2D path (mean **4.73**/255 —
+P4b improved it from 5.12) plus a geometric check that the props land on the 2D bake's own rects, and a check
+that ground-anchored content stands on the terrain rather than on its sea-level shadow. P5 (prop art at the
+oblique angle) remains.
 
 ## The target
 
@@ -423,6 +424,12 @@ Three things follow, and they matter more than any tuning done so far:
    barely moves. It is still correct and still needed for the gentle relief that remains — but the 66 px it was
    correcting was mostly relief that should not have been there.
 
+> **SUPERSEDED 2026-07-25 by §The camera: pitch and yaw.** The paragraph below concluded the camera was
+> close enough to leave alone. It was wrong, and wrong in a way worth keeping visible: it measured the tile
+> aspect in `test2.png` — a *strategic-zoom* screenshot, near Civ4's zoomed-OUT end where the camera is
+> almost straight down — and then compared that reading against `TILT_MAX`, which is the *deep-zoom* angle.
+> Right measurement, wrong reference. Civ4's own `GlobalDefines.xml` gives the answer outright.
+
 What is NOT the gap: the camera. Measured tile aspect in the target is ≈0.89, i.e. **~27° from vertical** (rough
 — two regions gave inconsistent tile sizes, so read it as 25–35°) against our 34°. And the target's ZOOM is about
 a band shallower than where the gates have been comparing: tiles are ~45–77 px in a 2241 px frame, so **~30–50
@@ -527,6 +534,68 @@ wants are in there.
 and it is one command to reproduce from a local install. But CI has no game install, so anything baked from it
 must have its OUTPUT committed — which is already how the tree and flag atlases work, so the pattern exists; it
 just has to be a deliberate choice rather than an accident.
+
+## The camera: pitch and yaw — SHIPPED 2026-07-25
+
+Once relief became props the terrain was right and the view still did not read as oblique. Two separate
+causes, and neither was measurable from a screenshot; both come from **Civ4's own data**.
+
+**Pitch: `TILT_MAX` 34° → 58°.** `Assets/XML/GlobalDefines.xml`:
+
+| define | value | meaning |
+|---|---|---|
+| `CAMERA_UPPER_PITCH` | −90 | fully zoomed out — straight down |
+| `CAMERA_LOWER_PITCH` | −32 | fully zoomed in — 32° above the horizon, i.e. **58° from vertical** |
+| `CAMERA_CITY_NO_PITCH` | 1 | the city screen has no pitch at all |
+
+So Civ4 sweeps 0 → 58° from vertical as you descend, which is exactly the shape of `tiltAt`'s ramp. At the
+old 34° the ground only foreshortened to cos(34°) = **0.83** — a 17% squash that reads as a slightly
+squashed top-down map, not as an oblique one. 58° gives **0.53**. (And `CAMERA_CITY_NO_PITCH` settles what
+`tools/samples/test.png` is: the *city screen*, correctly top-down. It is not a reference for this.)
+
+**Yaw: 0° → 45°, ramped with the tilt.** A pitch has to lean somewhere, and leaning due south means the
+axis it compresses is north-south — so every east-west plot and province edge in the frame collapses into
+long screen-horizontal seams. That is what "looking down the seams between the plots" is, and **no amount of
+pitch fixes it**: the grid is axis-aligned with the screen. Rendered and compared at 0/45/90:
+
+| yaw | result |
+|---|---|
+| 0° | one whole family of edges collapses — the seams read as stacked horizontal lines |
+| **45°** | **neither family is screen-aligned; both read as diagonals. The classic isometric answer, and the right one** |
+| 90° | a square grid is symmetric under it, so this merely swaps *which* family collapses |
+
+It ramps with the tilt rather than applying at every band, because a yaw at tilt 0 would rotate the flat
+world map and the seam guarantee is that band 5 hands over an identical picture. So the world map stays
+north-up and the rotation arrives with the pitch, as part of the same move into Ground. `?yaw=<deg>`
+overrides it for comparison, like `?props=0`.
+
+**The yaw broke two things that had silently assumed a pitch-only camera**, both fixed:
+
+- **Every billboard sheared into a shard.** `propGeometry` hard-coded the quad's right axis as world **+X**
+  and its up as `(0, sin θ, −cos θ)`. Correct while the camera only pitched; wrong the moment it yaws.
+  `cameraBasis(tilt, yaw)` now derives both from the same lookAt basis three itself builds —
+  right = `(cos ψ, 0, −sin ψ)`, up = `(−cos θ sin ψ, sin θ, −cos θ cos ψ)` — which collapse to the old
+  hard-coded pair at yaw 0. Contact shadows rotate with it too.
+- **The gate's magnification check measured the wrong direction.** It asserted that a due-EAST step's screen
+  length equals the 2D camera's scale, which held for free while the camera only pitched (a pitch about the
+  x axis preserves x distances). Under a yaw an east step runs partly into the screen and comes back short by
+  exactly `sqrt(cos²ψ + sin²ψ·cos²θ)` = 0.80 at 45°/58° — the camera working, not a zoom. The invariant it
+  was really testing lives along the camera's **right axis**, which in source space is `(cos ψ, −sin ψ)`; it
+  now measures there and matches the 2D scale **exactly** (52.76 vs 52.76), so this is a sharper assertion
+  rather than a relaxed one.
+
+**Is the heightmap reaching the mesh?** Yes, and since P4b it is the dominant source of relief — measured
+over the 75,967 plots loaded at band 6.91, with **0 missing an elevation**:
+
+| source | plot-widths |
+|---|---|
+| the imported heightmap (elevation 87–174 of 255, mean 117, × `ELEV` 6) | **2.05** |
+| a PEAK plot's relief | 0.80 |
+| a HILL plot's relief | 0.40 |
+
+That is the intended reversal: the heightmap now contributes ~2.5× what a peak does, where before PEAK 3.4
+dwarfed it. The absolute mesh range is [0, 4.834] source px because the elevation floor is deliberately not
+subtracted (a uniform offset is invisible from any camera — see `heightfield.plotHeight`).
 
 ### P5 — prop art at the oblique angle — art in hand, 94% readable
 
