@@ -8,8 +8,10 @@
 //                   10.0.1.0 has neither, so its header is 5 bytes shorter.
 //   block stream    versions in [10.0.1.0, 10.2.0.0) prefix EVERY block with a u32 object index — a
 //                   short-lived NetImmerse/early-Gamebryo framing that 20.0.0.4 dropped. See readBlock.
-//   NiGeometry      the named-material arrays (count + names + extra data + active material) are a LATE
-//                   addition; before 20.0.0.4 the Has Shader flag follows the skin ref directly.
+//   NiGeometry      the named-material arrays (count + names + extra data + active material) arrived at
+//                   20.2.0.5 — LATER THAN ANY VERSION CIV4 SHIPS — so in every file here the Has Shader
+//                   flag follows the skin ref directly. Reading a phantom count was this file's most
+//                   expensive single bug; see the note on niTriShape.
 //   NiTriShapeData  the Has Triangles / Has Points flag arrived at 10.1.0.0; at 10.0.1.0 the indices follow
 //                   the count with no flag between them.
 //   NiGeometryData  Group ID and the Keep/Compress flag bytes arrived at 10.1.0.0, so 10.0.1.0 has none
@@ -39,7 +41,8 @@
 import fs from 'node:fs';
 
 // The packed version of the file being parsed, set by parseNif before any block body runs.
-const V_10_0_1_0 = 0x0a000100, V_10_1_0_0 = 0x0a010000, V_10_2_0_0 = 0x0a020000, V_20_0_0_4 = 0x14000004;
+const V_10_0_1_0 = 0x0a000100, V_10_1_0_0 = 0x0a010000, V_10_2_0_0 = 0x0a020000,
+      V_20_0_0_4 = 0x14000004, V_20_2_0_5 = 0x14020005;
 let V = V_20_0_0_4;
 const atLeast = v => V >= v;
 // Every block in [10.0.1.0, 10.2.0.0) is preceded by a u32 object index (0 throughout Civ4's exports).
@@ -88,10 +91,17 @@ function niTriShape(r) {
   const av = niAVObject(r);
   const data = r.i32();                           // NiGeometryData ref
   r.i32();                                         // Skin Instance ref
-  // MaterialData. The named-material arrays are a LATE addition — at 10.0.1.0 the Has Shader
-  // flag follows the skin ref directly, and reading a phantom material count there is what
-  // desynchronised the base-game peaks (the count landed on the next block's string length).
-  if (atLeast(V_20_0_0_4)) {
+  // MaterialData. The named-material arrays arrived at 20.2.0.5 — LATER THAN EVERY VERSION CIV4
+  // SHIPS — so at 10.0.1.0 AND at 20.0.0.4 the Has Shader flag follows the skin ref directly.
+  //
+  // Reading a phantom material count here is the single most expensive bug this file has had. It
+  // desynchronised the base-game peaks, where the count landed on the next block's string length;
+  // and on the C2C BUILDING models it read 3072 materials and threw, which the gap-resync then
+  // reported as "resync failed" hundreds of bytes away. It looked survivable for a long time
+  // because on the two models that were actually in use the 8-byte over-read fell inside a gap run
+  // that the brute-force resync silently re-found. 252 of 638 20.0.0.4 building models did not
+  // survive it. Guarded rather than deleted so the version it really arrives at is recorded.
+  if (atLeast(V_20_2_0_5)) {
     const numMaterials = r.u32();
     for (let i = 0; i < numMaterials; i++) r.str();  // Material Names
     for (let i = 0; i < numMaterials; i++) r.i32();  // Material Extra Data

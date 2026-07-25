@@ -109,8 +109,22 @@ for (let i = 1; i < entries.length; i++) {
   else if (entries[i].offset !== entries[i - 1].offset + entries[i - 1].size) gaps++;
 }
 if (backwards) problems.push(`${backwards} offsets go backwards`);
-// magic-byte spot check: the payload of a .dds must start "DDS ", a .nif "NetImmerse"/"Gamebryo", a .kf(m) too
-const MAGIC = { dds: 'DDS ', nif: 'Gamebryo', kf: 'Gamebryo', kfm: ';Gamebryo' };
+// Magic-byte spot check: each extension's payload must START with one of its known signatures.
+//
+// A .nif may say EITHER "Gamebryo File Format" or "NetImmerse File Format" — the engine was renamed
+// mid-life and Civ4 ships both eras (docs/terrain-3d.md §P4b covers the version differences that
+// matter to the reader). Accepting only "Gamebryo" made C2C0.FPK refuse to extract over
+// art/structures/buildings/herbalist/apothecary.nif, a perfectly good NetImmerse 4.2.2.0 file — a
+// false alarm on a check whose whole job is to be trustworthy, which is the worst kind.
+//
+// Matched as a PREFIX rather than "contains the first four characters", which is both stricter than
+// what it replaced and says what it means.
+const MAGIC = {
+  dds: ['DDS '],
+  nif: ['Gamebryo File Format', 'NetImmerse File Format'],
+  kf:  ['Gamebryo File Format', 'NetImmerse File Format'],
+  kfm: [';Gamebryo KFM File Version', ';Gamebryo'],
+};
 let checked = 0, wrong = [];
 for (const e of entries) {
   if (checked >= 40) break;
@@ -118,8 +132,9 @@ for (const e of entries) {
   const want = MAGIC[ext];
   if (!want || e.size < 32) continue;
   checked++;
-  const head8 = readAt(Math.min(24, e.size), e.offset).toString('latin1');
-  if (!head8.includes(want.slice(0, 4))) wrong.push(`${e.name} (expected ${JSON.stringify(want)})`);
+  const head = readAt(Math.min(32, e.size), e.offset).toString('latin1');
+  if (!want.some(w => head.startsWith(w)))
+    wrong.push(`${e.name} (expected one of ${want.map(w => JSON.stringify(w)).join(', ')}, got ${JSON.stringify(head.slice(0, 24))})`);
 }
 if (wrong.length) problems.push(`${wrong.length}/${checked} sampled payloads have the wrong magic bytes: ${wrong[0]}`);
 

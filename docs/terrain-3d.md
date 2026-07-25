@@ -528,11 +528,52 @@ and it is one command to reproduce from a local install. But CI has no game inst
 must have its OUTPUT committed — which is already how the tree and flag atlases work, so the pattern exists; it
 just has to be a deliberate choice rather than an accident.
 
-### P5 — prop art at the oblique angle
+### P5 — prop art at the oblique angle — art in hand, 94% readable
 
 Buildings and units. Where the C2C asset question lands: pre-rendering from NIF in Blender sidesteps the
 `.kf`/`.kfm` animation-import risk entirely, and the ~700 Firaxis-origin models of ~6,086 need a
 decision. See [`civ4-files.md`](civ4-files.md).
+
+**The building models are extracted and they read.** `art/structures/buildings` across `Art0.FPK` +
+`C2C{0..3}.FPK` + `C2CPatch0.FPK` yields **705 `.nif` and 1,361 `.dds` over 279 building directories
+(46.8 MB)** into `.civ4-fpk`. Extract with the patch archive LAST, so its 15 overrides win:
+
+```
+node tools/fpk/unpack.mjs extract "<game>/Assets/Art0.FPK"                        .civ4-fpk art/structures/buildings
+node tools/fpk/unpack.mjs extract "<game>/.../Caveman2Cosmos/Assets/C2C0.FPK"     .civ4-fpk art/structures/buildings   # then C2C1..C2C3
+node tools/fpk/unpack.mjs extract "<game>/.../Caveman2Cosmos/Assets/C2CPatch0.FPK" .civ4-fpk art/structures/buildings
+```
+
+Two things had to be fixed before any of that worked, and both were **false confidence rather than missing
+features** — which is the pattern worth carrying into the rest of P5:
+
+1. **`C2C0.FPK` refused to extract**, reporting a bad magic on
+   `art/structures/buildings/herbalist/apothecary.nif`. The file is fine: it is NetImmerse 4.2.2.0, and the
+   validator's magic table listed only `"Gamebryo"` for `.nif` while its own comment said both were valid.
+   A safety check that cries wolf is worse than none, so it now prefix-matches a list (which is also
+   stricter than the "contains the first four characters" test it replaced).
+2. **`NiGeometry`'s named-material arrays do not exist at 20.0.0.4 either** — they arrived at 20.2.0.5,
+   later than anything Civ4 ships. The reader had been consuming a phantom 8 bytes there since it was
+   written. It survived because on the only two models in use the over-read landed inside a gap run that
+   the brute-force resync silently re-found; on the buildings it read *3072 materials* and threw, which the
+   resync then reported as a failure hundreds of bytes from the cause.
+
+| version | files | parse | note |
+|---|---|---|---|
+| 20.0.0.4 | 638 | 604 (95%) | 252 of these failed before the material fix |
+| 10.1.0.0 | 50 | 46 (92%) | readable at all only since P4b |
+| 10.2.0.0 | 12 | 12 (100%) | the existing guards already cover it |
+| 4.2.2.0 | 5 | 0 | unsupported; a fourth era, not worth it for 5 files |
+| **total** | **705** | **662 (93.9%)** | 1,450 meshes, 310k triangles |
+
+The remaining 43 are mostly the gap-resync giving up on long runs of unparsed block types
+(`alhambra.nif`, `gauricentervillage.nif`). That is the next thing to push on if 94% is not enough — but
+94% of 279 buildings is not the blocker P5 has left.
+
+**One consequence to be aware of:** `med_europe.nif` — the city sprite — went from 1 mesh to 20, because
+19 of its cluster were being lost to the same bug. Nothing consumes that atlas today (the city marker is
+screen-space; see `plots.mjs`), so the committed `trees-city.webp` is stale rather than wrong. Rebake it
+deliberately if anything starts drawing it.
 
 ## Retiring the 2D path — when, and how much of it
 
