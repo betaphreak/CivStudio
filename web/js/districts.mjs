@@ -10,7 +10,7 @@
 //
 // Two sources: the map's urban plots (BUNDLE, geographic — every city) and the live session
 // snapshot (the POV colony's placed buildings, from the D3 district feed). Both fade in deep.
-import { P, ctx, pxr, pyr, px, py, provOnScreen, isPolitical, BUNDLE } from "./core.mjs";
+import { P, ctx, pxr, pyr, px, py, plotPxAt, provOnScreen, isPolitical, BUNDLE } from "./core.mjs";
 import { drawBuildIcon } from "./build-catalog.mjs";
 import { bandAlpha } from "./bands.mjs";
 import { liveColony } from "./overlays/live.mjs";
@@ -154,7 +154,7 @@ export function drawDistricts() {
   const icons = bandAlpha([4.5, 5.5, 6.0, 6.8]); // building icons: fade out as footprints take over
   const feet = bandAlpha([6.0, 6.8]);            // band-6 footprints (docs/zoom-bands.md)
   if (chips <= 0.01 || isPolitical()) return;
-  const plotPx = pxr(1) - pxr(0);
+  const plotPx = plotPxAt();
   if (plotPx < 2) return;            // too small to read
   ctx.save();
 

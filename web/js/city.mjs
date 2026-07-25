@@ -8,7 +8,7 @@
 //
 // Real data only: markUrbanPlots flags each city-core plot `urban`; we draw one marker per flagged
 // plot. No new server data — these are the plots drawPlots already streams.
-import { P, ctx, pxr, pyr, provOnScreen, isPolitical } from "./core.mjs";
+import { P, ctx, pxr, pyr, plotPxAt, provOnScreen, isPolitical } from "./core.mjs";
 import { bandAlpha } from "./bands.mjs";
 
 // one small settlement pip centred on an urban plot: a soft stone disc with a thin keyline and a
@@ -48,7 +48,7 @@ function cityCenter(p) {
 export function drawCity() {
   const a = bandAlpha([3.5, 4.5]);   // fade in through Province→Terrain, then hold (locatable in-region)
   if (a <= 0.01 || isPolitical()) return;
-  const plotPx = pxr(1) - pxr(0);
+  const plotPx = plotPxAt();
   ctx.save();
   ctx.globalAlpha = a;
   for (const p of P) {

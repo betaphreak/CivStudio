@@ -4,7 +4,7 @@
 // (hover/select) and bandcaption.mjs (viewport focus) can ask without pulling in the whole panel
 // module. The map is a finite sheet (docs/realms.md §Delete the wrap), so the cursor falls in exactly
 // one world — no east-west wrap copies to shift into and retry.
-import { P, cam, VIEW, pxr, pyr, px, py, provBoxHas } from "./core.mjs";
+import { P, pxr, pyr, px, py, provBoxHas } from "./core.mjs";
 import { atLeast, BAND } from "./bands.mjs";
 import { bonusIconRect } from "./bonusicons.mjs";
 

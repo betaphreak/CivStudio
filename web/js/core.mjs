@@ -1,5 +1,6 @@
 "use strict";
 import { resolveBase } from "./server-base.mjs";
+import { invAffine1, scaleAt } from "./project-math.mjs";
 
 const BUNDLE = window.BUNDLE;
 
@@ -44,14 +45,58 @@ function fitView(w, h) {
 // base (unzoomed) screen coords, then the camera
 const baseXr = sp => VIEW.dx + (sp - MAP.x0) / (MAP.x1 - MAP.x0) * VIEW.dw;
 const baseYr = sp => VIEW.dy + (sp - MAP.y0) / (MAP.y1 - MAP.y0) * VIEW.dh;
+// The SEPARABLE FAST PATH of the active projector (the seam is just below). Kept as direct arithmetic
+// rather than routed through PROJ for two reasons: provOnScreen alone runs ~50k times a frame (see the
+// measured note further down) and the general path returns an [x, y] pair, which at that rate is real
+// allocation; and this way installing the seam changes no pixel anywhere.
+//
+// Valid ONLY while PROJ.separable. A tilted projector makes screen x depend on the source y as well,
+// at which point these two lie, and their call sites have to move to project(). docs/terrain-3d.md
+// §The plan → P2 carries that conversion list.
 const pxr = sp => cam.x + cam.k * baseXr(sp);
 const pyr = sp => cam.y + cam.k * baseYr(sp);
 const px = lon => pxr(sxSrc(lon));
 const py = lat => pyr(sySrc(lat));
+
+// ---- the projection seam (docs/terrain-3d.md §The plan → P0) ----
+// ONE swappable object mapping the map's source-pixel space to screen space. The 3D terrain renderer
+// installs its camera's projection here, and every layer that asks through project()/unproject()
+// follows the tilt without being touched. js/project-math.mjs explains why the JOINT signature — not
+// the separable pxr/pyr pair above — is the real seam.
+//
+// `h` is ground height in source-pixel units: one plot IS one source pixel (plotcanvas.blitProvinceCanvas
+// blits a province offscreen straight through pxr/pyr), so the spike's PEAK 3.4 / HILL 1.0 are already
+// in these units and need no conversion. The 2D camera ignores h — its map is flat.
+const affineProjector = {
+  separable: true,
+  project: (sx, sy) => [cam.x + cam.k * baseXr(sx), cam.y + cam.k * baseYr(sy)],
+  unproject: (mx, my) => [
+    invAffine1(mx, cam.x, cam.k, VIEW.dx, VIEW.dw, MAP.x0, MAP.x1),
+    invAffine1(my, cam.y, cam.k, VIEW.dy, VIEW.dh, MAP.y0, MAP.y1),
+  ],
+};
+let PROJ = affineProjector;
+/** Install a projector (the 3D renderer's camera); no argument restores the 2D one. Bumps baseVersion,
+ *  because every cached province Path2D and every debounced readout keys off it — a projector swap that
+ *  forgot to would paint the new projection through stale geometry. */
+function setProjector(p) { PROJ = p || affineProjector; S.baseVersion++; }
+/** Is the active projection separable — i.e. are pxr/pyr, and axis-aligned source-space rects, valid? */
+const separable = () => PROJ.separable;
+/** Source pixel (sx, sy) at ground height `h` → screen [x, y]. */
+const project = (sx, sy, h) => PROJ.project(sx, sy, h);
+/** Screen (mx, my) → source pixel [sx, sy] on the ground plane. Was hand-rolled in latAtScreenY (now
+ *  routed through here) and, differently, inside hittest.plotAt (which P2 replaces with a raycast). */
+const unproject = (mx, my) => PROJ.unproject(mx, my);
+/** One plot's on-screen size in px at a source-space point — the honest form of the `pxr(1) - pxr(0)`
+ *  idiom the layer code used to spell out (project-math.scaleAt says why it must become a function of
+ *  position). Under the 2D camera the answer is identical everywhere, so the arguments are optional and
+ *  the fast path reproduces the old expression exactly. */
+const plotPxAt = (sx = 0, sy = 0) => PROJ.separable ? pxr(sx + 1) - pxr(sx) : scaleAt(project, sx, sy);
+
 // inverse of py: the latitude at a screen y (undo camera → crop rect → source pixel → the
 // Mercator sySrc). Used to colour the ocean by climate band down the viewport.
 const latAtScreenY = y => {
-  const sp = MAP.y0 + (((y - cam.y) / cam.k - VIEW.dy) / VIEW.dh) * (MAP.y1 - MAP.y0);
+  const sp = unproject(0, y)[1];
   const t = (1 - 2 * sp / MAP.H) * Math.PI;
   return (2 * Math.atan(Math.exp(t)) - Math.PI / 2) * 180 / Math.PI;
 };
@@ -309,4 +354,5 @@ export const S = {
   camBeforeFocus: null,
 };
 
-export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py,
+  project, unproject, setProjector, separable, plotPxAt, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };

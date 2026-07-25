@@ -1,7 +1,7 @@
-# 3D terrain — the target look, the spike that validated it, and what it would take
+# 3D terrain — the target look, the spike that validated it, and the plan
 
-**Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`). The approach is **validated**;
-nothing is built in `web/`. This doc is the seed of the direction, not a plan yet.
+**Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`); the approach is **validated**
+and **PLANNED** (§The plan, decided 2026-07-25). Nothing is built in `web/` yet.
 
 ## The target
 
@@ -76,31 +76,165 @@ is explicit that foliage must sit over rivers, via province-level passes rather 
 Not a real problem, but do not mistake it for one later: the **stepped silhouette** in the shots is an
 artifact of rendering one province in isolation. Neighbours would fill it.
 
-## What a real implementation would need
+## What makes this additive rather than a rewrite
 
-Roughly in dependency order. None of this is planned yet.
+Three properties of the existing frontend, all verified against the code:
 
-1. **A renderer.** Browser: three.js or Babylon (the spike used three.js and it was adequate within a
-   day). Native: Godot/Unity, which forks the client — see the discussion recorded in
-   [`pixi-migration-plan.md`](pixi-migration-plan.md).
-2. **Terrain chunking**, one mesh per province, textured by that province's existing offscreen. Streams
-   as you pan, exactly like the plot grids already do.
-3. **LOD across the band spine.** `drawPlots` already returns below `K_PLOT`, which hands you the LOD
-   boundary for free: keep the flat baked raster at Atlas as today, mesh only from k≥5. Worst case a few
-   hundred thousand triangles.
-4. **Camera.** Orthographic top-down at Atlas (looks like today's map) → oblique perspective at Ground.
-   Civ4 and Civ6 both do this, and it dissolves the projection-discontinuity problem a 2D isometric
-   shear would have created at the Overland→Ground seam.
-5. **Upright props** (see above), then depth-sorting and anchor tuning.
-6. **Prop art at the oblique angle** — buildings, units. This is where the C2C asset question lands:
-   pre-rendering from NIF in Blender sidesteps the `.kf`/`.kfm` animation-import risk entirely, and the
-   ~700 Firaxis-origin models of ~6,086 need a decision. See `docs/civ4-files.md`.
-7. **Hit-testing** — the inverse camera transform for screen→plot, threaded through `hittest.mjs`,
-   `maptip`/`plotlabel` hover and the city screen.
+**The whole camera is two functions.** `core.mjs:47-48`:
 
-**What does not change:** the server, `/api/bundle`, the bake pipeline, and all ~13.5k lines of DOM UI.
+```js
+const pxr = sp => cam.x + cam.k * baseXr(sp);
+const pyr = sp => cam.y + cam.k * baseYr(sp);
+```
+
+Every layer, label, icon, highlight and hit-test in ~13.5k lines goes through them. Make them *project
+a source-pixel through the 3D camera at ground height* and the point-anchored half of the 2D overlay
+follows the tilt for free. [`pixi-migration-plan.md`](pixi-migration-plan.md) found the same property
+from the other side ("the camera reduces to one matrix") and filed it as a Pixi fact; it is the
+frontend's own.
+
+**The compositing order inverts, and that is what unblocks it.** Pixi died because `#gl` sat *beneath*
+`#map` behind a wall of opaque full-area fills, forcing strictly back-to-front migration — and `plots`
+was entry 3 in `layers.LAYERS`, so it could only ever be a flagged spike. A 3D renderer takes the
+**entire back of the frame wholesale** (`raster` + `plots` + `seaBase`), which is one cut at a natural
+seam, not an incremental migration. The constraint that closed Pixi does not apply.
+
+**Plot coords are source pixels.** `q.x`/`q.y` feed `pxr`/`pyr` directly
+(`plotcanvas.blitProvinceCanvas`), so one plot = one source px and the spike's tuning is already in
+world units — no conversion.
+
+## The plan
+
+**Decided 2026-07-25.** Two calls shape everything below:
+
+- **3D engages at band 5 (LOCALE, 32×) and deeper only.** Bands 0–4 (Atlas + Overland) keep the
+  canvas-2D path unchanged, pixel-for-pixel. Tilt is 0° at band 5 and ramps to ~32° by band 6.5, so the
+  Overland→Ground regime seam (`band-math.regimeAt`, b=6) *is* the tilt. Nothing below band 5 can regress.
+- **Ground-draped vector layers bake into the province texture**, following the pattern rivers and
+  coast already prove (`buildPlotTexCanvas` stage 4). Per-frame draped content (hover, selection) is the
+  exception and stays projected.
+
+Also load-bearing: `_tcanvas` builds from band 4 (`atLeast(BAND.TERRAIN)`), a full band *below* where
+the mesh turns on, so every visible province already has its texture — no new build machinery. And
+`plotType`/`elevation` already ride the per-plot JSON, so **P0–P1 need no engine, server or bundle
+change**.
+
+### P0 — the projection seam (no three.js)
+
+`pxr`/`pyr` become calls into a swappable projector; the affine one stays the default. Add
+`unproject(sx, sy)` — the inverse exists today only hand-rolled inside `hittest.plotAt` and
+`core.latAtScreenY`.
+
+Acceptance: **pixel-identical** frames via `tools/webverify` at k = 1, 8, 20, 40, 120. Ships and reverts
+alone, and is worth having regardless of what renderer follows.
+
+### P1 — the ground mesh at tilt 0
+
+Vendor `three.module.min.js` **and** `three.core.min.js` (0.185.1) — the module imports the core, which
+is not obvious and cost the spike a debugging round. A `<canvas id="gl">` beneath `#map`; from band 5
+`drawRaster`, `drawSurfacePlots` and `drawSeaBase` suppress, leaving `#map` transparent there so the
+mesh shows through.
+
+- **A global corner-height store** keyed on `(x, y)` source pixel, written by each province as its plots
+  load and read by every mesh. Corner height = mean of the up-to-4 plots touching it, then one smoothing
+  pass. Heights straight from the spike: **PEAK 3.4, HILL 1.0, elevation ×6, 1 smoothing pass.**
+
+  **Derived in the client, deliberately NOT baked into the bundle.** A corner height is a mean over
+  `plotType` + `elevation`, both already in the per-plot JSON, so baking it ships millions of derived
+  floats to restate bytes the client has — and it would freeze the height model behind a `MAP_VERSION`
+  bump, a ~24-minute CI rebake and a plot-cache clear, when the tuning above is a guess from one province
+  that P1 exists to iterate on. Keying the store **globally** rather than per-province is what solves the
+  seam instead: a boundary corner takes contributions from whichever provinces have loaded and the mesh
+  rebuilds when the neighbour lands — transiently wrong at an off-screen edge, self-healing, exactly how
+  the plot layer already builds under its 6 ms/frame budget.
+
+  What would reverse this: height ceasing to be **cosmetic**. The moment it feeds the sim (movement cost,
+  line of sight, building placement) or stops being a pure function of per-plot fields (carved valleys,
+  hydrology-consistent terrain, the engine z-levels in [`zoom-bands.md`](zoom-bands.md)), it is world data
+  and must come from the bundle so the engine and client cannot disagree. A smoothing kernel wider than
+  one local pass is the same argument — a wide kernel is genuinely global and does not converge cleanly
+  from progressive loads.
+- **One `BufferGeometry` per province**, one quad per plot that exists (so the mesh carries the real
+  silhouette, holes and all), **rebuilt when a *neighbouring* province's plots land** — otherwise every
+  province edge is a cliff. This is the hazard the spike punted on as a rendering-in-isolation artifact:
+  neighbours only fill the step if they *share corner heights*, and plot grids arrive per-province
+  asynchronously via `loadPlots`.
+- **`CanvasTexture` on the existing `p._tcanvas`**, WeakMap-keyed on the canvas object so invalidation is
+  free (every rebuild allocates a fresh canvas, so the existing `p._tcanvas = null` hooks suffice). UVs
+  must account for `buildPlotTexCanvas`'s `PAD = 2` cells of transparent margin. A province over
+  `MAX_TEX_PLOTS` (20 000) never builds a `_tcanvas` at all — it falls back to `_pcanvas` with
+  `NearestFilter`.
+- **Sea provinces get flat meshes at y = 0** with their own `_tcanvas` (`buildPlotTexCanvas` already
+  handles water), plus a horizon plane. `sea.drawSeaBase` is the one layer above the cut that cannot be
+  projected — it fills the viewport from the latitude at each screen row and is not geometry at all — so
+  it has to move here.
+- **Orthographic camera** reproducing `baseXr`/`baseYr` exactly, plus the spike's light (directional
+  `0xfff3e0` @2.1, az 315°, alt 38°; ambient `0x8fa8c8` @0.55).
+
+Acceptance, in this order: (1) with lighting flat (ambient 1.0, sun off) the frame diffs
+**near-identical** to today's 2D at k = 40 and k = 120 — this is the real gate, because at tilt 0 the
+mesh is the same picture; (2) then the sun goes on and the comparison is `shot-civ-oblique.png`.
+**Test for pixels, not placement**: Pixi rendered a perfect frame that was 100% occluded and the
+placement assertion passed.
+
+### P2 — the tilt
+
+`tiltAt(band)` lands in `band-math.mjs` (pure and unit-tested, like everything else there): 0° at band
+5 → ~32° at band 6.5. The projector swaps to the camera matrix, and the point-anchored half of `LAYERS`
+follows for free — labels, bonus and trade-good icons, city plates, districts, live caravans, cave
+entrances, realm arrows, `S.markers`.
+
+- `hittest.plotAt` becomes a `Raycaster` against the meshes; `provinceAt` stays polygon-based over
+  projected rings.
+- Province borders and the lake / sea-cell / impassable / political fills move **into**
+  `buildPlotTexCanvas` as a new stage (after rivers, before features), so they drape over relief for
+  free and cost nothing per frame. `drawHoverHighlight`/`drawSelectedHighlight` change per frame and
+  stay projected — accept their edges cutting relief, or promote them to 3D lines later.
+- Horizon: fog + far plane. At tilt 0 `clampPan` guarantees the map fills the viewport; an oblique
+  perspective camera sees past its edge.
+
+All the regression risk lives in this phase.
+
+### P3 — upright props
+
+The largest single piece, and surgery on the densest code in the frontend. `plots.mjs:346-353` draws
+`featureSprite`/`improvementSprite` into the province offscreen, so on a lit slope the foliage reads as
+top-down symbols lying on the ground — visible in `shot-civ-oblique.png`.
+
+Emit per-plot prop instances instead, drawn as an `InstancedMesh` of billboards **whose pitch follows
+the camera tilt**: at tilt 0 they lie flat and look exactly like today, so there is one code path and no
+second bake. Reuse `mkRng`/`treeGroupFor`/`stampTrees` placement verbatim so nothing moves. The ground
+keeps base terrain, edge/corner blends, snow, coast, rivers and urban; it loses foliage and the Civ6
+feature/improvement overlays.
+
+The ordering constraint at `plots.mjs:339` — foliage must sit over rivers, via province-level passes
+rather than per-plot — is satisfied by construction once the props stand above the surface.
+
+### P4 — interactions and polish
+
+`maptip`/`plotlabel` hover, the city screen, districts anchored to real mesh height, the minimap, and a
+no-WebGL fallback — which is cheap, because 3D only engages at band 5, so the 2D path below it *is* the
+fallback (clamp the zoom).
+
+### P5 — prop art at the oblique angle
+
+Buildings and units. Where the C2C asset question lands: pre-rendering from NIF in Blender sidesteps the
+`.kf`/`.kfm` animation-import risk entirely, and the ~700 Firaxis-origin models of ~6,086 need a
+decision. See [`civ4-files.md`](civ4-files.md).
+
+### What it costs, and what does not change
+
+`three.module.min.js` + `three.core.min.js` = **751 KB raw / ~180 KB gzipped**, committed into a
+dependency-free `web/` that auto-deploys to prod on every push. Pixi's 780 KB was cited as a reason to
+revert it — but that was 780 KB for a URL-flagged experiment; the same weight for the shipping renderer
+is a different trade, and it is made here deliberately rather than discovered later.
+
+**Unchanged:** the server, `/api/bundle`, the bake pipeline, bands 0–4, and all ~13.5k lines of DOM UI.
 The city plates in the target are already how `labels.mjs`/`city.mjs`/`districts.mjs` work — screen-space
 content anchored to world positions.
+
+The **native** alternative (Godot/Unity) forks the client and is not planned; see the discussion recorded
+in [`pixi-migration-plan.md`](pixi-migration-plan.md).
 
 ## How to re-run the spike
 

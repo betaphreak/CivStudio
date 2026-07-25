@@ -2,7 +2,7 @@
 // Resource iconography, both scales: the per-PLOT bonus glyphs (drawn as a screen-space overlay over
 // the province grids drawPlots just painted) and the per-PROVINCE trade-good icon (one per province,
 // its own layer). Split out of plots.mjs — they share the two GameFont-style atlases and nothing else.
-import { P, BONUS_ICONS, TRADE_GOODS, cam, ctx, px, py, pxr, pyr, provSrcBox, provOnScreen } from "./core.mjs";
+import { P, BONUS_ICONS, TRADE_GOODS, cam, ctx, px, py, pxr, pyr, plotPxAt, provSrcBox, provOnScreen } from "./core.mjs";
 import { bandAlpha, kBand, atLeast, BAND } from "./bands.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
@@ -25,7 +25,7 @@ const tgImg = loadArt(TRADE_GOODS && TRADE_GOODS.icons, () => { tgReady = true; 
 const BONUS_HIDE_AT = 16;       // no resource icons at this zoom or below (textures only just appear)
 export function drawBonusOverlay(vis) {
   if (cam.k <= BONUS_HIDE_AT || !vis.length) return;
-  const plotPx = pxr(1) - pxr(0);                      // one plot's on-screen size (tracks zoom AND viewport)
+  const plotPx = plotPxAt();                           // one plot's on-screen size (tracks zoom AND viewport)
   const size = bonusIconSize();
   const inset = Math.max(0.5, plotPx * 0.06);          // nudge off the very corner (frac of a plot)
   const useIcons = BONUS_ICONS && biReady;
@@ -59,7 +59,11 @@ export function drawBonusOverlay(vis) {
 // tooltip so pointing at the big bottom-left-anchored glyph hits its owning plot, not the cell under it.
 export function bonusIconRect(q) {
   if (cam.k <= BONUS_HIDE_AT || !q || !q.bonus) return null;
-  const plotPx = pxr(1) - pxr(0), size = bonusIconSize(), inset = Math.max(0.5, plotPx * 0.06);
+  // plotPxAt() with no arguments — an ORIGIN probe, matching drawBonusOverlay, which hoists one probe
+  // out of its plot loop. The two must agree or the tooltip target drifts off the glyph it belongs to,
+  // so when a tilted projector makes plot size vary with position (docs/terrain-3d.md §P2) these two
+  // move to a per-plot probe TOGETHER — converting either one alone is the silent-drift bug.
+  const plotPx = plotPxAt(), size = bonusIconSize(), inset = Math.max(0.5, plotPx * 0.06);
   const x = pxr(q.x) + inset, y = pyr(q.y + 1) - inset - size;
   return [x, y, x + size, y + size];
 }
