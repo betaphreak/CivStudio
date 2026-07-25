@@ -24,6 +24,7 @@ import { loadGameFont, resourceCellRGBA, CELL as GF_CELL } from './gamefont.mjs'
 import { get as civ4Get, resolveArt as civ4ResolveArt, prefetch as civ4Prefetch } from './civ4.mjs';
 import * as civ6 from './civ6.mjs';
 import { decodeCached, resampleRGBA, octagonBacking, compositeCentered } from './imgutil.mjs';
+import { beachRampFromAtlas } from './beachramp.mjs';
 import { prefetch as anbPrefetch, get as anbGet } from './anbennar.mjs';
 import { bakeNifGroup, renderRouteNif, routeHalfExtent } from '../tools/nifbake/render.mjs';
 import { PEAK_GROUP, PEAK_MANIFEST, peakVariants } from '../tools/fpk/bake-peaks.mjs';
@@ -324,6 +325,9 @@ await (async () => {
     'Art/Terrain/textures/water/seadetail.dds', 'Art/Terrain/textures/water/shoredetail.dds',
     'Art/Terrain/textures/water/seablend.dds', 'Art/Terrain/textures/water/seatropblend.dds',
     'Art/Terrain/textures/water/seapolblend.dds', 'Art/Terrain/textures/water/seadeepblend.dds',
+    // the coast blend atlases the beach ramps are rectified out of (bakeBeachRamps)
+    'Art/Terrain/textures/coastblend.dds', 'Art/Terrain/textures/coasttropblend.dds',
+    'Art/Terrain/textures/coastpolarblend.dds',
     'Art/Terrain/features/icepack/icepack_1024.dds', 'Art/Terrain/features/treeleafy/trees_1024.dds',
     'Art/Terrain/features/savanna/palms_1024.dds', 'Art/Terrain/features/swamp/trees1.dds');
   arts.push(...routeArtPaths());   // the road/rail segment nifs + their textures (bakeRoutes)
@@ -348,6 +352,7 @@ const improvementOverlays = bakeImprovementOverlays(); // {IMPROVEMENT_*: {src,w
 const districtTiles = bakeDistrictTiles();   // {DISTRICT_TYPE: {src,w,h}} flat Civ6 SV district hex chips, or null
 const fow = bakeFowTiles();                   // {HATCH_*|PARCHMENT: {src,tile}} Civ6 fog-of-war tiles, or null (art only — no RevealedMap yet)
 const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} climate sea + shore colours
+const beach = bakeBeachRamps();              // {trop, temp, polar} real Civ4 sand ramps, or null (hand-picked sand)
 const plotProvinceCount = computeWaterBboxes(provinces);
 
 // encode every queued art asset to WebP (one async pass now the bakes have run); imgSizes feeds the
@@ -468,7 +473,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands,
+  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -489,6 +494,7 @@ console.log(`  plots: ${plotProvinceCount} provinces have a canonical grid (serv
 console.log(`  terrain tiles: ${terrainTiles ? terrainTiles.src + ' (' + Object.keys(terrainTiles.cols).length + ' textures)' : 'skipped (no terrain-art.json / LFS textures)'}`);
 console.log(`  river tile: ${river ? river.src : 'skipped (no allriverssmall.dds / LFS)'}`);
 console.log(`  sea tile: ${sea ? sea.src : 'skipped (no seadetail.dds / LFS)'} · bands trop/temp/polar ${JSON.stringify([seaBands.trop, seaBands.temp, seaBands.polar])}`);
+console.log(`  beach ramps: ${beach ? `real Civ4 sand, temp ${beach.temp[0].join(',')} → ${beach.temp[beach.temp.length - 1].join(',')}` : 'skipped (no coastblend.dds) — renderer keeps its hand-picked sand'}`);
 console.log(`  ice tile: ${ice ? ice.src : 'skipped (no icepack_1024.dds / LFS)'}`);
 console.log(`  improvement overlays: ${improvementOverlays ? Object.keys(improvementOverlays).length + ' Civ6 SV (placement deferred)' : 'skipped (no Civ6 depot)'}`);
 
@@ -1590,6 +1596,26 @@ function bakeSeaBands() {
     // brighter, lighter version of the open water. (shoreblend itself is a neutral sandy blend
     // with no usable water hue, like the land blends.) See docs/coastlines.md Phase D.
     shore: band('Art/Terrain/textures/water/seatropblend.dds', [116, 178, 196]),
+  };
+}
+
+// The BEACH ramps — the real Civ4 sand, one per climate band (docs/civ4-texture-inventory.md §4).
+// The rectification itself lives in web/beachramp.mjs (unit-tested there); this just resolves the
+// three coast blend atlases and hands them over. Null when the art is absent — the renderer then
+// keeps its hand-picked sand. The three climates genuinely differ: tropical sand is pale and barely
+// warm, temperate the most golden, polar between them with a colder water tail.
+function bakeBeachRamps() {
+  const one = artPath => {
+    const file = resolveArt(artPath);
+    const img = file && decodeCached(file);
+    return img ? beachRampFromAtlas(img) : null;
+  };
+  const temp = one('Art/Terrain/textures/coastblend.dds');
+  if (!temp) return null;                                          // the temperate atlas is the anchor
+  return {
+    trop: one('Art/Terrain/textures/coasttropblend.dds') || temp,
+    temp,
+    polar: one('Art/Terrain/textures/coastpolarblend.dds') || temp,
   };
 }
 

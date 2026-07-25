@@ -154,6 +154,10 @@ const TREES = BUNDLE.trees;        // real Civ4 foliage sprites {leafy,palm,swam
 const ROUTES = BUNDLE.routes;      // real Civ4 route sprites {trail,road,rail:{src,w,h,cell,conn}, byType} for plot roads, or null (nothing drawn) — docs/route-rendering.md
 
 const SEA_BANDS = BUNDLE.seaBands; // {trop, temp, polar, shore} climate sea + shallows colours
+// the real Civ4 sand ramps, rectified out of the coast blend atlases at bake time (build.mjs
+// bakeBeachRamps): {trop, temp, polar} each an RGB ramp running the LAND edge → past the waterline.
+// Null when the art was absent — coast.mjs then keeps its hand-picked sand.
+const BEACH = BUNDLE.beach;
 // per-province trade good (docs/trade-goods.md), loaded eagerly from the static web/tradegoods.js
 // (a <script defer> in index.html, so window.TRADEGOODS is set before the app module evaluates).
 // {icons:{src,cell,cols,index:{key:col}}, goods:{key:{name,color,category}}, prov:{provId:key}} or null.
@@ -411,4 +415,4 @@ export const S = {
 };
 
 export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, pll,
-  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, BEACH, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };

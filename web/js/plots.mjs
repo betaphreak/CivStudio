@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -359,7 +359,11 @@ function buildPlotTexCanvas(p) {
   // blends over the whole shore region at once (paintCoast); then rivers, then features on top, so a
   // river reaching the sea sits over the shallows/foam rather than under them — and so tree foliage
   // sits over the river (two passes, not per-plot, so a tree always overlaps a neighbouring river cell)
-  paintCoast(o, oc.width, oc.height, p._plots, x0, y0, tpp);
+  // the province's latitude picks its beach's climate band (tropical white sand → temperate gold →
+  // polar), the same bands the sea gradient uses, so a shore and the water off it agree
+  const sbox = provSrcBox(p);
+  paintCoast(o, oc.width, oc.height, p._plots, x0, y0, tpp,
+    sbox ? latAtSourceY((sbox.y0 + sbox.y1) / 2) : 45);
   // desaturate the river ribbon so water recedes into the landscape instead of gridding vivid cyan
   // over it — baked once into the cached province canvas, so it costs nothing per frame
   o.filter = "saturate(0.7) brightness(0.94)";

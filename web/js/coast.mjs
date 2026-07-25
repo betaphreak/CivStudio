@@ -10,7 +10,7 @@
 // coast is a smooth wavy line across cells, not a grid staircase; (2) the real Civ4 shoredetail ripple
 // clipped to that shallow shape. (Earlier per-cell rectangular bites read as blue blotches on the land,
 // and the wave-crest foam lapped onto land — both dropped for this continuous shallows.)
-import { SHORE, ICE_ART, SEA_BANDS } from "./core.mjs";
+import { SHORE, ICE_ART, SEA_BANDS, BEACH } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
 // the baked greyscale shore-wave tile for the coast shallows (docs/coastlines.md Phase D); null →
@@ -23,26 +23,48 @@ let iceReady = false, icePat = null;
 const iceImg = loadArt(ICE_ART, () => { iceReady = true; });
 // the shallows tint — the Civ4 shoreblend hue baked into the bundle, or the old teal fallback
 const SHORE_COL = (SEA_BANDS && SEA_BANDS.shore) ? SEA_BANDS.shore.join(",") : "116,178,196";
-// beach sand — dry sand feathered back onto the coastal land, wet sand at the water's edge
+// beach sand — the hand-picked pair this used before the real art arrived. Still the fallback when
+// BEACH is null (the coast blend atlases were absent at bake time).
 const SAND = "226,208,164", WET_SAND = "200,182,140";
+
+// ---------------------------------------------------------------------------
+// the real Civ4 sand (docs/civ4-texture-inventory.md §4)
+// ---------------------------------------------------------------------------
+// BEACH is {trop,temp,polar}, each a 9-stop RGB ramp rectified out of coast*blend.dds at bake time.
+// Index 0 is the LAND edge (Civ4 paints a darker damp line there), ~2 the bright dry-sand body, ~6
+// the seaward edge of the sand, 7–8 already the shallows. So the ramp spans exactly the two things
+// this file draws: the apron feathering back onto the land, and the wet sand jutting into the water.
+const SAND_DRY = 2, SAND_WET = 6;
+// Same climate bands as the sea gradient (sea.mjs seaColorAt), so a beach and the water off it agree:
+// tropical ≤23°, polar ≥60°, mixed between. Ramps interpolate stop-by-stop.
+function beachRamp(lat) {
+  if (!BEACH) return null;
+  const a = Math.abs(lat), B = BEACH;
+  if (a <= 23) return B.trop;
+  if (a >= 60) return B.polar;
+  const [lo, hi, t] = a <= 40 ? [B.trop, B.temp, (a - 23) / 17] : [B.temp, B.polar, (a - 40) / 20];
+  return lo.map((c, i) => [0, 1, 2].map(k => Math.round(c[k] + (hi[i][k] - c[k]) * t)));
+}
+const rgbOf = (ramp, i, fallback) => ramp ? ramp[i].join(",") : fallback;
 
 const COAST_EDGES = [[1, 1, 0], [2, -1, 0], [4, 0, 1], [8, 0, -1]];   // bit, dx, dy (E,W,S,N)
 const COAST_CORNERS = [[16, 0, 0], [32, 1, 0], [64, 1, 1], [128, 0, 1]];   // bit, cell-corner ux,uy (NW,NE,SE,SW)
 
-export function paintCoast(o, W, H, plots, x0, y0, tpp) {
+export function paintCoast(o, W, H, plots, x0, y0, tpp, lat = 45) {
   const coastal = plots.filter(q => q.coast);
   if (!coastal.length) return;
-  // ramp fades the land-extension detail out at low offscreen resolution (tpp), where a per-plot bump
-  // would be a pixel or two of mush. Tracks offscreen resolution, NOT the on-screen zoom.
-  const ramp = Math.max(0, Math.min(1, (tpp - 8) / 12));
+  const ramp = beachRamp(lat);          // this province's sand, once (9 lerps, not per plot)
+  // `detail` fades the land-extension detail out at low offscreen resolution (tpp), where a per-plot
+  // bump would be a pixel or two of mush. Tracks offscreen resolution, NOT the on-screen zoom.
+  const detail = Math.max(0, Math.min(1, (tpp - 8) / 12));
   const bands = ctx2 => { for (const q of coastal) drawCoastBands(ctx2, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast); };
   // The coast is WATER (the shelf tile), so we don't touch the land — the coastal LAND cells grow a
   // SAND BEACH that protrudes into the shallows by a corner-continuous jittered depth (a smooth wavy
   // sand line across cells, not a grid staircase) and feathers back onto the land. Shallows are painted
   // first (in the water), then the beach on top: land → dry sand → wet sand → shallows → sea.
-  const beach = () => { if (ramp > 0) for (const q of coastal) drawBeach(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q); };
+  const beach = () => { if (detail > 0) for (const q of coastal) drawBeach(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q, ramp); };
   // a soft foam lap just seaward of the sand (repurposes the retired foam crest)
-  const foam = () => { if (ramp > 0) for (const q of coastal) drawFoam(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast); };
+  const foam = () => { if (detail > 0) for (const q of coastal) drawFoam(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast); };
   if (!shoreReady) { bands(o); beach(); foam(); return; }   // no ripple art → flat shore-hue bands
   // 1) shore-hue bands on a scratch layer (its alpha = the shallow-water shape)
   const cc = document.createElement("canvas"); cc.width = W; cc.height = H;
@@ -69,21 +91,24 @@ const chash = (a, b) => ((Math.imul(a | 0, 2654435761) ^ Math.imul(b | 0, 40503)
 function coastDepth(gx, gy, s) { return s * (0.18 + 0.45 * chash(gx, gy)); }
 // The extension quads for a coastal cell — one per water edge, from the grid shoreline OUTWARD into the
 // coast water, the two ends reaching by the shared corner depths. Filled by drawBeach as wet sand.
+// Each carries its outward axis `[ax0, ay0, ax1, ay1]` so the caller can run a SEAWARD gradient across
+// it (dry sand at the grid line → wet at the tip) instead of one flat fill for the whole cell.
 function coastExtendPolys(q, cx, cy, s) {
-  const m = q.coast, out = [];
+  const m = q.coast, out = [], r = s * 0.45;   // gradient reach ≈ the max coastDepth, so the ramp spans the quad
   if (m & 1) { const a = coastDepth(q.x + 1, q.y, s), b = coastDepth(q.x + 1, q.y + 1, s);   // E → +x
-    out.push([[cx + s, cy], [cx + s + a, cy], [cx + s + b, cy + s], [cx + s, cy + s]]); }
+    out.push({ p: [[cx + s, cy], [cx + s + a, cy], [cx + s + b, cy + s], [cx + s, cy + s]], ax: [cx + s, cy, cx + s + r, cy] }); }
   if (m & 2) { const a = coastDepth(q.x, q.y, s), b = coastDepth(q.x, q.y + 1, s);           // W → -x
-    out.push([[cx, cy], [cx - a, cy], [cx - b, cy + s], [cx, cy + s]]); }
+    out.push({ p: [[cx, cy], [cx - a, cy], [cx - b, cy + s], [cx, cy + s]], ax: [cx, cy, cx - r, cy] }); }
   if (m & 4) { const a = coastDepth(q.x, q.y + 1, s), b = coastDepth(q.x + 1, q.y + 1, s);   // S → +y
-    out.push([[cx, cy + s], [cx, cy + s + a], [cx + s, cy + s + b], [cx + s, cy + s]]); }
+    out.push({ p: [[cx, cy + s], [cx, cy + s + a], [cx + s, cy + s + b], [cx + s, cy + s]], ax: [cx, cy + s, cx, cy + s + r] }); }
   if (m & 8) { const a = coastDepth(q.x, q.y, s), b = coastDepth(q.x + 1, q.y, s);           // N → -y
-    out.push([[cx, cy], [cx, cy - a], [cx + s, cy - b], [cx + s, cy]]); }
+    out.push({ p: [[cx, cy], [cx, cy - a], [cx + s, cy - b], [cx + s, cy]], ax: [cx, cy, cx, cy - r] }); }
   return out;
 }
-function fillPolys(o, polys) {
-  for (const p of polys) { o.beginPath(); o.moveTo(p[0][0], p[0][1]);
-    for (let i = 1; i < p.length; i++) o.lineTo(p[i][0], p[i][1]); o.closePath(); o.fill(); }
+function fillPoly(o, p) {
+  o.beginPath(); o.moveTo(p[0][0], p[0][1]);
+  for (let i = 1; i < p.length; i++) o.lineTo(p[i][0], p[i][1]);
+  o.closePath(); o.fill();
 }
 // an outward fade of `col` from the shoreline into the sea — edges as linear ramps, diagonal
 // corners as radial ones — reaching `f` px with peak alpha `a0`. Shared by the shallows and beach.
@@ -137,10 +162,21 @@ function inwardBands(o, cx, cy, s, mask, col, f, a0) {
 // corner-continuous outline the land used, so the sand edge is a smooth wavy polyline across
 // cells, not a staircase), then dry sand feathered back onto the land. Replaces the old
 // terrain-coloured land bumps — the Civ4 sandy shore. See docs/coastlines.md.
-function drawBeach(o, cx, cy, s, q) {
-  o.fillStyle = `rgb(${WET_SAND})`;
-  fillPolys(o, coastExtendPolys(q, cx, cy, s));               // wet sand juts into the water
-  inwardBands(o, cx, cy, s, q.coast, SAND, s * 0.62, ".95");  // dry sand feathers back onto land
+function drawBeach(o, cx, cy, s, q, ramp) {
+  // wet sand jutting into the water: a seaward gradient across each quad, running the dry-sand body
+  // at the grid shoreline to the wet seaward edge — the cross-shore ramp Civ4 paints into the atlas,
+  // laid along the one axis this geometry already has. Flat WET_SAND when there is no baked ramp.
+  for (const { p, ax } of coastExtendPolys(q, cx, cy, s)) {
+    if (ramp) {
+      const g = o.createLinearGradient(ax[0], ax[1], ax[2], ax[3]);
+      for (let i = SAND_DRY; i <= SAND_WET; i++)
+        g.addColorStop((i - SAND_DRY) / (SAND_WET - SAND_DRY), `rgb(${ramp[i].join(",")})`);
+      o.fillStyle = g;
+    } else o.fillStyle = `rgb(${WET_SAND})`;
+    fillPoly(o, p);
+  }
+  // dry sand feathering back onto the land — the bright body of the beach, fading inland
+  inwardBands(o, cx, cy, s, q.coast, rgbOf(ramp, SAND_DRY, SAND), s * 0.62, ".95");
 }
 // A thin foam lap right at the water's edge: a soft white feather fading seaward, drawn just
 // outside the sand. (The real Civ4 wave-crest art this once used was retired — it never read
