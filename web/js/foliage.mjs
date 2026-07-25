@@ -78,3 +78,39 @@ export function placeFoliage(feature, plotX, plotY, sprites) {
   items.sort((a, b) => a.y - b.y);
   return { key: g.key, items };
 }
+
+/** The relief-prop model, in the same plot-fraction units as the foliage above.
+ *
+ *  WIDER THAN ITS PLOT, deliberately — 1.55 against a tree's ~0.55. A Civ4 mountain overhangs its tile;
+ *  the peak_mountain* models are three-summit ridge pieces whose whole point is that neighbouring peaks
+ *  interlock into a range rather than lining up as separate cones on a grid. Keep it below ~1.8 or the
+ *  overlap starts reading as a wall of rock instead of a range. */
+export const RELIEF = { PEAK: { key: "peak", scale: 1.55, vary: 0.26 } };
+
+/**
+ * Choose and place a plot's RELIEF prop — the mountain that stands on a PEAK plot, which is the thing that
+ * makes mountainous ground read as mountainous now that the mesh itself barely rises (docs/terrain-3d.md
+ * §Relief is props, not displacement, and heightfield.HEIGHT).
+ *
+ * Separate from `placeFoliage` because the two are driven by different fields and want different answers:
+ * foliage comes from `feature` and scatters SEVERAL small sprites per plot, relief comes from `plotType` and
+ * is exactly ONE large one, centred. Folding them together would mean a group record carrying "how many" and
+ * "centred or scattered" flags that only ever take one value each.
+ *
+ * Its RNG stream is `foliageSeed(x, y)` again but consumed independently: a peak plot has no foliage feature,
+ * so the two never draw from the same sequence for the same plot, and a peak's variant therefore cannot be
+ * moved by a change to the foliage draws.
+ *
+ * Returns `{ key, items: [one item] }` in EXACTLY the shape `placeFoliage` returns — so the 3D path's
+ * geometry builder takes both with no branch at all, and a relief prop therefore inherits P3's placement
+ * guarantee and its geometric gate unchanged. Null when this plot has no relief prop or the atlas is empty.
+ */
+export function placeRelief(plotType, plotX, plotY, sprites) {
+  const g = RELIEF[plotType];
+  if (!g || !sprites || !sprites.length) return null;
+  const rng = mkRng(foliageSeed(plotX, plotY));
+  const sp = sprites[rng() * sprites.length | 0];
+  const h = g.scale * (1 - g.vary / 2 + g.vary * rng());
+  // centred on the plot: x/y are the sprite CENTRE, as in placeFoliage
+  return { key: g.key, items: [{ sp, w: h * sp[2] / sp[3], h, x: 0.5, y: 0.5 }] };
+}

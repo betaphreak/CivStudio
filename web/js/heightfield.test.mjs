@@ -16,11 +16,16 @@ test("plotHeight takes its relief from plotType, elevation only modulating", () 
   assert.equal(plotHeight(plot(0, 0, "FLAT", 0)), 0);
   assert.equal(plotHeight(plot(0, 0, "HILL", 0)), HEIGHT.HILL);
   assert.equal(plotHeight(plot(0, 0, "PEAK", 0)), HEIGHT.PEAK);
-  // the whole 0..255 heightmap range contributes ELEV — less than a single PEAK step, which is the
-  // spike's central finding rather than an accident of these constants
   assert.equal(plotHeight(plot(0, 0, "FLAT", 255)), HEIGHT.ELEV);
-  assert.ok(HEIGHT.PEAK > HEIGHT.ELEV / 2,
-    "a PEAK must outweigh a large part of the continental range, or relief reads as a warped carpet");
+  // RELIEF IS A RISE, NOT A MOUNTAIN — the P4b correction (docs/terrain-3d.md §Relief is props, not
+  // displacement). A peak must lift its plot enough to read as high ground...
+  assert.ok(HEIGHT.PEAK > HEIGHT.HILL && HEIGHT.HILL > 0, "PEAK above HILL above flat");
+  // ...and must NOT dominate the continental heightmap, which is the assertion that inverted. When PEAK
+  // was 3.4 against ELEV 6, one plot boundary could out-rise half the world's altitude range, and every
+  // peak-beside-flat edge was a cliff by construction. The mountain is a prop now (foliage.RELIEF), so
+  // the mesh only has to carry gentle ground.
+  assert.ok(HEIGHT.PEAK < HEIGHT.ELEV / 4,
+    "a PEAK must stay small against the continental range, or the mesh terraces at every peak boundary");
 });
 
 test("plotHeight distinguishes an absent plot from flat ground", () => {
@@ -67,9 +72,12 @@ test("smoothing does not erode a silhouette: nulls are skipped, not counted as z
   // A single plot's four corners EACH touch only that plot, so all four are at its full height and
   // smoothing leaves them there. That is the intended behaviour, not a gap in the test above: treating
   // absent neighbours as 0 would sag every province edge and coastline downward into the sea.
+  // Compared with a tolerance, not exactly: the corner is a mean of means, so whether it lands on the
+  // constant bit-for-bit depends on the constant's binary representation (3.4 did, 0.8 does not). The
+  // property is "no sag", not "no rounding".
   const m = idx(plot(0, 0, "PEAK"));
   for (const [lx, ly] of [[0, 0], [1, 0], [0, 1], [1, 1]])
-    assert.equal(smoothCornerAt(m, lx, ly), HEIGHT.PEAK, `corner ${lx},${ly} holds its height`);
+    assert.ok(Math.abs(smoothCornerAt(m, lx, ly) - HEIGHT.PEAK) < 1e-12, `corner ${lx},${ly} holds its height`);
 });
 
 test("smoothing leaves uniform ground exactly flat", () => {

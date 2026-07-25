@@ -28,7 +28,7 @@ import { tiltAt, heightScaleAt, TILT_MAX } from "./band-math.mjs";
 import { draw } from "./repaint.mjs";
 import { seaColorAt } from "./sea.mjs";
 import { HEIGHT, indexPlots, smoothCornerAt, groundAt } from "./heightfield.mjs";
-import { placeFoliage, foliageGroup } from "./foliage.mjs";
+import { placeFoliage, foliageGroup, placeRelief, RELIEF } from "./foliage.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 import { groundHomography, applyH, invertH, unapplyH } from "./project-math.mjs";
 
@@ -318,19 +318,30 @@ if (TREES) for (const k of Object.keys(TREES)) {
 function propsOf(p) {
   if (p._props && p._propsFor === p._plots) return p._props;
   const byGroup = new Map();
-  for (const q of p._plots) {
-    if (!q.feature) continue;
-    const g = foliageGroup(q.feature);
-    const a = g && propAtlas[g.key];
-    if (!a || !a.ready) continue;
-    const pl = placeFoliage(q.feature, q.x, q.y, a.meta.sprites);
-    if (!pl) continue;
+  const add = (pl, q) => {
+    if (!pl) return;
     let list = byGroup.get(pl.key);
     if (!list) byGroup.set(pl.key, list = []);
     for (const it of pl.items)
       // the sprite's BASE: its 2D rect ran from y−h/2 to y+h/2, so the bottom edge is at y + h/2. Anchoring
       // there makes the tilt-0 quad cover that rect exactly, and gives the pivot for standing up.
       list.push({ sp: it.sp, w: it.w, h: it.h, bx: q.x + it.x, bz: q.y + it.y + it.h / 2 });
+  };
+  // RELIEF first, and BACK-TO-FRONT: a PEAK plot's mountain, which since P4b is what makes mountainous
+  // ground read as mountainous — the mesh under it only rises 0.8 plot-widths (heightfield.HEIGHT). Driven
+  // by plotType, not feature, so a forested peak gets both its mountain and its trees. The sort matches the
+  // 2D bake's (plots.mjs), which matters because these quads OVERLAP: a mountain is 1.55 plots wide, and
+  // blended quads that write depth resolve overlap partly by draw order.
+  if (propAtlas.peak && propAtlas.peak.ready) {
+    const relief = p._plots.filter(q => RELIEF[q.plotType]).sort((a, b) => a.y - b.y || a.x - b.x);
+    for (const q of relief) add(placeRelief(q.plotType, q.x, q.y, propAtlas.peak.meta.sprites), q);
+  }
+  for (const q of p._plots) {
+    if (!q.feature) continue;
+    const g = foliageGroup(q.feature);
+    const a = g && propAtlas[g.key];
+    if (!a || !a.ready) continue;
+    add(placeFoliage(q.feature, q.x, q.y, a.meta.sprites), q);
   }
   p._props = byGroup;
   p._propsFor = p._plots;
@@ -395,6 +406,101 @@ function propMaterial(key) {
   if (!a.tex) { a.tex = groundTexture(a.img); a.tex.anisotropy = 4; }
   return new THREE.MeshBasicMaterial({
     map: a.tex, transparent: true, alphaTest: 0.02, depthWrite: true, side: THREE.DoubleSide,
+    opacity: tiltOnlyGroup(key) ? reliefAlpha() : 1,
+  });
+}
+
+// ---- 4b) contact shadows ----
+// A blended quad lying on the ground under each prop. It sounds like garnish and is not: in the target
+// screenshot every mountain and tree has one, and it is a surprisingly large part of why they read as
+// STANDING ON something rather than being pasted over it (docs/terrain-3d.md §P4b). A billboard has no
+// contact with the surface otherwise — it is a floating cutout, and the eye knows.
+//
+// IT FADES IN WITH THE TILT, and that is not a stylistic choice. At tilt 0 the prop quad lies flat and
+// covers exactly the rect the 2D bake drew, which is what makes the band-5 seam invisible; a shadow there
+// would be a dark rim around every tree in the world that the canvas does not have, i.e. the seam gate's
+// frame diff would get worse for something no viewer can see from straight overhead anyway. Opacity
+// therefore tracks sin(tilt) — zero looking down, full at the oblique angles where contact reads.
+const SHADOW = { grow: 0.62, squash: 0.55, opacity: 0.30, lift: 0.01 };
+let shadowTex = null;
+
+// ---- what only exists once the camera has pitched ----
+// The relief props and their shadows are the two things in the scene that are NOT in the 2D ground. Both
+// therefore have to be absent at tilt 0, where the 3D frame has to be the same picture as the canvas one
+// (§the seam, and tools/webverify/terrain3d-verify.mjs) — and both are also meaningless from straight
+// overhead: a mountain billboard is a front elevation, and seen flat-on it is a smear, not a mountain.
+//
+// So they fade in over the first few degrees of pitch rather than being cross-faded across a band or
+// switched on at a threshold. RELIEF_FADE_DEG is short because there is nothing to ease: by band ~5.4 the
+// camera is oblique enough that a standing mountain is the correct drawing, and a half-transparent
+// mountain is worse than either end of the ramp.
+const RELIEF_FADE_DEG = 10;
+const reliefAlpha = () => Math.min(1, Math.max(0, tiltNow / RELIEF_FADE_DEG));
+/** Groups that only draw once pitched — keyed by atlas, so the foliage groups are unaffected. */
+const tiltOnlyGroup = key => key === RELIEF.PEAK.key;
+
+/** A radial alpha falloff, generated once. Not art: a hard-edged shadow quad reads as a dark rectangle,
+ *  and the falloff is the primitive that makes it a blob instead. */
+function shadowTexture() {
+  if (shadowTex) return shadowTex;
+  const S = 64, c = document.createElement("canvas");
+  c.width = c.height = S;
+  const g = c.getContext("2d"), rad = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  rad.addColorStop(0, "rgba(0,0,0,1)");
+  rad.addColorStop(0.55, "rgba(0,0,0,0.72)");
+  rad.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = rad;
+  g.fillRect(0, 0, S, S);
+  shadowTex = new THREE.CanvasTexture(c);
+  return shadowTex;
+}
+
+/**
+ * One flat quad per prop, in the ground plane, centred on the prop's base.
+ *
+ * Each corner takes its own `groundAt`, so the shadow follows a slope instead of intersecting it — on the
+ * gentle relief P4b leaves behind that is a small correction, but it is the difference between a shadow
+ * lying on a hillside and one slicing through it. Squashed in Z because the prop's base straddles a plot
+ * and a mountain's footprint is wider across than deep.
+ */
+function shadowGeometry(items) {
+  const n = items.length;
+  const pos = new Float32Array(n * 12), uv = new Float32Array(n * 8);
+  const idx = new (n * 4 > 65535 ? Uint32Array : Uint16Array)(n * 6);
+  for (let i = 0; i < n; i++) {
+    const it = items[i];
+    const hw = it.w / 2 * SHADOW.grow, hd = hw * SHADOW.squash;
+    const o = i * 12;
+    const corners = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
+    for (let k = 0; k < 4; k++) {
+      const x = it.bx + corners[k][0], z = it.bz + corners[k][1];
+      const gh = groundAt(heights, x, z);
+      pos[o + k * 3] = x;
+      pos[o + k * 3 + 1] = (gh === null ? 0 : gh) * exagNow + SHADOW.lift;
+      pos[o + k * 3 + 2] = z;
+    }
+    const t = i * 8;
+    uv[t] = 0; uv[t + 1] = 0;  uv[t + 2] = 1; uv[t + 3] = 0;
+    uv[t + 4] = 1; uv[t + 5] = 1;  uv[t + 6] = 0; uv[t + 7] = 1;
+    const b = i * 4, e = i * 6;
+    idx[e] = b; idx[e + 1] = b + 1; idx[e + 2] = b + 2;
+    idx[e + 3] = b; idx[e + 4] = b + 2; idx[e + 5] = b + 3;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute("uv", new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(Array.from(idx));
+  return g;
+}
+
+/** Shadow opacity at the current tilt — 0 overhead, SHADOW.opacity at full tilt. See the note above. */
+const shadowAlpha = () => SHADOW.opacity * Math.sin(tiltNow * Math.PI / 180);
+
+/** depthWrite OFF: shadows are coplanar with the ground and must not occlude each other or the props. */
+function shadowMaterial() {
+  return new THREE.MeshBasicMaterial({
+    map: shadowTexture(), color: 0x000000, transparent: true, opacity: shadowAlpha(),
+    depthWrite: false, side: THREE.DoubleSide,
   });
 }
 
@@ -413,10 +519,18 @@ function syncProps(p) {
   const byGroup = propsOf(p);
   if (!byGroup.size) return;
   const list = [];
+  const alpha = shadowAlpha();
   for (const [key, items] of byGroup) {
     if (!items.length || !propAtlas[key] || !propAtlas[key].ready) continue;
+    if (tiltOnlyGroup(key) && reliefAlpha() <= 0.002) continue;   // no mountains from straight overhead
+    if (alpha > 0.002) {                  // skip the geometry entirely when looking straight down
+      const s = new THREE.Mesh(shadowGeometry(items), shadowMaterial());
+      s.renderOrder = 1;                  // between the ground and the props: on the surface, under the prop
+      scene.add(s);
+      list.push(s);
+    }
     const m = new THREE.Mesh(propGeometry(items, key), propMaterial(key));
-    m.renderOrder = 1;                    // after the ground, so the depth buffer is already populated
+    m.renderOrder = 2;                    // after the ground, so the depth buffer is already populated
     scene.add(m);
     list.push(m);
   }

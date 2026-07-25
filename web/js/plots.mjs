@@ -365,6 +365,14 @@ function buildPlotTexCanvas(p) {
   o.filter = "saturate(0.7) brightness(0.94)";
   drawRivers(o, p._plots, x0, y0, tpp, grid, riverPat);
   o.filter = "none";
+  // NO RELIEF PROPS HERE, and it is a decision rather than an omission — see terrain3d.mjs §relief props.
+  // The mountain a PEAK plot gets is a 3D-ground prop that fades in WITH THE TILT, so this canvas (which is
+  // the whole ground below band 5, and the tilt-0 picture the 3D path has to match at the seam) is exactly
+  // as it was. Two reasons, either sufficient: the sprite is a FRONT elevation rendered by tools/nifbake, and
+  // a front elevation laid flat on a top-down map is the wrong drawing of a mountain; and stamping it here
+  // would put mountains in the tilt-0 frame that the 3D path must then reproduce through GPU minification of
+  // a 280 px sprite at 22 screen px, which measurably widens the seam diff (85.9% within 16 against a 90%
+  // gate) for a view no one looks at mountains from.
   if (bakeFoliage) for (const q of p._plots) {
     if (q.feature) { const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp; featureSprite(o, cx, cy, tpp, q.feature, q.x, q.y); }
   }

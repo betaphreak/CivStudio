@@ -8,7 +8,7 @@
 // rather than style — first match wins, so moving a line moves biomes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkRng, foliageSeed, foliageGroup, isGrassFeature, placeFoliage } from "./foliage.mjs";
+import { mkRng, foliageSeed, foliageGroup, isGrassFeature, placeFoliage, placeRelief, RELIEF } from "./foliage.mjs";
 
 // a stand-in atlas: three sprites of different aspect, so width-from-aspect is exercised
 const SPRITES = [[0, 0, 40, 40], [40, 0, 20, 60], [60, 0, 80, 40]];
@@ -123,4 +123,67 @@ test("placeFoliage declines gracefully with no art or no foliage", () => {
   assert.equal(placeFoliage("FEATURE_FOREST", 0, 0, null), null, "missing atlas");
   assert.equal(placeFoliage("FEATURE_FLOOD_PLAINS", 0, 0, SPRITES), null, "feature with no foliage");
   assert.equal(placeFoliage(null, 0, 0, SPRITES), null, "no feature at all");
+});
+
+// ---- relief props: the mountain that stands on a PEAK plot (docs/terrain-3d.md §P4b) ----
+//
+// These matter because relief moved from the MESH to a PROP. The mesh no longer builds a mountain
+// (heightfield.HEIGHT.PEAK dropped 3.4 → 0.8), so if placeRelief silently returns nothing, mountainous
+// terrain does not look flatter — it looks ABSENT, and a screenshot of gentle green hills where the Serpentspine
+// should be is not obviously a bug.
+
+test("placeRelief gives a PEAK plot exactly one centred prop", () => {
+  const pl = placeRelief("PEAK", 4, 7, SPRITES);
+  assert.ok(pl, "a PEAK must get a prop");
+  assert.equal(pl.key, RELIEF.PEAK.key);
+  assert.equal(pl.items.length, 1, "one mountain, not a scatter — that is the whole difference from foliage");
+  assert.equal(pl.items[0].x, 0.5, "centred on its plot");
+  assert.equal(pl.items[0].y, 0.5);
+});
+
+test("placeRelief returns the same record SHAPE as placeFoliage", () => {
+  // the 3D geometry builder takes both with no branch, so a missing field is a silent NaN in a vertex buffer
+  const rel = placeRelief("PEAK", 1, 1, SPRITES).items[0];
+  const fol = placeFoliage("FEATURE_FOREST", 1, 1, SPRITES).items[0];
+  assert.deepEqual(Object.keys(rel).sort(), Object.keys(fol).sort());
+});
+
+test("a relief prop overhangs its plot, so peaks interlock into a range", () => {
+  // a Civ4 mountain is wider than its tile; below ~1 they read as separate cones on a grid
+  for (let x = 0; x < 200; x++) {
+    const it = placeRelief("PEAK", x, 13, SPRITES).items[0];
+    assert.ok(it.h > 1, `a mountain must overhang its plot: ${it.h}`);
+    assert.ok(it.h < 2.2, `...but not swamp its neighbours: ${it.h}`);
+    assert.ok(Math.abs(it.w / it.h - it.sp[2] / it.sp[3]) < 1e-12, "aspect from the atlas rect");
+  }
+});
+
+test("relief props are deterministic per plot and vary between plots", () => {
+  const at = (x, y) => JSON.stringify(placeRelief("PEAK", x, y, SPRITES));
+  assert.equal(at(9, 9), at(9, 9), "same plot, same mountain across rebuilds");
+  const seenSprite = new Set(), seenHeight = new Set();
+  for (let x = 0; x < 300; x++) {
+    const it = placeRelief("PEAK", x, 21, SPRITES).items[0];
+    seenSprite.add(it.sp[0]); seenHeight.add(it.h);
+  }
+  assert.equal(seenSprite.size, SPRITES.length, "every variant must get used, or two thirds of the art is dead");
+  assert.ok(seenHeight.size > 50, "heights must vary, or a range is one model repeated");
+});
+
+test("only PEAK gets relief, and missing art declines gracefully", () => {
+  assert.equal(placeRelief("HILL", 0, 0, SPRITES), null, "HILL stays vertex displacement, not a prop");
+  assert.equal(placeRelief("FLAT", 0, 0, SPRITES), null);
+  assert.equal(placeRelief(undefined, 0, 0, SPRITES), null, "a plot with no plotType");
+  assert.equal(placeRelief("LAGOON_OF_MYSTERY", 0, 0, SPRITES), null, "an unknown C2C plotType must not throw");
+  assert.equal(placeRelief("PEAK", 0, 0, []), null, "empty atlas");
+  assert.equal(placeRelief("PEAK", 0, 0, null), null, "atlas not baked");
+});
+
+test("relief and foliage draw independently, so a forested peak gets both", () => {
+  // both use foliageSeed(x, y) but consume it separately; the assertion is that neither is empty and the
+  // relief prop is not accidentally one of the foliage items
+  const rel = placeRelief("PEAK", 6, 6, SPRITES);
+  const fol = placeFoliage("FEATURE_FOREST", 6, 6, SPRITES);
+  assert.ok(rel && fol, "a forested peak has a mountain AND trees");
+  assert.ok(rel.items[0].h > Math.max(...fol.items.map(i => i.h)), "the mountain dwarfs the trees");
 });

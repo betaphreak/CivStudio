@@ -1,11 +1,12 @@
 # 3D terrain — the target look, the spike that validated it, and the plan
 
 **Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`), **PLANNED** P0–P5 (§The plan),
-and **P0–P4 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to 34° by band 6.5 with
-the whole 2D layer stack projected through the tilted camera, and its foliage STANDS UP as ~12k billboards
-that lie flat at the seam and rise with the tilt. Gated on a frame diff at the seam against the 2D path
-(mean 5.12/255, unchanged across all three phases) plus a geometric check that the props land on the 2D
-bake's own rects, and a check that ground-anchored content stands on the terrain rather than on its
+and **P0–P4b SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, PITCHES OVER to 34° by band 6.5 with
+the whole 2D layer stack projected through the tilted camera, its foliage STANDS UP as ~12k billboards
+that lie flat at the seam and rise with the tilt, and **relief is props**: PEAK plots carry Civ4's own
+mountain models on nearly-flat ground, so the terracing is gone. Gated on a frame diff at the seam against
+the 2D path (mean **4.74**/255 — P4b improved it from 5.12) plus a geometric check that the props land on the
+2D bake's own rects, and a check that ground-anchored content stands on the terrain rather than on its
 sea-level shadow. P5 (prop art at the oblique angle) remains.
 
 ## The target
@@ -429,17 +430,49 @@ tiles across** versus 26 plots at z=120, which puts the reference view near band
 22–28°. The angle is already in the right neighbourhood and should not be touched until relief is fixed, because
 relief is what the angle reads against.
 
-### P4b — relief becomes props — PLANNED, art in hand
+### P4b — relief becomes props — SHIPPED 2026-07-25
 
-- **Peaks and hills stop being cliffs.** `heightfield.HEIGHT` drops PEAK from 3.4 to ~0.8 plot-widths and HILL
-  from 1.0 to ~0.4, so mountainous ground is a gentle rise rather than a wall, and the continental heightmap
-  (×6) does what it is actually shaped for. Verified in a reverted prototype: the terracing goes away entirely.
-- **PEAK plots get a mountain prop** — the real Civ4 model, baked to a sprite — standing on the mesh through exactly the P3 billboard machinery — same
-  record shape, same geometry builder, same tilt-following pitch, so it inherits the placement guarantee and
-  the geometric gate for free.
-- **Every prop gets a contact shadow**: a flat, ground-plane, blended quad under it. The target's mountains and
-  trees all have one and it is a surprisingly large part of why they read as standing on something. (Prototyped
-  and reverted with the rest; it is independent of the art and can land first.)
+- **Peaks and hills stopped being cliffs.** `heightfield.HEIGHT` dropped PEAK 3.4 → **0.8** plot-widths and HILL
+  1.0 → **0.4**, so mountainous ground is a gentle rise rather than a wall, and the continental heightmap (×6)
+  does what it is actually shaped for. The terracing is gone. It also made the *seam diff better*, from mean
+  5.12 to 4.74 — worth noting, because it means the old relief was not only wrong-looking, it was actively
+  disagreeing with the 2D ground it was supposed to match.
+- **PEAK plots get a mountain prop** — the real Civ4 model, baked by `tools/fpk/bake-peaks.mjs` — standing on
+  the mesh through exactly the P3 billboard machinery. `foliage.placeRelief` returns the identical record shape
+  `placeFoliage` does, so `propGeometry` takes both with no branch, and the props inherit the placement
+  guarantee and the geometric gate for free (now 11,982 quads, exact to 1.2e-4 source px).
+- **Every prop gets a contact shadow**: a flat, ground-plane, blended quad under it, its four corners each
+  taking their own `groundAt` so it lies on a slope rather than through it.
+
+**Relief props live in the 3D ground only, and fade in with the tilt** — the one design decision P4b added
+rather than inherited, and it went the other way first. The obvious move is to stamp the mountain into the
+province canvas too, exactly as P3 does for trees, so the two renderers agree at the seam. Tried, measured,
+reverted, for two independent reasons:
+
+1. **It is the wrong drawing.** `tools/nifbake` renders a FRONT elevation. A tree from overhead is roughly a
+   blob either way, which is why P3 gets away with it; a mountain's front elevation laid flat on a top-down
+   map is not a mountain seen from above. Bands 0–4 have never had mountain sprites, and adding them there is
+   a change to the 2D map, not to the 3D one.
+2. **It measurably widens the seam.** Stamped in 2D, the tilt-0 frame has to reproduce a 280 px sprite at ~22
+   screen px through GPU mipmapping against canvas 2D's two-step downscale — 13× minification on a
+   high-contrast rock texture, covering a whole plot each rather than a tree's few pixels. Measured: 93.7% →
+   82.6% within 16, against a 90% gate. Rebaking the atlas at 96 px instead of 320 recovered only half of it
+   (86.0%), which is what identified minification as the mechanism rather than a placement bug.
+
+So `terrain3d.RELIEF_FADE_DEG` ramps both the mountains and the shadows from nothing at tilt 0 to full by 10°
+(≈ band 5.44). This is not a cross-fade of two representations — below the ramp there is simply no prop, which
+is the state the 2D ground has always been in. It also happens to be right: a standing mountain means something
+once the camera is oblique, and the target screenshot is an oblique view.
+
+**One art finding, recorded because it looks like an option and is not.** `peak_hill{a,b,c}.nif` is the SAME
+MESH as `peak_mountain{a,b,c}` — byte-identical vertices, verified by hashing them. They differ only in the skin
+they name (`Hill.dds` vs `Mountain.dds`, both in the `features/hills/` directory the FPK also yields, which are
+the game's per-base-terrain hill tints). So there is no hill *model* to place, and nothing places one: HILL
+stays vertex displacement. That is also what Civ4 does — its actual hill art, `features/hills/hills_grass*.nif`,
+is a near-horizontal ground patch that the billboard renderer's flat-plane filter drops. Relief, not a prop.
+`peak_single*.nif` IS a distinct mesh (101 verts, a lone cone), but its skin `peak_single.dds` is an unwrapped
+sheet with violet-blue snow that reads wrong outside the game's own lighting — decoded faithfully, simply not
+usable here. The bake is therefore `peak_all.dds` over `peak_mountain{a,b,c}` and nothing else.
 
 **Where the art comes from — and a false start worth recording.** C2C's `UnpackedArt/art/Terrain` has no `Peaks`
 or `Hills` directory; it holds only what C2C itself ships unpacked (`features`, `heightmap`, `improvements`,
@@ -460,20 +493,31 @@ game's own FPK archives, and `Assets/Art0.FPK` yields:
 | `art/terrain/features/peak/peak_all.dds`, `peak_single.dds`, `mountaincraggy01.dds` | their textures |
 | `art/terrain/textures/peakdetail.dds` | the peak ground detail texture |
 
-P4b's remaining work is therefore a bake rather than an invention — but the bake is **blocked on a NIF version**,
-and the reason is exact. `tools/nifbake/nif.mjs` reads **Gamebryo 20.0.0.4**, the version C2C's own models use,
-which is why the cactus and city sprites bake fine. The base game's peak models are the older **NetImmerse
-10.0.1.0**, which lays its block stream out differently, so the reader walks off and reports an absurd offset.
-Supporting it is a real extension to that reader.
+P4b's work was therefore a bake rather than an invention — but the bake was blocked on a NIF version, and
+unblocking it took **three separate version guards**, each of which desynchronised the block walk in a way that
+only showed up hundreds of bytes later. `tools/nifbake/nif.mjs` read **Gamebryo 20.0.0.4**, the version C2C's
+own models use (which is why the cactus and city sprites always baked). The base-game peaks are **NetImmerse
+10.0.1.0**, and it differs in three places:
+
+| where | 10.0.1.0 | how it presented |
+|---|---|---|
+| header | no endian byte, no user version | failure at offset 1,685,016,229 — an ASCII run read as a length |
+| **block stream** | every block is prefixed by a u32 object index (versions `[10.0.1.0, 10.2.0.0)`) | 8 unexplained bytes before the first block's name |
+| `NiGeometry` | no material-name arrays — `Has Shader` follows the skin ref directly | a phantom material count landing on the next block's string length |
+| `NiTriShapeData` | no `Has Triangles` flag (it arrived at 10.1.0.0) | the whole index array shifted by one byte, footer one past EOF |
+
+Localising them meant hand-decoding the bytes and checking each field against what it *should* be — a
+`NiMaterialProperty` whose diffuse reads (1,1,1) and glossiness 10.0 is aligned; one whose ambient is garbage is
+not. Correctness is confirmed by landing exactly on the footer, which is what makes the whole exercise safe:
+a wrong guess fails loudly instead of producing plausible-looking geometry.
+
+The fixes generalise. All 16 peak/hill models now parse, and across the cached C2C art corpus **7 of 8
+Gamebryo 10.1.0.0 files that previously failed now parse to EOF** (they were being carried by the gap-resync
+heuristic); all 35 20.0.0.4 files are byte-identical to before. Three 4.2.2.0 files remain unsupported.
 
 The textures alongside the models are not a substitute: `peak_all.dds` is a UV-mapped model SKIN — a rock-and-snow
 sheet with a soft alpha edge — not a billboard atlas of mountain cutouts, so the connected-component extractor
 that handles `trees_1024.dds` has nothing to cut out of it. Verified by decoding it.
-
-So the ordered remainder of P4b is: **(1) teach nif.mjs NetImmerse 10.0.1.0**, (2) bake peak/hill/peak_single
-through `tools/fpk/bake-peaks.mjs` (already wired, and wired into `web/build.mjs` so a CI bake picks it up),
-(3) drop the HEIGHT constants and add the props + contact shadows, which the reverted prototype already showed
-removes the terracing.
 
 **The bigger find behind it:** `C2C{0..3}.FPK` + `C2CPatch0.FPK` hold ~900 MB of C2C's OWN art, packed. Most of
 C2C's art was never in `UnpackedArt` either, which matters well beyond terrain — the building and unit models P5

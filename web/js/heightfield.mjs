@@ -5,11 +5,16 @@
 // Turns the per-plot data the client already has (plotType, elevation) into the corner heights a
 // terrain mesh needs. Two things about it are load-bearing, and both came out of the spike:
 //
-// plotType IS THE HEIGHT SOURCE. The imported heightmap is continental and low-frequency — the spike's
-// test province spans 99..145 of 255 — so exaggerating `elevation` alone inflates a smooth swell and
-// reads as a warped carpet, no matter how far you push it. The eye reads terrain from the DISCRETE
-// per-plot FLAT/HILL/PEAK variation, which is also how Civ4 gets its mountains. Both sources are here
-// and separately scaled, but PEAK/HILL carry the look.
+// plotType SHAPES THE GROUND; IT DOES NOT BUILD THE MOUNTAINS. The imported heightmap is continental and
+// low-frequency — the spike's test province spans 99..145 of 255 — so exaggerating `elevation` alone
+// inflates a smooth swell and reads as a warped carpet. The discrete per-plot FLAT/HILL/PEAK variation is
+// what gives ground its texture, so both sources are here and separately scaled.
+//
+// But relief is NOT how a mountain gets made — see docs/terrain-3d.md §Relief is props, not displacement.
+// Civ4 keeps the surface nearly smooth and stands a mountain MODEL on a peak tile; its tile borders and
+// roads run flat between the cones. Displacing a peak by the 3.4 plot-widths this file used to carry makes
+// every peak-beside-flat boundary a cliff BY CONSTRUCTION, which no smoothing kernel can remove. So PEAK
+// and HILL are now gentle rises (0.8 / 0.4) that the mountain props stand on, and the props carry the look.
 //
 // HEIGHTS SIT ON CORNERS, NOT PLOTS. A corner's height is the mean of the up-to-4 plots touching it,
 // which interpolates between plots instead of stamping a square per plot. Stamping is precisely what
@@ -26,9 +31,13 @@
 // on the order provinces arrived in. That property is why this can be a plain function.
 
 /** Height model, in SOURCE-PIXEL units — one plot is one source pixel, so these are plot-widths.
- *  The values are the spike's (tools/spike-iso3d, `shot-civ-oblique.png`): PEAK 3.4 / HILL 1.0 /
- *  elevation ×6 read as terrain, where elevation ×30 with no plotType relief did not. */
-export const HEIGHT = { PEAK: 3.4, HILL: 1.0, ELEV: 6 };
+ *
+ *  PEAK/HILL were the spike's 3.4/1.0, which made mountains out of the mesh itself and terraced every
+ *  peak boundary. P4b dropped them to 0.8/0.4: enough that mountainous ground visibly rises, small
+ *  enough that no plot boundary is a wall, with the real mountain models standing on top. `ELEV` is
+ *  unchanged — at ×6 the continental heightmap now does what it is actually shaped for, because it is
+ *  no longer swamped by per-plot relief four times its local range. */
+export const HEIGHT = { PEAK: 0.8, HILL: 0.4, ELEV: 6 };
 
 /** Plot-grid key. Same encoding plots.mjs uses for its per-province `_grid`, so the two agree. */
 export const pkey = (x, y) => x * 1e5 + y;
