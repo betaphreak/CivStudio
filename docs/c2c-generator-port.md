@@ -23,6 +23,24 @@ Java side to touch: `com.civstudio.geo.FeatureGenerator`, `ProvincePlotField`, `
 | 6 terrain diversification | **declined** | rewrites real ground → conflicts with the §2 decision and the `terrainComesFromTheRealMapNotTheClimatePool` test (asserts LUSH/MUDDY==0). Would only be admissible gated to unmapped pixels, which is near-inert |
 | 8 bonus placement | **done** (per-province) | exported the placement fields (`iPlacementOrder`/`iConstAppearance`/`Rands`/`iTilesPer`/`iMinAreaSize`/`iGroupRange`/`iGroupRand`) onto `Bonus`; `BonusGenerator.place` runs the constrained placement **per province** (order + target density + group spacing/clustering). Faithful in-spirit; counts/spacing are province-local, not global — the one gap forced by eos's lazy per-province caching. Test: `BonusPlacementTest` |
 
+### Update (2026-07-25, `MAP_VERSION` 11) — one temperature, sampled from a field
+
+The **Prereqs** row above resolved the per-plot-temperature impedance mismatch by option (a): reproduce
+the Python tent from latitude, so the thresholds transfer verbatim. That turned out to be wrong *for this
+map* — Anbennar's latitudes are inverse-Mercator over the full 2048-row raster, so its temperate heartland
+sits at |lat| 60–75° and the tent read it as sub-freezing. The generator now has **one** temperature,
+`WorldClimate.controlTemperature`, anchored on Anbennar's authored `climate.txt` with latitude demoted to
+a gentle lapse — and the **feature stage reads the same value** the terrain bands do, which is what the
+script does with its single `getTileTemperature`. Every weight table and threshold below is unchanged;
+only the scale feeding them was re-derived. `ClimateProfile.pyTemperature` survives as the documented
+Python tent but no longer drives generation.
+
+The stages also now run over a mask **halo** of neighbouring land (`ProvinceMask.isGround`) rather than
+this province's pixels alone, and the ground is a pure function of world position. Two fidelity notes
+follow from that: `isCoastal` is the real sea mask (the script's `isCoastal`), not "outside this
+province"; and peak seeding/growth (§3) can now actually reach a province border, which it never could
+before. Full write-up in `docs/plot-generator.md` §Seamless generation / §Temperature.
+
 The whole-world plot caches + `web/assets/plots.pack` are regenerated after any of these change
 (`WorldPlotGenerator` then `node web/build.mjs <seed>`); the caches are gitignored and the generator
 skips already-present provinces, so a regen must delete them first.

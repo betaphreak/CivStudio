@@ -19,17 +19,26 @@ import com.civstudio.util.Rng;
  * <p>
  * <b>This phase</b> assembles four stages: the relief ({@link PlotType}
  * flat/hill/peak) from the C2C-ported {@link ReliefGenerator} (spatially clustered
- * ranges); the ground {@link Terrain} from the <b>real {@code terrain.bmp}</b> ({@link
- * MapTerrainCodec#ground}), with the province's climate-weighted pool ({@link
- * TerrainGenerator#next}) as the fallback for unmapped pixels; the wild {@link Feature}
+ * ranges), roughened by the real {@code terrain.bmp} mountain palette ({@link
+ * MapTerrainCodec#relief}); the ground {@link Terrain} from the C2C temperature×humidity
+ * bands ({@link ClimateTerrainGenerator}), grown in world-space patches off the continuous
+ * {@link WorldClimate} field; the wild {@link Feature}
  * from the C2C-ported {@link FeatureGenerator} (the {@code addFeatures} seed-and-spread
  * — per-cell weighted jungle/forest/swamp with peak-seeding and the jungle→forest cold
  * substitution), plus river <b>flood plains</b> and the generic <b>appearance-probability
  * scatter</b> ({@link #featureFor}); and the {@link Bonus} resource from {@link
  * BonusGenerator} (placed by each bonus's own terrain/feature/relief/latitude
  * constraints). The C2C stage's <b>terrain rewriting</b> (jungle greening desert, …) is
- * deliberately not applied — eos's ground is the real EU4 map and is left intact (see
- * {@code docs/c2c-generator-port.md} §2, "feature consequences only").
+ * deliberately not applied (see {@code docs/c2c-generator-port.md} §2, "feature
+ * consequences only").
+ * <p>
+ * <b>Generation is seamless across province borders</b>, which it was not before
+ * {@code MAP_VERSION} 11. The mask carries a {@linkplain ProvinceMask#isGround halo} of the
+ * neighbouring provinces' land, so every stage runs over real context instead of reading a
+ * border as ocean; the ground is a <b>pure function of world position</b>
+ * ({@link #worldGround}) drawn from a <b>continuous</b> climate field, so it neither restarts
+ * at a border nor depends on which province asks. Only {@link ProvinceMask#isLand} cells are
+ * emitted as plots. See {@code docs/plot-generator.md} §Seamless generation.
  */
 public final class ProvincePlotField {
 
@@ -136,6 +145,14 @@ public final class ProvincePlotField {
 	 */
 	private static final int SHELF_MAX = 3;
 
+	/**
+	 * The climate-field temperature (°C, C2C scale) at or below which water reads <b>polar</b> — the
+	 * sea terrain bands to its polar variant and the ice cap starts. Keyed on temperature, not on
+	 * {@code |lat| >= 66}: the EU4 projection puts temperate Cannor at |lat| 60–75, so the latitude
+	 * form iced its seas. See {@link WorldClimate} and {@code docs/plot-generator.md} §Temperature.
+	 */
+	static final double POLAR_TEMPERATURE = -2.0;
+
 	private final Province province;
 	private final List<ProvincePlot> plots;
 
@@ -145,10 +162,10 @@ public final class ProvincePlotField {
 	}
 
 	/**
-	 * Generate a province's plot field deterministically off the terrain {@code rng}.
-	 * Relief is generated first (consuming the stream for its clustering), then one
-	 * terrain is drawn per land cell in row-major order — so the same {@code (rng
-	 * seed, province)} yields the same field.
+	 * Generate a province's plot field deterministically off the terrain {@code rng}. Relief is
+	 * generated first (consuming the stream for its clustering), then the ground — which consumes
+	 * <b>no</b> rng at all, being a pure function of world position — then features and resources in
+	 * row-major order, so the same {@code (rng seed, province)} yields the same field.
 	 *
 	 * @param province the province to build a field for
 	 * @param registry the curated terrain/feature definitions
@@ -163,36 +180,58 @@ public final class ProvincePlotField {
 		if (province.type() == ProvinceType.SEA || province.type() == ProvinceType.LAKE)
 			return generateWater(province, registry, raster, rng);
 		ProvinceMask mask = raster.mask(province.id());
+		WorldClimate world = WorldClimate.of(raster);
 		int w = mask.width(), h = mask.height();
 		PlotType[] relief = ReliefGenerator.generate(mask, ReliefGenerator.Params.forProvince(province), rng);
 		ClimateProfile climate = ClimateProfile.of(province);
 
-		// Ground each land cell procedurally with the C2C temperature×humidity terrain generator
-		// (docs/plot-generator.md) — the PRIMARY terrain source now, replacing the terrain.bmp biome, so
-		// all 33 terrains appear climate-appropriately from the province's authored climate rather than
-		// the sparse EU4 palette. Grounding first lets the feature stage read the whole terrain+relief
-		// grid (it seeds off peaks, chooses per-cell by terrain category). Relief stays HYBRID: the C2C
-		// ReliefGenerator ranges roughened with the map's real mountain palette (MapTerrainCodec.relief
-		// still read for peak/hill only, not biome), so real ranges survive while the ground is climate-
-		// driven. Each cell draws a fixed two terrains in row-major order, so the canonical stream stays
-		// deterministic per province (the seed contract). Temperature bands handle latitude/winter cold,
-		// so the old latitude-cooling override pass is gone.
-		double terrainTemp = ClimateTerrainGenerator.temperature(province);
-		ClimateTerrainGenerator terrainGen = province.type() == ProvinceType.IMPASSABLE
-				? ClimateTerrainGenerator.barren(registry, terrainTemp)                      // wasteland → barren ground
-				: new ClimateTerrainGenerator(registry, terrainTemp, climate.humidity());
+		// Ground every GROUND cell — this province's land plus the halo of neighbouring land the mask
+		// carries — procedurally with the C2C temperature×humidity terrain generator
+		// (docs/plot-generator.md). This is the PRIMARY terrain source, replacing the terrain.bmp biome,
+		// so all 33 terrains appear climate-appropriately. Grounding first lets the feature stage read the
+		// whole terrain+relief grid (it seeds off peaks, chooses per-cell by terrain category). Relief
+		// stays HYBRID: the C2C ReliefGenerator ranges roughened with the map's real mountain palette
+		// (MapTerrainCodec.relief still read for peak/hill only, not biome), so real ranges survive while
+		// the ground is climate-driven.
+		//
+		// SEAMLESS (v11): the ground is now a pure function of WORLD position — a lattice of patches
+		// hashed off absolute raster coordinates, each patch's terrain drawn from the CONTINUOUS
+		// WorldClimate field sampled at the patch's own position (docs/plot-generator.md §Seamless
+		// generation). It consumes no rng and does not depend on which province is being generated, so
+		// two provinces agree exactly on their shared border and the lazy per-province path produces
+		// byte-identical ground to a single global pass.
+		ClimateTerrainGenerator.Cache pools = new ClimateTerrainGenerator.Cache(registry);
 		Terrain[] ground = new Terrain[w * h];
 		PlotType[] composed = new PlotType[w * h];
 		// relief per-plot from the heightmap (already spatially coherent — the elevation field is smooth)
 		for (int ly = 0; ly < h; ly++)
 			for (int lx = 0; lx < w; lx++) {
-				if (!mask.isLand(lx, ly))
+				if (!mask.isGround(lx, ly))
 					continue;
 				int idx = ly * w + lx;
 				composed[idx] = rougher(relief[idx], MapTerrainCodec.relief(mask.terrainIndex(lx, ly)));
 			}
-		// terrain grown in coherent regional patches, not an independent per-cell draw (region-coherence, v5)
-		coherentGround(ground, mask, w, h, terrainGen, rng);
+		worldGround(ground, mask, w, h, world, pools);
+
+		// this province's OWN cells (row-major) — the emission set, and the only cells the
+		// membership-driven overrides below touch. The surrounding halo keeps its world ground so
+		// the de-speckle and vegetation stages read real neighbouring land, not a wasteland smear.
+		List<int[]> cells = new ArrayList<>(mask.landCount());
+		for (int ly = 0; ly < h; ly++)
+			for (int lx = 0; lx < w; lx++)
+				if (mask.isLand(lx, ly))
+					cells.add(new int[] { lx, ly });
+
+		// the province-level generator the membership-driven overrides draw from (barren wasteland,
+		// cavern pool, special-terrain filler) — a province TYPE, not its climate, drives those, and
+		// their borders are meant to be sharp, so they stay a per-province draw off the terrain stream
+		double provinceTemp = world.temperature(mask.originX() + w / 2.0, mask.originY() + h / 2.0);
+		ClimateTerrainGenerator terrainGen = province.type() == ProvinceType.IMPASSABLE
+				? ClimateTerrainGenerator.barren(registry, provinceTemp)                     // wasteland → barren ground
+				: new ClimateTerrainGenerator(registry, provinceTemp, climate.humidity());
+		if (province.type() == ProvinceType.IMPASSABLE)
+			for (int[] c : cells)
+				ground[c[1] * w + c[0]] = terrainGen.next(rng);   // barren waste, not the climate mix
 
 		// Special-terrain provinces override the climate ground (membership, not the climate, drives it).
 		// Done before the feature/bonus stages so those read the real ground. UNDERGROUND types (cavern/
@@ -202,34 +241,34 @@ public final class ProvincePlotField {
 		Map<String, Double> cavern = SPECIAL_POOL.get(province.type());
 		if (cavern != null) {                                          // underground
 			TerrainGenerator cavernGen = new TerrainGenerator(registry, cavern);
-			for (int idx = 0; idx < ground.length; idx++)
-				if (ground[idx] != null) {                             // land cells only
-					ground[idx] = cavernGen.next(rng);
-					composed[idx] = PlotType.FLAT;
-				}
+			for (int[] c : cells) {
+				int idx = c[1] * w + c[0];
+				ground[idx] = cavernGen.next(rng);
+				composed[idx] = PlotType.FLAT;
+			}
 		}
 		String signatureKey = SPECIAL_SIGNATURE.get(province.type());
 		if (signatureKey != null) {                                    // surface special terrain
 			Terrain signature = registry.terrain(signatureKey);
-			for (int idx = 0; idx < ground.length; idx++)
-				if (ground[idx] != null)                               // signature-dominant, climate-aware filler
-					ground[idx] = rng.uniform() < SPECIAL_SIGNATURE_FRAC ? signature : terrainGen.next(rng);
+			for (int[] c : cells)                                      // signature-dominant, climate-aware filler
+				ground[c[1] * w + c[0]] = rng.uniform() < SPECIAL_SIGNATURE_FRAC ? signature : terrainGen.next(rng);
 		}
 
-		// De-speckle the ground into coherent regions. Terrain is sampled 1 raster pixel = 1 plot, and
-		// the latitude-cooling and special-pool passes above draw each cell independently — so the raw
-		// ground is salt-and-pepper (an isolated plot of a different terrain in nearly every cell), which
-		// reads as a hard grid at the deepest city-builder zoom no matter how the web blends plot edges.
-		// A few passes of majority (mode) smoothing coalesce the speckle into natural patches while
-		// keeping each terrain's overall share. Reads a per-pass snapshot (order-independent) and consumes
-		// NO rng, so the deterministic, row-major terrain draws above are untouched (see the seed contract).
+		// De-speckle the ground into coherent regions. Terrain is sampled 1 raster pixel = 1 plot, so the
+		// patch edges and the special-pool passes above leave stray single cells, which read as a hard
+		// grid at the deepest city-builder zoom no matter how the web blends plot edges. A few passes of
+		// majority (mode) smoothing coalesce the speckle into natural patches while keeping each terrain's
+		// overall share. It runs over the whole GROUND grid (halo included), so a cell on the province
+		// border is smoothed against its real neighbours instead of against nothing. Reads a per-pass
+		// snapshot (order-independent) and consumes NO rng, so the terrain draws above are untouched.
 		despeckle(ground, w, h);
 
 		// the C2C-ported feature seed-and-spread: the per-cell vegetation intent
-		// (jungle/forest/swamp or bare), which this loop validity-gates below
-		double treeCover = treeCover(mask);
+		// (jungle/forest/swamp or bare), which this loop validity-gates below. Temperature, humidity
+		// and vegetation density are sampled per cell off the continuous field, and the stage runs
+		// over the halo too, so vegetation carries across a province seam.
 		Feature[] vegetation = FeatureGenerator.generate(mask, ground, composed,
-				province.latitude(), climate, treeCover, registry, rng);
+				world, 0.2 + 0.8 * climate.humidity(), registry, rng);
 		Feature floodPlains = registry.feature("FEATURE_FLOOD_PLAINS");
 		List<Bonus> bonuses = registry.bonuses();
 
@@ -240,17 +279,12 @@ public final class ProvincePlotField {
 		// choice is validity-gated (see featureFor). A grid (not the final plot) so the
 		// oasis pass can score a cell's neighbours before the bonuses read the feature.
 		Feature[] feature = new Feature[w * h];
-		List<int[]> cells = new ArrayList<>(mask.landCount());
-		for (int ly = 0; ly < h; ly++)
-			for (int lx = 0; lx < w; lx++) {
-				if (!mask.isLand(lx, ly))
-					continue;
-				int idx = ly * w + lx;
-				cells.add(new int[] { lx, ly });
-				feature[idx] = featureFor(ground[idx], composed[idx], mask.riverCode(lx, ly) != 0,
-						vegetation[idx], mask.treeIndex(lx, ly), mask.terrainIndex(lx, ly),
-						climate, floodPlains, registry, rng);
-			}
+		for (int[] c : cells) {
+			int lx = c[0], ly = c[1], idx = ly * w + lx;
+			feature[idx] = featureFor(ground[idx], composed[idx], mask.riverCode(lx, ly) != 0,
+					vegetation[idx], mask.treeIndex(lx, ly), mask.terrainIndex(lx, ly),
+					climate, floodPlains, registry, rng);
+		}
 		// special forest/swamp terrains: the C2C stage above leaves them bare (no trees.bmp
 		// coverage), so stamp their signature feature over ~90% of non-peak plots. See
 		// docs/underworld.md.
@@ -352,22 +386,24 @@ public final class ProvincePlotField {
 	private static ProvincePlotField generateWater(Province province, TerrainRegistry registry,
 			ProvinceRaster raster, Rng rng) throws IOException {
 		ProvinceMask mask = raster.mask(province.id());
+		WorldClimate world = WorldClimate.of(raster);
 		boolean lake = province.type() == ProvinceType.LAKE;
 		List<Bonus> bonuses = registry.bonuses();
 		double latitude = province.latitude();
-		// FEATURE_ICE covers polar water — sea ice thickening toward the pole. A province is one
-		// climate band (its latitude), so either all its water is polar (ice draws) or none is;
-		// that keeps the per-cell draw order deterministic. Absent registry ice → no ice, no draws.
+		// FEATURE_ICE covers frozen water — sea ice thickening as the water gets colder. See the
+		// ice-cover model below for why it reads the climate field rather than the latitude.
 		Feature ice = registry.feature("FEATURE_ICE");
-		// C2C sea ice (addFeatures §3, L2746–2780): a polar-cap coverage that thickens
-		// toward the pole, combined with temperature-driven drift ice on cold open water.
-		// A province is one climate band (its latitude), so either all its water ices or
-		// none does, keeping the per-cell draw order deterministic. Absent registry ice →
-		// no ice, no draws. With the default temperature tent the 0 °C isotherm sits at
-		// ~67°, where the water terrain already bands to its polar variant (the only host
-		// FEATURE_ICE lists), so the drift-ice term coincides with the polar cap here — it
-		// generalises the mechanism should the climate model change.
-		double temp = ClimateProfile.pyTemperature(latitude);
+		// C2C sea ice (addFeatures §3, L2746–2780): temperature-driven drift ice on cold open water,
+		// thickening as the water gets colder. The temperature is the sea's own sample of the
+		// continuous climate field — which, for water, is the climate of the nearest COAST (water
+		// provinces are not control points, so the field's fill hands them their neighbouring
+		// shore's value). That is the right signal: a sea ices over because the land around it is
+		// frozen, not because a Mercator latitude says 66°. Keying it on |lat| ≥ 66 iced the seas
+		// all around Cannor, which the EU4 projection puts at |lat| 60–75. A province reads one
+		// sample (its centre), so either all its water ices or none does — keeping the per-cell draw
+		// order deterministic. Absent registry ice → no ice, no draws.
+		double temp = world.temperature(mask.originX() + mask.width() / 2.0,
+				mask.originY() + mask.height() / 2.0);
 		final double ICE_ON_WATER = 0.5;
 		double driftIce = temp < -40 ? ICE_ON_WATER * 2   // L2766–2780
 				: temp < -25 ? ICE_ON_WATER
@@ -375,8 +411,10 @@ public final class ProvincePlotField {
 				: temp < -5 ? ICE_ON_WATER / 3
 				: temp < 0 ? ICE_ON_WATER / 4
 				: 0;
-		double polarCap = Math.abs(latitude) >= 66.0   // matches MapTerrainCodec's polar band
-				? Math.min(0.9, 0.15 + (Math.abs(latitude) - 66.0) / 16.0 * 0.75) : 0;
+		// the polar cap the script draws inside poleSeparation rows, here graded by how far the
+		// water sits below freezing rather than by row index
+		double polarCap = temp < POLAR_TEMPERATURE
+				? Math.min(0.9, 0.15 + (POLAR_TEMPERATURE - temp) / 12.0 * 0.75) : 0;
 		double iceCover = Math.min(0.95, Math.max(polarCap, driftIce));
 		boolean anyIce = ice != null && iceCover > 0;
 		int w = mask.width(), h = mask.height();
@@ -392,7 +430,7 @@ public final class ProvincePlotField {
 				int dist = mask.landDist(lx, ly);
 				if (dist < 1 || dist > SHELF_MAX) // keep only the near-shore shelf ring
 					continue;
-				Terrain terrain = MapTerrainCodec.water(lake, dist, latitude, registry);
+				Terrain terrain = MapTerrainCodec.water(lake, dist, temp, registry);
 				if (terrain == null) // registry lacks the shelf water terrains — no water plots
 					continue;
 				int idx = ly * w + lx;
@@ -416,28 +454,6 @@ public final class ProvincePlotField {
 		return new ProvincePlotField(province, out);
 	}
 
-	// the wooded fraction of the province's land from the real trees.bmp overlay
-	// ({@link MapTerrainCodec#isWoody}), the density signal the feature stage spreads
-	// from; -1 when the overlay is absent (no tree index on any land cell), so the
-	// feature stage falls back to the climate humidity.
-	private static double treeCover(ProvinceMask mask) {
-		int land = 0, wooded = 0;
-		boolean any = false;
-		for (int ly = 0; ly < mask.height(); ly++)
-			for (int lx = 0; lx < mask.width(); lx++) {
-				if (!mask.isLand(lx, ly))
-					continue;
-				land++;
-				int ti = mask.treeIndex(lx, ly);
-				if (ti >= 0) {
-					any = true;
-					if (MapTerrainCodec.isWoody(ti))
-						wooded++;
-				}
-			}
-		return (any && land > 0) ? wooded / (double) land : -1;
-	}
-
 	// the rougher of two reliefs (FLAT < HILL < PEAK), by enum ordinal — used to let
 	// a real map mountain/hill override the generator's flatland without flattening
 	// the generator's own clustered ranges.
@@ -449,51 +465,80 @@ public final class ProvincePlotField {
 	// grow patches larger; 4 dissolves the salt-and-pepper without erasing genuine terrain regions.
 	private static final int DESPECKLE_PASSES = 3;
 
-	// Region-coherence (v5): grow terrain in contiguous PATCHES rather than an independent per-plot draw.
-	private static final int PATCH_AREA = 22;      // land plots per seed → mean patch size
-	private static final double NOISE_CELL = 8.0;  // displacement-noise wavelength, in plots
+	// Region-coherence: terrain grows in contiguous PATCHES rather than an independent per-plot draw.
+	private static final int PATCH_SIDE = 5;        // patch lattice pitch, in plots (~22 plots per patch)
+	private static final double NOISE_CELL = 8.0;   // displacement-noise wavelength, in plots
 	private static final double PATCH_JITTER = 5.0; // displacement amplitude, in plots (organic patch edges)
 
 	/**
-	 * Ground each land cell with terrain grown in coherent regional PATCHES: scatter ~1 seed per
-	 * {@link #PATCH_AREA} land plots — each seed a climate-pool draw ({@code gen.next}) — then assign every
-	 * land plot the terrain of its nearest seed, its sample point first nudged by a smooth low-frequency
-	 * value-noise field so patch boundaries wander organically instead of forming straight Voronoi walls.
-	 * The seeds are pool draws, so each terrain keeps its aggregate share; a later {@link #despeckle} still
-	 * tidies stray cells. Deterministic on the province's TERRAIN stream (seeds consume rng in order; the
-	 * nearest-seed + noise passes consume none). Replaces the old salt-and-pepper per-cell draw.
+	 * Ground every {@linkplain ProvinceMask#isGround ground} cell with terrain grown in coherent
+	 * regional PATCHES — <b>as a pure function of world position</b>, which is what makes the ground
+	 * seamless across province borders (see {@code docs/plot-generator.md} §Seamless generation).
+	 * <p>
+	 * A {@link #PATCH_SIDE}-pitch lattice is laid over the whole raster in <b>absolute</b>
+	 * coordinates. Each lattice cell hashes to a jittered seed point and to its own
+	 * {@link Rng}, from which it draws its terrain out of the climate pool sampled at the seed's own
+	 * position in the continuous {@link WorldClimate} field. A plot then takes the terrain of its
+	 * nearest seed among the 3×3 lattice cells around it, its sample point first nudged by a smooth
+	 * low-frequency value-noise field (also in absolute coordinates) so patch boundaries wander
+	 * organically instead of forming straight Voronoi walls.
+	 * <p>
+	 * Every input is a world coordinate and every draw is hash-derived, so this consumes <b>no</b>
+	 * rng stream and gives the same answer no matter which province asks: two provinces agree
+	 * exactly along their shared border, and generating the world province-by-province is identical
+	 * to generating it in one pass. The predecessor scattered seeds over <em>this province's</em>
+	 * land and sampled the noise in <em>mask-local</em> coordinates, so neither the patches nor the
+	 * noise lattice lined up across a seam.
 	 */
-	private static void coherentGround(Terrain[] ground, ProvinceMask mask, int w, int h,
-			ClimateTerrainGenerator gen, Rng rng) {
-		java.util.List<int[]> land = new java.util.ArrayList<>();
+	private static void worldGround(Terrain[] ground, ProvinceMask mask, int w, int h,
+			WorldClimate climate, ClimateTerrainGenerator.Cache pools) {
 		for (int ly = 0; ly < h; ly++)
-			for (int lx = 0; lx < w; lx++)
-				if (mask.isLand(lx, ly))
-					land.add(new int[] { lx, ly });
-		int n = land.size();
-		if (n == 0)
-			return;
-		int seeds = Math.max(1, Math.round(n / (float) PATCH_AREA));
-		int[] sx = new int[seeds], sy = new int[seeds];
-		Terrain[] st = new Terrain[seeds];
-		for (int s = 0; s < seeds; s++) {
-			int[] p = land.get(rng.uniform(n));   // a random land plot anchors the patch
-			sx[s] = p[0];
-			sy[s] = p[1];
-			st[s] = gen.next(rng);                // the patch's terrain, from the climate pool
-		}
-		for (int[] p : land) {
-			int lx = p[0], ly = p[1];
-			double px = lx + PATCH_JITTER * (valNoise(lx, ly, 1) - 0.5);   // organic boundary displacement
-			double py = ly + PATCH_JITTER * (valNoise(lx, ly, 2) - 0.5);
-			int best = 0;
-			double bestD = Double.MAX_VALUE;
-			for (int s = 0; s < seeds; s++) {
-				double dx = px - sx[s], dy = py - sy[s], d = dx * dx + dy * dy;
-				if (d < bestD) { bestD = d; best = s; }
+			for (int lx = 0; lx < w; lx++) {
+				if (!mask.isGround(lx, ly))
+					continue;
+				double wx = mask.originX() + lx, wy = mask.originY() + ly;
+				double px = wx + PATCH_JITTER * (valNoise(wx, wy, 1) - 0.5);   // organic boundary displacement
+				double py = wy + PATCH_JITTER * (valNoise(wx, wy, 2) - 0.5);
+				int cx = (int) Math.floor(px / PATCH_SIDE), cy = (int) Math.floor(py / PATCH_SIDE);
+				Terrain best = null;
+				double bestD = Double.MAX_VALUE;
+				for (int dy = -1; dy <= 1; dy++)
+					for (int dx = -1; dx <= 1; dx++) {
+						int sxc = cx + dx, syc = cy + dy;
+						// the lattice cell's jittered seed point, hashed from its own coordinates
+						double sx = (sxc + hash01(sxc, syc, 11)) * PATCH_SIDE;
+						double sy = (syc + hash01(sxc, syc, 12)) * PATCH_SIDE;
+						double ddx = px - sx, ddy = py - sy, d = ddx * ddx + ddy * ddy;
+						if (d >= bestD)
+							continue;
+						bestD = d;
+						best = patchTerrain(sxc, syc, sx, sy, climate, pools);
+					}
+				ground[ly * w + lx] = best;
 			}
-			ground[ly * w + lx] = st[best];
-		}
+	}
+
+	/**
+	 * The terrain of one patch: a two-draw {@link ClimateTerrainGenerator} pick (base band then C2C
+	 * diversify) from the pool at the patch seed's own climate, off an {@link Rng} seeded by the
+	 * lattice coordinates. Pure in {@code (cellX, cellY)} — no shared stream, so patch identity is a
+	 * property of the world, not of the generation order.
+	 */
+	private static Terrain patchTerrain(int cellX, int cellY, double seedX, double seedY,
+			WorldClimate climate, ClimateTerrainGenerator.Cache pools) {
+		ClimateTerrainGenerator gen = pools.forClimate(
+				climate.temperature(seedX, seedY), climate.humidity(seedX, seedY));
+		return gen.next(new Rng(hash64(cellX, cellY, 13)));
+	}
+
+	/** A 64-bit hash of a lattice coordinate — the per-patch {@link Rng} seed. */
+	private static long hash64(int x, int y, int salt) {
+		long h = x * 0x9E3779B97F4A7C15L ^ y * 0xC2B2AE3D27D4EB4FL ^ salt * 0x165667B19E3779F9L;
+		h ^= h >>> 33;
+		h *= 0xFF51AFD7ED558CCDL;
+		h ^= h >>> 33;
+		h *= 0xC4CEB9FE1A85EC53L;
+		return h ^ (h >>> 33);
 	}
 
 	/** Smooth value noise in [0,1] at (x,y) for a salt — a hashed coarse lattice, bilinearly smoothstepped. */
@@ -614,8 +659,8 @@ public final class ProvincePlotField {
 				int score = 10;
 				for (int[] d : DIRS8) {
 					int nx = lx + d[0], ny = ly + d[1];
-					if (!mask.isLand(nx, ny))
-						continue; // out-of-province / open water neighbour — unreadable, skip
+					if (!mask.isGround(nx, ny))
+						continue; // open water neighbour — unreadable, skip
 					int ni = ny * w + nx;
 					if (mask.isRiver(nx, ny))
 						score -= 40;       // a river cell is both fresh and riverside (−20 each)
@@ -651,7 +696,7 @@ public final class ProvincePlotField {
 			boolean nearOasis = false;
 			for (int[] d : DIRS8) {
 				int nx = cx + d[0], ny = cy + d[1];
-				if (mask.isLand(nx, ny) && feature[ny * w + nx] == oasis) {
+				if (mask.isGround(nx, ny) && feature[ny * w + nx] == oasis) {
 					nearOasis = true;
 					break;
 				}
@@ -669,10 +714,10 @@ public final class ProvincePlotField {
 	private static final int[][] DIRS8 = {
 			{ -1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 }, { 1, 0 }, { 1, -1 }, { 0, -1 }, { -1, -1 } };
 
-	// a land cell is coastal if an orthogonal neighbour is outside the province (open sea)
+	// a land cell is coastal if a real sea/lake pixel touches it (the global sea mask) — NOT if a
+	// neighbour merely lies outside this province, which would call every border cell coastal
 	private static boolean coastal(ProvinceMask mask, int x, int y) {
-		return !mask.isLand(x - 1, y) || !mask.isLand(x + 1, y)
-				|| !mask.isLand(x, y - 1) || !mask.isLand(x, y + 1);
+		return mask.isCoastal(x, y);
 	}
 
 	// the generic appearance-probability pass over an otherwise-bare plot (L3171–3175):

@@ -7,10 +7,8 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -115,8 +113,24 @@ public final class ProvinceRaster {
 	}
 
 	/**
-	 * The pixel mask of the province with this {@code province_id}: its land cells
-	 * (pixels of its colour) and their river flags, framed to its bounding box.
+	 * How many pixels of <b>neighbouring</b> land the mask carries around the province's own
+	 * bounding box — its {@linkplain ProvinceMask#isGround halo}. Every spatial generator probes
+	 * neighbours through the mask, so without a halo a province border reads as ocean and each
+	 * stage breaks at the seam (vegetation seeds along the outline, peaks never grow within a
+	 * pixel of it, de-speckling has nothing to smooth against). 8 covers the widest neighbourhood
+	 * any stage reads (the C2C peak scoring's 5×5 plus its spread) with room to spare. See
+	 * {@code docs/plot-generator.md} §Seamless generation.
+	 */
+	public static final int HALO = 8;
+
+	/**
+	 * The pixel mask of the province with this {@code province_id}: its own land cells
+	 * (pixels of its colour) and their river flags, framed to its bounding box grown by
+	 * {@link #HALO} pixels of context. Cells of <em>other</em> land provinces inside that
+	 * frame are marked {@linkplain ProvinceMask#isGround ground} (but not
+	 * {@linkplain ProvinceMask#isLand own}), so the generators see real neighbouring land
+	 * instead of ocean; every raster overlay (terrain / trees / elevation / river / coast /
+	 * land distance) is filled across the whole frame for the same reason.
 	 *
 	 * @param provinceId the game province id
 	 * @return the province's mask
@@ -132,30 +146,32 @@ public final class ProvinceRaster {
 		int target = color;
 		int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE;
 		int maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
-		List<int[]> hits = new ArrayList<>(); // x, y, riverCode
+		boolean any = false;
 		for (int y = 0; y < height; y++) {
 			for (int x = 0; x < width; x++) {
-				int i = y * width + x;
-				if ((pixels[i] & 0xFFFFFF) != target)
+				if ((pixels[y * width + x] & 0xFFFFFF) != target)
 					continue;
-				int riverCode = classifyRiver(river[i] & 0xFFFFFF);
-				if (riverCode != 0)
-					// fold in the tens (flow-direction) digit and the 100000s (render width class);
-					// the authored width in the low digit is left as classifyRiver found it
-					riverCode += riverFlow[i] * 10 + widthClass(riverAcc[i], riverCode % 10) * 100000;
-				hits.add(new int[] { x, y, riverCode });
+				any = true;
 				if (x < minX) minX = x;
 				if (x > maxX) maxX = x;
 				if (y < minY) minY = y;
 				if (y > maxY) maxY = y;
 			}
 		}
-		if (hits.isEmpty())
+		if (!any)
 			throw new IllegalStateException("province " + provinceId + " has no pixels");
+
+		// grow the frame by the halo, clamped to the raster (no E-W wrap — the map is a finite
+		// sheet since the realm split, see docs/realms.md)
+		minX = Math.max(0, minX - HALO);
+		minY = Math.max(0, minY - HALO);
+		maxX = Math.min(width - 1, maxX + HALO);
+		maxY = Math.min(height - 1, maxY + HALO);
 
 		int w = maxX - minX + 1;
 		int h = maxY - minY + 1;
-		boolean[] landGrid = new boolean[w * h];
+		boolean[] landGrid = new boolean[w * h];   // this province's own pixels — one plot each
+		boolean[] groundGrid = new boolean[w * h]; // any land pixel (own or a neighbour's) — context
 		int[] riverGrid = new int[w * h];
 		int[] coastGrid = new int[w * h]; // 8-bit water-neighbour mask (edges + corners) per land cell
 		// per-cell EU4 terrain/tree palette indices, framed to the same bounding box
@@ -167,24 +183,98 @@ public final class ProvinceRaster {
 		int[] landDistGrid = new int[w * h];  // Chebyshev pixels to dry land (0 on land) — shelf classifier
 		java.util.Arrays.fill(terrainGrid, -1);
 		java.util.Arrays.fill(treeGrid, -1);
-		for (int[] hit : hits) {
-			int ax = hit[0], ay = hit[1];
-			int idx = (ay - minY) * w + (ax - minX);
-			landGrid[idx] = true;
-			landDistGrid[idx] = landDistance[ay * width + ax];
-			// fold the river-adjacency mask into the code's THOUSANDS digit, but only on an
-			// actual river cell — so a non-river plot stays 0 (river() boolean is preserved) and
-			// the web ribbon can link across province seams (a neighbour may sit in another mask).
-			riverGrid[idx] = hit[2] != 0 ? hit[2] + riverAdjMask(ax, ay) * 1000 : 0;
-			coastGrid[idx] = seaMask(ax, ay);
-			if (terrainIdx != null)
-				terrainGrid[idx] = terrainIdx[ay * width + ax];
-			if (treeIdx != null)
-				treeGrid[idx] = treeIndexAt(ax, ay);
-			if (heightIdx != null)
-				elevationGrid[idx] = heightIdx[ay * width + ax];
+		for (int ay = minY; ay <= maxY; ay++) {
+			for (int ax = minX; ax <= maxX; ax++) {
+				int i = ay * width + ax;
+				int idx = (ay - minY) * w + (ax - minX);
+				int rgb = pixels[i] & 0xFFFFFF;
+				boolean own = rgb == target;
+				landGrid[idx] = own;
+				// halo context: any dry-land pixel, whichever province owns it. Water provinces'
+				// own cells still get their overlays filled (the coastal-shelf path reads them).
+				groundGrid[idx] = !waterColors.contains(rgb);
+				landDistGrid[idx] = landDistance[i];
+				int riverCode = classifyRiver(river[i] & 0xFFFFFF);
+				if (riverCode != 0)
+					// fold in the tens (flow-direction) digit and the 100000s (render width class);
+					// the authored width in the low digit is left as classifyRiver found it
+					riverCode += riverFlow[i] * 10 + widthClass(riverAcc[i], riverCode % 10) * 100000;
+				// fold the river-adjacency mask into the code's THOUSANDS digit, but only on an
+				// actual river cell — so a non-river plot stays 0 (river() boolean is preserved) and
+				// the web ribbon can link across province seams (a neighbour may sit in another mask).
+				riverGrid[idx] = riverCode != 0 ? riverCode + riverAdjMask(ax, ay) * 1000 : 0;
+				coastGrid[idx] = seaMask(ax, ay);
+				if (terrainIdx != null)
+					terrainGrid[idx] = terrainIdx[i];
+				if (treeIdx != null)
+					treeGrid[idx] = treeIndexAt(ax, ay);
+				if (heightIdx != null)
+					elevationGrid[idx] = heightIdx[i];
+			}
 		}
-		return new ProvinceMask(minX, minY, w, h, landGrid, riverGrid, coastGrid, terrainGrid, treeGrid, elevationGrid, landDistGrid);
+		return new ProvinceMask(minX, minY, w, h, landGrid, groundGrid, riverGrid, coastGrid,
+				terrainGrid, treeGrid, elevationGrid, landDistGrid, this);
+	}
+
+	/** Receives every raster pixel with the id of the province that owns it ({@code -1} if unknown). */
+	@FunctionalInterface
+	public interface PixelVisitor {
+		void accept(int x, int y, int provinceId);
+	}
+
+	/**
+	 * Visit every pixel of the province raster with its owning province id — the one pass
+	 * {@link WorldClimate} paints its field from. Loads the rasters if they are not loaded yet.
+	 */
+	public void forEachPixel(PixelVisitor visitor) throws IOException {
+		ensureRaster();
+		Map<Integer, Integer> colorToId = new HashMap<>(idToColor.size() * 2);
+		for (Map.Entry<Integer, Integer> e : idToColor.entrySet())
+			colorToId.put(e.getValue(), e.getKey());
+		for (int y = 0; y < height; y++)
+			for (int x = 0; x < width; x++) {
+				Integer id = colorToId.get(pixels[y * width + x] & 0xFFFFFF);
+				visitor.accept(x, y, id == null ? -1 : id);
+			}
+	}
+
+	/** The province raster's pixel width. Loads the rasters if they are not loaded yet. */
+	public int rasterWidth() throws IOException {
+		ensureRaster();
+		return width;
+	}
+
+	/** The province raster's pixel height. Loads the rasters if they are not loaded yet. */
+	public int rasterHeight() throws IOException {
+		ensureRaster();
+		return height;
+	}
+
+	/**
+	 * The <b>wooded fraction</b> in {@code [0, 1]} covering an absolute raster pixel — the
+	 * vegetation density signal the feature stage spreads from, bilinearly interpolated over
+	 * {@code trees.bmp}. The overlay is ~1/7.7 resolution (one tree pixel covers ~59 province
+	 * pixels), so sampling it as a per-province average made density jump at every border;
+	 * interpolating the woody flags of the four surrounding tree cells makes it a <b>continuous
+	 * function of world position</b> instead. Returns {@code -1} when the overlay is absent.
+	 */
+	public double treeDensity(int ax, int ay) {
+		if (treeIdx == null)
+			return -1;
+		double tx = (ax + 0.5) * treeWidth / (double) width - 0.5;
+		double ty = (ay + 0.5) * treeHeight / (double) height - 0.5;
+		int x0 = (int) Math.floor(tx), y0 = (int) Math.floor(ty);
+		double fx = tx - x0, fy = ty - y0;
+		double a = woody(x0, y0), b = woody(x0 + 1, y0);
+		double c = woody(x0, y0 + 1), d = woody(x0 + 1, y0 + 1);
+		return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+	}
+
+	// 1 if the trees.bmp cell is wooded, 0 otherwise; clamped to the overlay's bounds
+	private double woody(int tx, int ty) {
+		int cx = Math.max(0, Math.min(treeWidth - 1, tx));
+		int cy = Math.max(0, Math.min(treeHeight - 1, ty));
+		return MapTerrainCodec.isWoody(treeIdx[cy * treeWidth + cx]) ? 1 : 0;
 	}
 
 	// the 8-bit sea mask of a land pixel: which of its 8 neighbours are water. The low nibble

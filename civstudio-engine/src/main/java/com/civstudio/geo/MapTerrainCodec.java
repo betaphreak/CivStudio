@@ -78,39 +78,46 @@ public final class MapTerrainCodec {
 
 	/**
 	 * The Civ4 water terrain for a coastal-shelf plot: {@code COAST} (touching land, {@code
-	 * landDist} 1) or {@code SEA} (further out) in the province's climate variant (polar /
-	 * tropical / temperate by absolute latitude), or freshwater {@code LAKE_SHORE}/{@code LAKE}
+	 * landDist} 1) or {@code SEA} (further out) in the water's climate variant (polar /
+	 * tropical / temperate by temperature), or freshwater {@code LAKE_SHORE}/{@code LAKE}
 	 * for a lake province. Resolves against the registry's shelf water terrains ({@link
 	 * com.civstudio.geo.export.TerrainExporter} keeps them); {@code null} if the key is absent.
 	 * The water counterpart of {@link #ground}: the coastal-shelf plots ground on it and the sea
 	 * bonuses (fish/crab/whale/…) place by it. See {@code docs/coastlines.md}.
 	 *
-	 * @param lake     whether the province is a lake (freshwater) rather than open sea
-	 * @param landDist Chebyshev pixels to the nearest dry land (1 = coast, higher = further out)
-	 * @param latitude the province latitude (its magnitude picks the climate variant)
-	 * @param reg      the terrain registry
+	 * @param lake        whether the province is a lake (freshwater) rather than open sea
+	 * @param landDist    Chebyshev pixels to the nearest dry land (1 = coast, higher = further out)
+	 * @param temperature the {@link WorldClimate} temperature of the water (C2C scale)
+	 * @param reg         the terrain registry
 	 * @return the water terrain, or {@code null} if the registry lacks the key
 	 */
-	public static Terrain water(boolean lake, int landDist, double latitude, TerrainRegistry reg) {
+	public static Terrain water(boolean lake, int landDist, double temperature, TerrainRegistry reg) {
 		String key;
 		if (lake) {
 			key = landDist <= 1 ? "TERRAIN_LAKE_SHORE" : "TERRAIN_LAKE";
 		} else {
-			key = (landDist <= 1 ? "TERRAIN_COAST" : "TERRAIN_SEA") + climateBand(latitude);
+			key = (landDist <= 1 ? "TERRAIN_COAST" : "TERRAIN_SEA") + climateBand(temperature);
 		}
 		return reg.terrain(key);
 	}
 
-	// the climate suffix for a sea terrain by absolute latitude: polar (≥66°), tropical (≤23°),
-	// or temperate (no suffix) between — the same banding the web sea gradient uses.
-	private static String climateBand(double latitude) {
-		double a = Math.abs(latitude);
-		if (a >= 66.0)
+	/**
+	 * The climate suffix for a sea terrain, by the {@link WorldClimate} temperature the water
+	 * inherits from its nearest coast: polar at or below {@link ProvincePlotField#POLAR_TEMPERATURE},
+	 * tropical from {@link #TROPICAL_TEMPERATURE} up, temperate (no suffix) between. This used to
+	 * band on |latitude| (polar ≥ 66°, tropical ≤ 23°) — but the EU4 map's inverse-Mercator latitudes
+	 * put temperate Cannor at 60–75°, so its seas rendered polar and iced over.
+	 */
+	private static String climateBand(double temperature) {
+		if (temperature <= ProvincePlotField.POLAR_TEMPERATURE)
 			return "_POLAR";
-		if (a <= 23.0)
+		if (temperature >= TROPICAL_TEMPERATURE)
 			return "_TROPICAL";
 		return "";
 	}
+
+	/** The temperature (C2C scale) at or above which water reads tropical. */
+	static final double TROPICAL_TEMPERATURE = 24.0;
 
 	/**
 	 * The {@link PlotType relief} EU4 encodes for a {@code terrain.bmp} palette index

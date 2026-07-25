@@ -1,60 +1,37 @@
 package com.civstudio.geo;
 
 /**
- * A province's climate reduced to the two scalars the Caveman2Cosmos planet
- * generator's per-tile stage reads: a <b>temperature</b> (its terrain/feature
- * thresholds — {@code > 30} is hot enough for jungle, {@code < 0} for the frozen
- * terrains) and a <b>humidity</b> in {@code [0, 1]} (how readily plants grow). The
- * C2C generator derives temperature from latitude bands and humidity from a global
- * option; here both come from the province's authored
- * {@link Climate}/{@link WinterSeverity}/{@link Monsoon} (and a small latitude
- * nudge), so a single fixed-climate province maps onto the same per-tile logic.
- * See {@code docs/province-plots.md}.
+ * <b>One province's</b> climate reduced to the two scalars the Caveman2Cosmos planet generator's
+ * per-tile stage reads: a <b>temperature</b> (its terrain/feature thresholds — {@code > 30} clears
+ * the desert gate, {@code < 0} reaches the frozen terrains) and a <b>humidity</b> in {@code [0, 1]}
+ * (how readily plants grow). Both come from the province's authored
+ * {@link Climate}/{@link WinterSeverity}/{@link Monsoon} via {@link WorldClimate}, which owns the
+ * model. See {@code docs/plot-generator.md} §Temperature.
  * <p>
- * The constants are placeholders pending the same calibration the rest of the plot
- * model awaits ({@code docs/plots.md}).
+ * <b>Generation samples the field, not this.</b> {@link WorldClimate} blends these per-province
+ * control values into a continuous field and the stages read it per cell, so the terrain pool does
+ * not step at a province border. This record remains the province-level view — for the
+ * membership-driven ground overrides (cavern / barren / special-terrain filler, whose borders are
+ * deliberately sharp), for reporting, and for tests.
  *
- * @param temperature the C2C-scale temperature (≈ {@code -15..50})
+ * @param temperature the C2C-scale temperature (≈ {@code -20..35})
  * @param humidity    the wetness in {@code [0, 0.95]}
  */
 public record ClimateProfile(double temperature, double humidity) {
 
-	/** The climate profile of a province (temperature from band + winter + latitude). */
+	/**
+	 * The climate profile of a province — now the same values {@link WorldClimate} builds its field
+	 * from, so the province-level view and the per-cell field agree. There used to be a third,
+	 * separate temperature scale here (tropical 45 … arctic 0, minus a winter and latitude term of
+	 * its own); the generator now has exactly one temperature model, as the C2C script does.
+	 */
 	public static ClimateProfile of(Province p) {
-		double temp = switch (p.climate()) {
-			case TROPICAL -> 45;
-			case ARID -> 35;
-			case TEMPERATE -> 28;
-			case ARCTIC -> 0;
-		};
-		temp -= switch (p.winter()) {
-			case NONE -> 0;
-			case MILD -> 5;
-			case NORMAL -> 10;
-			case SEVERE -> 15;
-		};
-		// cooler toward the poles, beyond the subtropics
-		temp -= Math.max(0, Math.abs(p.latitude()) - 30) * 0.4;
-
-		double humidity = switch (p.climate()) {
-			case TROPICAL -> 0.70;
-			case TEMPERATE -> 0.50;
-			case ARCTIC -> 0.30;
-			case ARID -> 0.10;
-		};
-		humidity += switch (p.monsoon()) {
-			case NONE -> 0;
-			case MILD -> 0.10;
-			case NORMAL -> 0.20;
-			case SEVERE -> 0.30;
-		};
-		humidity = Math.min(0.95, humidity);
-		return new ClimateProfile(temp, humidity);
+		return new ClimateProfile(WorldClimate.controlTemperature(p), WorldClimate.controlHumidity(p));
 	}
 
-	/** Whether it is hot enough for jungle rather than forest (the C2C {@code > 40}/jungle band, softened). */
+	/** Whether it is hot enough for jungle rather than forest (the C2C jungle band, on this scale). */
 	public boolean isHot() {
-		return temperature > 32;
+		return temperature > 24;
 	}
 
 	/**

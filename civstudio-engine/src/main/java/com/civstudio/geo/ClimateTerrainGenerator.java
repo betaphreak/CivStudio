@@ -137,23 +137,52 @@ public final class ClimateTerrainGenerator {
 	}
 
 	/**
-	 * The terrain-generation temperature (°C, on the C2C band scale) for a province: an Anbennar
-	 * climate-band base, cooled by winter severity, the poleward latitude term, and a per-region offset.
-	 * Calibrated so each band lands in its intended C2C terrain range — tropical/arid read hot (desert vs
-	 * grass split by humidity), temperate mild, arctic cold. Separate from {@link ClimateProfile#temperature}
-	 * (which the feature stage reads on its own scale), so the two can be tuned independently.
+	 * The terrain-generation temperature (°C, on the C2C band scale) a province contributes — now a
+	 * thin delegate to {@link WorldClimate#controlTemperature}, which owns the model and blends the
+	 * per-province control values into a continuous field. Generation samples the <b>field</b>; this
+	 * remains for callers that want one province's own value (reporting, tests).
+	 * <p>
+	 * The model was recalibrated when the field landed: the authored Anbennar climate is the
+	 * authority, winter severity is a modest modifier, and the province latitude — an inverse-Mercator
+	 * artifact of the EU4 map, which puts Cannor at |lat| 60–75° — is demoted to a gentle
+	 * high-latitude lapse. Stacking all three the old way put <b>1542 of 4121 land provinces below
+	 * 0&nbsp;°C</b> (82% of Western Cannor, 95% of Escann, 83% of Kheionai), which is where the
+	 * map's excess snow came from. The C2C band table below is unchanged — only the temperature fed
+	 * to it. See {@code docs/plot-generator.md} §Temperature.
 	 */
 	public static double temperature(Province p) {
-		double base = switch (p.climate()) {
-			case TROPICAL -> 26.0;   // solidly in the grass band (humid → grass/lush); jungle from the feature stage
-			case ARID -> 32.0;       // hot + dry → desert/scrub/dunes (the dry-desert gate keeps it desert when cooled)
-			case TEMPERATE -> 18.0;  // grass/plains/marsh; cools to taiga/tundra at high latitude
-			case ARCTIC -> -3.0;     // taiga/tundra/permafrost
-		};
-		base -= LatitudeClimate.winterOffset(p.winter());
-		base -= Math.max(0, Math.abs(p.latitude()) - 30) * 0.4;   // cooler beyond the subtropics
-		base += LatitudeClimate.regionTempOffset(p);              // lore anomalies (e.g. Yarikhoi runs warm)
-		return base;
+		return WorldClimate.controlTemperature(p);
+	}
+
+	/**
+	 * A per-(temperature, humidity) generator cache. The world climate is a continuous field, so a
+	 * province spans a range of climates rather than one; quantizing to {@link #TEMP_STEP}/{@link
+	 * #HUMIDITY_STEP} buckets keeps the number of pools built per province small (a few dozen)
+	 * while staying far finer than the C2C band edges. Deterministic: the bucket is a pure function
+	 * of the sampled climate.
+	 */
+	public static final class Cache {
+
+		/** Temperature quantum (°C) — well below the narrowest C2C band edge spacing. */
+		public static final double TEMP_STEP = 0.25;
+
+		/** Humidity quantum. */
+		public static final double HUMIDITY_STEP = 0.02;
+
+		private final TerrainRegistry registry;
+		private final Map<Long, ClimateTerrainGenerator> byBucket = new java.util.HashMap<>();
+
+		public Cache(TerrainRegistry registry) {
+			this.registry = registry;
+		}
+
+		/** The generator for a sampled climate, built once per bucket. */
+		public ClimateTerrainGenerator forClimate(double temperature, double humidity) {
+			long t = Math.round(temperature / TEMP_STEP);
+			long hu = Math.round(humidity / HUMIDITY_STEP);
+			return byBucket.computeIfAbsent((t << 20) ^ hu,
+					k -> new ClimateTerrainGenerator(registry, t * TEMP_STEP, hu * HUMIDITY_STEP));
+		}
 	}
 
 	/**

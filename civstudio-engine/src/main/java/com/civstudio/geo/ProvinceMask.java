@@ -12,6 +12,13 @@ package com.civstudio.geo;
  * 0..height-1}); add {@link #originX()}/{@link #originY()} to recover the absolute
  * raster pixel. Out-of-bounds queries return {@code false} (treated as ocean), so
  * the spatial generators can probe neighbours freely at the edges.
+ * <p>
+ * <b>Two land senses.</b> The frame is grown by {@link ProvinceRaster#HALO} pixels beyond the
+ * province's own bounding box, and carries the neighbouring provinces' land as well:
+ * {@link #isLand} is the province's <b>own</b> pixels (one plot each — the emission set), while
+ * {@link #isGround} is <b>any</b> dry-land pixel in the frame (the generation set). Spatial
+ * generators must probe {@code isGround}, or a province border reads as ocean and every stage
+ * breaks at the seam. See {@code docs/plot-generator.md} §Seamless generation.
  */
 public final class ProvinceMask {
 
@@ -19,7 +26,11 @@ public final class ProvinceMask {
 	private final int originY;
 	private final int width;
 	private final int height;
-	private final boolean[] land; // row-major, width*height
+	private final boolean[] land;   // row-major, width*height — THIS province's pixels
+	private final boolean[] ground; // row-major — any dry-land pixel (own or a neighbour's)
+	// the raster this mask was framed from, for the global (halo-independent) lookups —
+	// null for a hand-built test mask, which then reports no tree density
+	private final ProvinceRaster raster;
 	// the river classification code per cell (0 = none; low digit = width 1..4, tens digit =
 	// downstream flow direction 1..8, hundreds digit = node marker), from rivers.bmp via
 	// ProvinceRaster.classifyRiver + RiverFlow — see docs/river-rendering.md §1/§3. Preserves
@@ -44,19 +55,29 @@ public final class ProvinceMask {
 	// the near-shore ring and to grade COAST (1) vs SEA (2..N). See docs/coastlines.md.
 	private final int[] landDist;
 
-	ProvinceMask(int originX, int originY, int width, int height, boolean[] land, int[] river,
-			int[] coast, int[] terrainIndex, int[] treeIndex, int[] elevation, int[] landDist) {
+	ProvinceMask(int originX, int originY, int width, int height, boolean[] land, boolean[] ground,
+			int[] river, int[] coast, int[] terrainIndex, int[] treeIndex, int[] elevation,
+			int[] landDist, ProvinceRaster raster) {
 		this.originX = originX;
 		this.originY = originY;
 		this.width = width;
 		this.height = height;
 		this.land = land;
+		this.ground = ground != null ? ground : land; // a hand-built mask has no neighbours
 		this.river = river;
 		this.coast = coast;
 		this.terrainIndex = terrainIndex;
 		this.treeIndex = treeIndex;
 		this.elevation = elevation;
 		this.landDist = landDist;
+		this.raster = raster;
+	}
+
+	/** A hand-built mask with no halo (tests): own land is all the land there is. */
+	ProvinceMask(int originX, int originY, int width, int height, boolean[] land, int[] river,
+			int[] coast, int[] terrainIndex, int[] treeIndex, int[] elevation, int[] landDist) {
+		this(originX, originY, width, height, land, null, river, coast, terrainIndex, treeIndex,
+				elevation, landDist, null);
 	}
 
 	/** Absolute raster x of local column 0 (the bounding-box left edge). */
@@ -79,11 +100,49 @@ public final class ProvinceMask {
 		return height;
 	}
 
-	/** Whether the local cell is the province's land (false outside the bbox). */
+	/**
+	 * Whether the local cell is <b>this province's own</b> land (false outside the bbox) — the
+	 * emission set: exactly these cells become plots. Use {@link #isGround} for neighbour probes
+	 * during generation, or the province border reads as ocean.
+	 */
 	public boolean isLand(int lx, int ly) {
 		if (lx < 0 || lx >= width || ly < 0 || ly >= height)
 			return false;
 		return land[ly * width + lx];
+	}
+
+	/**
+	 * Whether the local cell is dry land at all — this province's or a <b>neighbouring</b>
+	 * province's, out to the {@link ProvinceRaster#HALO} the frame carries (false outside the
+	 * bbox). This is the set the spatial generators run over: terrain patches, relief ranges,
+	 * de-speckling and vegetation spread all read it so they carry across a province seam instead
+	 * of stopping at it. Only {@link #isLand} cells are emitted as plots.
+	 */
+	public boolean isGround(int lx, int ly) {
+		if (lx < 0 || lx >= width || ly < 0 || ly >= height)
+			return false;
+		return ground[ly * width + lx];
+	}
+
+	/**
+	 * Whether the local cell is <b>coastal</b> — a real sea/lake pixel touches it, per the global
+	 * {@link #coast} mask. This is the C2C {@code isCoastal} the vegetation stage seeds from; it
+	 * must never be approximated as "a neighbour outside this province", which would seed a
+	 * vegetation ring along every province outline.
+	 */
+	public boolean isCoastal(int lx, int ly) {
+		return coast(lx, ly) != 0;
+	}
+
+	/**
+	 * The wooded fraction in {@code [0, 1]} at the local cell — the continuous {@code trees.bmp}
+	 * density signal the vegetation stage spreads from (see {@link ProvinceRaster#treeDensity}).
+	 * {@code -1} when the overlay is absent or the mask was hand-built.
+	 */
+	public double treeDensity(int lx, int ly) {
+		if (raster == null)
+			return -1;
+		return raster.treeDensity(originX + lx, originY + ly);
 	}
 
 	/** Whether the local cell carried a river pixel (false outside the bbox). */

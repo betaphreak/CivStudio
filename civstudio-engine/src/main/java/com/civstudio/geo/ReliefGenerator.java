@@ -20,8 +20,19 @@ import com.civstudio.util.Rng;
  * single province (its shape is fixed and its climate uniform); only this per-tile
  * relief stage is ported. The start/grow/length {@link Params} are chosen from the
  * province (an {@link ProvinceType#IMPASSABLE} province is mountainous; others use
- * the C2C "some peaks / normal hills" defaults). Cells outside the province (ocean)
- * are left {@code null} in the returned grid.
+ * the C2C "some peaks / normal hills" defaults). Cells that are not dry land are
+ * left {@code null} in the returned grid.
+ * <p>
+ * <b>Seams.</b> The stage runs over the mask's {@linkplain ProvinceMask#isGround ground} — this
+ * province's land <em>and</em> the halo of neighbouring land — not over its own pixels alone.
+ * That matters more here than anywhere else: {@link #canSeedPeak} requires all four orthogonal
+ * neighbours to be flat land and {@link #peakBlocked} refuses to grow next to a non-land cell, so
+ * against an own-pixels-only mask <em>no peak could ever seed or grow within a pixel of a province
+ * border</em> — every province wore a flat ring, and mountain ranges were cut off at the seam.
+ * With the halo the ranges run through the border; the halo cells are then discarded (only
+ * {@link ProvinceMask#isLand} cells become plots). Two neighbouring provinces still grow their own
+ * ranges independently, so a chain may differ by a few pixels across the seam — natural variation
+ * rather than a straight edge. See {@code docs/plot-generator.md} §Seamless generation.
  */
 public final class ReliefGenerator {
 
@@ -63,7 +74,7 @@ public final class ReliefGenerator {
 		PlotType[] g = new PlotType[w * h];
 		for (int ly = 0; ly < h; ly++)
 			for (int lx = 0; lx < w; lx++)
-				g[ly * w + lx] = mask.isLand(lx, ly) ? PlotType.FLAT : null;
+				g[ly * w + lx] = mask.isGround(lx, ly) ? PlotType.FLAT : null;
 
 		List<int[]> peaks = new ArrayList<>(); // {x, y, count}
 		List<int[]> hills = new ArrayList<>();
@@ -71,7 +82,7 @@ public final class ReliefGenerator {
 		// --- seed (one pass; a cell seeds a peak OR a hill, not both) ---
 		for (int ly = 0; ly < h; ly++) {
 			for (int lx = 0; lx < w; lx++) {
-				if (!mask.isLand(lx, ly))
+				if (!mask.isGround(lx, ly))
 					continue;
 				if (p.peakStart() > 0 && canSeedPeak(g, w, h, lx, ly) && rng.uniform() < p.peakStart()) {
 					g[ly * w + lx] = PlotType.PEAK;

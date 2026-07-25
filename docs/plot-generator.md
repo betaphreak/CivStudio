@@ -206,9 +206,129 @@ each terrain keeps its aggregate share; the despeckle stays as a light tidy for 
 fillers. Deterministic on the TERRAIN stream. Verified: biomes read as contiguous zones, `speckFraction`
 ≈ 0.01 (was salt-and-pepper). Relief is unchanged (already coherent — it rides the smooth heightmap).
 
-**Still pending** (planned increments): **per-plot world latitude** (currently one temperature per
-province), and making **features fully procedural** (they still read the `trees.bmp` hints). Plus the
-food-economy recalibration the yield shift invites.
+---
+
+## Seamless generation (increment 3, `MAP_VERSION` 10→11, 2026-07-25)
+
+**The bug.** Generation was *province-local* in five separate places, and a province border is a
+**seam** in each of them. `ProvinceRaster.mask()` framed a mask whose `isLand()` meant "a pixel of
+*this* province", and every spatial generator probed neighbours through it — so each one treated the
+border as ocean:
+
+| Stage | Border artifact |
+| --- | --- |
+| `coherentGround` | patch seeds scattered over *this* province's land; `valNoise` sampled in **mask-local** coordinates, so neither the patches nor the noise lattice lined up across a seam |
+| `ClimateTerrainGenerator` | one pool per province → the terrain **distribution stepped** at every border |
+| `despeckle` | out-of-province neighbours read `null`, so border cells were never smoothed |
+| `FeatureGenerator.isCoastal` | *"a neighbour outside the province"* = coastline → a **vegetation ring seeded along every province outline** |
+| `ReliefGenerator` | `canSeedPeak` needs 4 flat land neighbours and `peakBlocked` refuses to grow beside a non-land cell → **a flat ring around every province**, and ranges cut off at the seam |
+
+Measured over Anbennar's Lencenor (72 provinces): terrain changed **6.3×** more often across a
+province border than inside one, and border plots were **2.0×** more likely to carry vegetation than
+inland plots. The province polygons were legible in the generated ground.
+
+**The fix — generate as a function of world position, not of province.** A literal single global
+pass was rejected: the sim generates lazily per province on demand, so a global path would have to
+be kept byte-identical to a per-province one anyway. Instead the per-province path was made
+*coordinate-pure*, which gives single-pass semantics for free.
+
+1. **A halo on the mask** (`ProvinceRaster.HALO` = 8 px). The frame grows past the province's own
+   bounding box and marks the neighbouring provinces' land too. Two land senses now:
+   `ProvinceMask.isLand` = **own** pixels (the emission set — exactly these become plots) and
+   `isGround` = **any** dry land in the frame (the generation set). Relief, ground, de-speckle and
+   the vegetation spread all run over `isGround`; the halo is discarded at emission. Every raster
+   overlay (terrain / trees / elevation / river / coast / land-distance) is filled across the whole
+   frame for the same reason.
+2. **`WorldClimate` — provinces as reference biomes, not cells.** Each land province paints its
+   control values over its own pixels into a `DOWNSAMPLE`=2 grid; water and off-map cells are filled
+   from the nearest painted cell by BFS; three box-blur passes turn the province mosaic into a
+   **continuous field** with a ~6 px gradient at each border. `temperature(x,y)` / `humidity(x,y)`
+   sample it bilinearly. Provinces still author the climate — they just stop being step edges.
+   Rng-free, seed-free, built once per JVM.
+3. **World-space terrain patches** (`ProvincePlotField.worldGround`). A `PATCH_SIDE`=5 lattice over
+   the **whole raster in absolute coordinates**; each lattice cell hashes to a jittered seed point
+   and to its own `Rng`, and draws its terrain from the pool at the seed's own sample of the climate
+   field. A plot takes the nearest of the 3×3 surrounding seeds, its sample point displaced by
+   `valNoise` — now also in absolute coordinates. **Consumes no rng stream at all**, so the ground is
+   a pure function of world position: two provinces agree exactly on their shared border, and the
+   lazy per-province path is byte-identical to a global pass.
+4. **Real coastlines.** `FeatureGenerator` and the oasis pass seed on the global sea mask
+   (`ProvinceMask.isCoastal`) instead of "outside this province".
+5. **Continuous vegetation density.** `trees.bmp` is ~1/7.7 resolution, and a per-province *average*
+   of it jumped at every border; `ProvinceRaster.treeDensity` bilinearly interpolates the woody flags
+   instead, so density — like temperature and humidity — is sampled per cell.
+
+**Result** (same Lencenor render): seam score **6.31 → 1.46**, border-vegetation ratio **1.99 →
+0.97**, border-relief ratio **0.78 → 0.96**. The residual above 1.0 is the province types whose
+ground is a deliberate override with a genuinely sharp edge — impassable wastelands, caverns, and the
+special surface terrains (an ancient forest is *supposed* to stop at its own border). Those, plus the
+cavern pool and the barren-waste pool, still draw per province off the terrain stream and are applied
+to **own cells only**, so the halo keeps real neighbouring ground for the stages that read it.
+
+Cost: generation is ~1.8× slower per province (the halo enlarges every grid). The whole-world CI
+rebake goes from ~24 min to ~45 min, inside its 120-minute budget.
+
+Covered by `SeamlessGenerationTest` (the four invariants above) and `WorldClimateTest` (field
+continuity + determinism). `TerrainPreviewExporter` renders a whole region to a PNG and prints the
+seam score and border profile — the fastest way to eyeball a generation change without a rebake.
+
+## Temperature — one model, authored climate authoritative (same increment)
+
+**The bug.** Cannor — Anbennar's temperate heartland — generated as snow. Three separate temperature
+scales existed (`ClimateTerrainGenerator.temperature` for the ground bands, `ClimateProfile.of` for
+`isHot`, `ClimateProfile.pyTemperature(latitude)` for the feature stage), and the ground one stacked
+a climate base, a winter-severity cooling of **up to 16 °C**, and a poleward lapse of **0.4 °C/deg
+beyond 30°** — on top of a latitude that is an **inverse-Mercator artifact** of the EU4 map. That
+projection puts Cannor at |lat| **60–75°**. The stack put **1542 of 4121 land provinces below 0 °C**,
+i.e. drawing from the tundra/permafrost bands:
+
+| Superregion | sub-zero, before | after |
+| --- | --- | --- |
+| Western Cannor | 82% | 0% |
+| Escann | 95% | 0% |
+| Kheionai | 83% | 0% |
+| Taychend | 51% | 0% |
+| Gerudia (genuinely arctic) | 100% | 14% |
+
+Anbennar's own `climate.txt` marks only **116 provinces arctic**. Two more contributors keyed on the
+same inflated latitude: the sea terrain banded to its `_POLAR` variant at |lat| ≥ 66 and the ice cap
+started there, so Cannor's *seas* froze too; and the feature stage read `pyTemperature(66°) ≈ 0`,
+landing Cannor in the C2C `5…−10 → SWAMP` branch.
+
+**The fix.** One temperature model, `WorldClimate.controlTemperature`, feeding the ground bands, the
+feature stage, the sea-ice model and the polar water variant alike — as the C2C script does with its
+single `getTileTemperature`. The **C2C band table is unchanged**; only the temperature handed to it
+is re-derived:
+
+- **authored climate anchors** it — tropical 27 (inside the grass band, so the ground greens and the
+  feature stage supplies the jungle), arid 32 (clears the desert gate), temperate 19, arctic −4;
+- **winter severity** is a modest modifier — 0 / −2 / −5 / −9 (was 0 / −5 / −10 / −16). A harsh
+  winter makes a province boreal; it does not make it permafrost;
+- **latitude** is demoted to a gentle lapse: −0.25 °C/deg beyond |lat| 55 (was −0.4 beyond 30);
+- **polar water** keys on temperature (`ProvincePlotField.POLAR_TEMPERATURE`), not |lat| ≥ 66, and a
+  sea inherits the climate of its nearest coast (water provinces are not control points, so the
+  field's BFS fill hands them their shore's value) — a sea ices because the land around it is frozen.
+
+Cold ground in Lencenor: **45.9% → 0.0%**. Gerudia (the Scandinavia analogue) still generates 58%
+cold — permafrost 21%, taiga 15%, tundra 12%, glacier 10%. The full engine + server suites pass with
+no retuning, including `PlotYieldTest`'s mean-food-factor calibration.
+
+**Known consequence.** Shifting the temperate world out of the frozen bands moved it into the
+**marsh** band (`−5…18`, weight 10 — the single heaviest entry in the C2C table, and the one weight
+the script does *not* scale by humidity). Lencenor's marsh share went 25.2% → 34.3%. That is what the
+faithful table gives at temperate temperatures, so it is left alone; scaling marsh by humidity the
+way the neighbouring bands are scaled is the available knob if a third of Cannor as wetland reads
+wrong.
+
+**Not changed, but the same bug:** `LandRouter` still costs land travel off
+`LatitudeClimate.effectiveTemperature(latitude, winter)` — the old inflated-latitude model — so all of
+Cannor is priced as near-arctic terrain (up to 3.5× travel cost). That is a routing/caravan concern
+rather than a terrain one and was left out of this change deliberately; pointing it at
+`WorldClimate.controlTemperature` is the fix when someone wants to take the behaviour change.
+
+**Still pending** (planned increments): making **features fully procedural** (they still read the
+`trees.bmp` hints for the vegetation *kind*). Plus the food-economy recalibration the yield shift
+invites.
 
 ---
 

@@ -14,8 +14,8 @@ import com.civstudio.util.Rng;
  * relief stage ({@link ReliefGenerator}) clusters peaks and hills, this clusters
  * plants: vegetation <b>seeds</b> along water and peaks, then <b>spreads</b> cell to
  * cell as a random walk, its per-cell kind chosen by a weighted draw over the plot's
- * {@linkplain PyTerrain terrain category} and {@linkplain ClimateProfile#pyTemperature
- * temperature}. See {@code docs/c2c-generator-port.md}.
+ * {@linkplain PyTerrain terrain category} and its {@linkplain WorldClimate temperature}.
+ * See {@code docs/c2c-generator-port.md}.
  * <p>
  * <b>What is ported</b> (slices 1–3 of the port doc): the per-cell weighted feature
  * <em>choice</em> (jungle / forest / swamp / none, L2794–2900), the <b>jungle→forest
@@ -33,12 +33,14 @@ import com.civstudio.util.Rng;
  * Flood plains stay {@link ProvincePlotField}'s dedicated placement (a river feature
  * it has the relief to gate), so they are excluded from the choice here.
  * <p>
- * <b>Density.</b> The overall amount of vegetation still comes from eos's real
- * {@code trees.bmp} cover ({@code treeCover}) rather than the script's global
- * humidity: {@code treeCover} drives the no-feature decay and the peak-seed
- * probability, while the province {@linkplain ClimateProfile#humidity() humidity} is
- * used verbatim in the feature-kind weights. So a map-bare province grows almost
- * nothing while a wooded one greens densely along its water.
+ * <b>Density and climate are per cell, not per province.</b> The amount of vegetation comes from
+ * eos's real {@code trees.bmp} cover rather than the script's global humidity, and the
+ * temperature/humidity the weights read come from the continuous {@link WorldClimate} field — all
+ * three sampled <b>per cell</b> ({@link ProvinceMask#treeDensity}, bilinear over the coarse tree
+ * overlay). Held per province, as they used to be, each of them stepped at every province border
+ * and put a visible seam through the vegetation. Density drives the no-feature decay and the
+ * peak-seed probability; humidity is used verbatim in the feature-kind weights. So a map-bare
+ * stretch grows almost nothing while a wooded one greens densely along its water.
  * <p>
  * The returned grid is the C2C <em>intent</em> — {@link ProvincePlotField}
  * validity-gates each pick against eos's curated feature/terrain rules (jungle only
@@ -55,12 +57,17 @@ public final class FeatureGenerator {
 			{ -1, 0 }, { -1, 1 }, { 0, 1 }, { 1, 1 }, { 1, 0 }, { 1, -1 }, { 0, -1 }, { -1, -1 } };
 
 	private final ProvinceMask mask;
-	private final Terrain[] terrain;   // row-major, mask-local (null on non-land)
+	private final Terrain[] terrain;   // row-major, mask-local (null off ground)
 	private final PlotType[] relief;   // row-major, mask-local (composed relief)
 	private final int w, h;
-	private final double temp;         // C2C-scale tile temperature (per province)
-	private final double humidity;     // eos per-province humidity → the script's H
-	private final double density;      // real trees.bmp cover → the script's density
+	// the per-cell climate: the C2C-scale tile temperature and the script's H, sampled from the
+	// continuous WorldClimate field rather than held per province, so the vegetation weights vary
+	// smoothly across a province border instead of stepping (see WorldClimate)
+	private final double[] tempAt;
+	private final double[] humidAt;
+	// the per-cell wooded fraction (real trees.bmp, bilinear) → the script's density; likewise
+	// continuous, where a per-province average made vegetation density jump at every seam
+	private final double[] densityAt;
 	private final Rng rng;
 
 	private final Feature jungle, forest, swamp;
@@ -72,43 +79,54 @@ public final class FeatureGenerator {
 	private final Map<Integer, Integer> seedAt = new HashMap<>(); // cell idx → pool position
 
 	private FeatureGenerator(ProvinceMask mask, Terrain[] terrain, PlotType[] relief,
-			double latitude, ClimateProfile climate, double treeCover, TerrainRegistry reg, Rng rng) {
+			WorldClimate climate, double fallbackDensity, TerrainRegistry reg, Rng rng) {
 		this.mask = mask;
 		this.terrain = terrain;
 		this.relief = relief;
 		this.w = mask.width();
 		this.h = mask.height();
-		this.temp = ClimateProfile.pyTemperature(latitude);
-		this.humidity = climate.humidity();
-		this.density = treeCover >= 0 ? treeCover : (0.2 + 0.8 * climate.humidity());
 		this.rng = rng;
 		this.jungle = reg.feature("FEATURE_JUNGLE");
 		this.forest = reg.feature("FEATURE_FOREST");
 		this.swamp = reg.feature("FEATURE_SWAMP");
 		this.out = new Feature[w * h];
+		this.tempAt = new double[w * h];
+		this.humidAt = new double[w * h];
+		this.densityAt = new double[w * h];
+		for (int y = 0; y < h; y++)
+			for (int x = 0; x < w; x++) {
+				int i = y * w + x;
+				double wx = mask.originX() + x, wy = mask.originY() + y;
+				tempAt[i] = climate.temperature(wx, wy);
+				humidAt[i] = climate.humidity(wx, wy);
+				double d = mask.treeDensity(x, y);
+				densityAt[i] = d >= 0 ? d : fallbackDensity;
+			}
 	}
 
 	/**
-	 * Generate the vegetation overlay for a province: one {@link Feature} per land cell
+	 * Generate the vegetation overlay for a province: one {@link Feature} per ground cell
 	 * ({@code FEATURE_JUNGLE}/{@code FEATURE_FOREST}/{@code FEATURE_SWAMP} where
 	 * vegetation grew, {@code null} elsewhere), the C2C seed-and-spread run off the
 	 * terrain {@code rng}. The grid is the choice <em>intent</em>; the caller
 	 * validity-gates it.
+	 * <p>
+	 * Runs over the mask's {@linkplain ProvinceMask#isGround ground} — the province's land plus
+	 * its halo of neighbouring land — so vegetation seeds and spreads across a province seam; the
+	 * halo cells are discarded by the caller.
 	 *
-	 * @param mask      the province silhouette (land / river / coast flags)
-	 * @param terrain   the per-cell ground grid (row-major, mask-local; null on non-land)
-	 * @param relief    the per-cell composed relief grid (peaks drive peak-seeding)
-	 * @param latitude  the province latitude (the C2C-scale temperature)
-	 * @param climate   the province climate (its humidity is the script's {@code H})
-	 * @param treeCover the real wooded fraction in {@code [0,1]} (the density), or a
-	 *                  negative value to fall back to the climate humidity
-	 * @param registry  the curated feature definitions
-	 * @param rng       the dedicated terrain stream (not the economic one)
+	 * @param mask             the province silhouette (own land, halo, river / coast flags)
+	 * @param terrain          the per-cell ground grid (row-major, mask-local; null off ground)
+	 * @param relief           the per-cell composed relief grid (peaks drive peak-seeding)
+	 * @param climate          the continuous world climate field (per-cell temperature/humidity)
+	 * @param fallbackDensity  the wooded fraction to use where {@code trees.bmp} is absent
+	 * @param registry         the curated feature definitions
+	 * @param rng              the dedicated terrain stream (not the economic one)
 	 * @return a {@code width*height} feature grid (row-major; {@code null} = bare)
 	 */
 	public static Feature[] generate(ProvinceMask mask, Terrain[] terrain, PlotType[] relief,
-			double latitude, ClimateProfile climate, double treeCover, TerrainRegistry registry, Rng rng) {
-		return new FeatureGenerator(mask, terrain, relief, latitude, climate, treeCover, registry, rng).run();
+			WorldClimate climate, double fallbackDensity, TerrainRegistry registry, Rng rng) {
+		return new FeatureGenerator(mask, terrain, relief, climate, fallbackDensity, registry, rng).run();
 	}
 
 	private Feature[] run() {
@@ -121,11 +139,13 @@ public final class FeatureGenerator {
 	}
 
 	// --- seeding (L2782): every peak, river (fresh water) and coastal land cell is a
-	// seed at distance 1 with no preassigned feature (chosen on arrival) ---
+	// seed at distance 1 with no preassigned feature (chosen on arrival). Coastal is the
+	// REAL coastline (a sea/lake pixel touches the cell), not "a neighbour outside this
+	// province" — the latter seeded a vegetation ring along every province outline. ---
 	private void seed() {
 		for (int y = 0; y < h; y++)
 			for (int x = 0; x < w; x++)
-				if (mask.isLand(x, y) && (isPeak(x, y) || mask.isRiver(x, y) || isCoastal(x, y)))
+				if (mask.isGround(x, y) && (isPeak(x, y) || mask.isRiver(x, y) || mask.isCoastal(x, y)))
 					enqueue(x, y, 1, NONE);
 	}
 
@@ -157,6 +177,7 @@ public final class FeatureGenerator {
 	private int choose(int x, int y, int dist) {
 		PyTerrain cat = PyTerrain.of(terrain[idx(x, y)]);
 		WeightedPick<Integer> pick = new WeightedPick<>();
+		double temp = tempAt[idx(x, y)], humidity = humidAt[idx(x, y)], density = densityAt[idx(x, y)];
 
 		// no-feature decay — density (from trees.bmp) in place of the script's humidity
 		pick.add(dist * 14 * (1 - density), NONE);
@@ -227,13 +248,14 @@ public final class FeatureGenerator {
 			int tx = t[0], ty = t[1];
 			if (isPeak(tx, ty))
 				continue;
-			if (rng.uniform() < (0.1 + density * 0.6))
-				enqueue(tx, ty, 2, peakSeedFeature());
+			if (rng.uniform() < (0.1 + densityAt[idx(x, y)] * 0.6))
+				enqueue(tx, ty, 2, peakSeedFeature(x, y));
 		}
 	}
 
 	// the feature a peak preassigns to a neighbour by temperature (L2931–2949)
-	private int peakSeedFeature() {
+	private int peakSeedFeature(int x, int y) {
+		double temp = tempAt[idx(x, y)];
 		if (temp > 40)
 			return JUNGLE;
 		if (temp > 35)
@@ -251,7 +273,7 @@ public final class FeatureGenerator {
 		WeightedPick<int[]> posList = new WeightedPick<>();
 		for (int[] d : DIRS8) {
 			int nx = x + d[0], ny = y + d[1];
-			if (!mask.isLand(nx, ny) || isPeak(nx, ny))
+			if (!mask.isGround(nx, ny) || isPeak(nx, ny))
 				continue; // "not water and not peak"
 			int ni = idx(nx, ny);
 			PyTerrain ncat = PyTerrain.of(terrain[ni]);
@@ -355,7 +377,7 @@ public final class FeatureGenerator {
 				if (bx == 0 && by == 0)
 					continue;
 				int ax = x + bx, ay = y + by;
-				if (mask.isLand(ax, ay))
+				if (mask.isGround(ax, ay))
 					l.add(new int[] { ax, ay });
 			}
 		return l;
@@ -391,11 +413,5 @@ public final class FeatureGenerator {
 		if (x < 0 || x >= w || y < 0 || y >= h)
 			return null;
 		return relief[idx(x, y)];
-	}
-
-	/** A land cell is coastal if an orthogonal neighbour is outside the province (ocean). */
-	private boolean isCoastal(int x, int y) {
-		return !mask.isLand(x - 1, y) || !mask.isLand(x + 1, y)
-				|| !mask.isLand(x, y - 1) || !mask.isLand(x, y + 1);
 	}
 }
