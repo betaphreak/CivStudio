@@ -15,6 +15,12 @@ civstudio-server/target/
 # webverify browser-test tooling deps (regenerable via `npm install`)
 /tools/webverify/node_modules/
 /tools/webverify/package-lock.json
+# iso/3D spike: deps (regenerable via `npm install`) and its EXTRACTED data (regenerable via
+# `node extract.mjs` — a province's baked terrain PNG + plot grid pulled out of the running app)
+/tools/spike-iso3d/node_modules/
+/tools/spike-iso3d/package-lock.json
+/tools/spike-iso3d/data/
+/tools/spike-iso3d/vendor/
 # web build tooling deps (sharp — the WebP image encoder; regenerable via `npm install`)
 /web/node_modules/
 /web/package-lock.json
@@ -90,3 +96,7 @@ civstudio-server/target/
 /studio/coverage/
 /studio/public/uploads/*
 !/studio/public/uploads/.gitkeep
+
+# spike shots: only the four the plan doc cites by name are kept; shot.mjs regenerates the rest
+/tools/spike-iso3d/shot-topdown.png
+/tools/spike-iso3d/shot-strong.png

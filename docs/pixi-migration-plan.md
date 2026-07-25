@@ -3,8 +3,11 @@
 **Status:** P0–P2 + **P4b** + **P3 step 1** BUILT 2026-07-25 (P0 = `7916f5e`, P1 = `154c430`,
 P2 = `5038647`, P4b = `89c0259`). P3 steps 2–5 and P4–P8 proposed, and **P3/P4 have swapped**.
 
-**Start with *Measuring this frontend* below.** Every wrong turn in P2–P4b was a measurement error,
-and one of them nearly cost two unnecessary ports.
+**Two sections to read before any further phase:**
+- ***The isometric/3D question*** — the target look (`tools/samples/test2.png`) needs a **3D renderer**,
+  which Pixi is not. Spiked and confirmed 2026-07-25. **P3–P8 do not lead there.**
+- ***Measuring this frontend*** — every wrong turn in P2–P4b was a measurement error, and one nearly
+  cost two unnecessary ports.
 
 - **P2's gate: PASS** — the plot layer is **~10× faster** on Pixi in the regime where it dominates. It
   ships **flag-gated, default off** (`?pixiPlots=1`) for reasons that reshaped the phase order; read
@@ -69,6 +72,63 @@ The codebase is better positioned for this than it looks:
 - **Culling and cache-versioning exist**: `provOnScreen`, `provPath`, `S.baseVersion`/`S.viewVersion`.
 - **Pure modules are already split out for testability** — `band-math`, `river-geom`,
   `route-tiling`, `district-plots`, `plotstats`. All renderer-agnostic; all survive untouched.
+
+## The isometric/3D question — SPIKED 2026-07-25, and it decides whether this plan continues
+
+The target look was pinned down as `tools/samples/test2.png` — a **Civ4/C2C screenshot**: heightmapped
+terrain under an oblique perspective camera, upright 3D props on it, screen-space city plates. Not
+sprite-isometric. **Pixi is a 2D renderer and cannot produce it**, so P3–P8 are not the path there.
+
+`tools/spike-iso3d/` answers the one question that could not be reasoned about: does *eos's own* baked
+terrain, on a mesh shaped by *eos's own* relief data, look like that? Two parts — `extract.mjs` drives
+the real app headless and exports one province's `_tcanvas` plus its per-plot grid; `iso3d.mjs` renders
+it in three.js with the height model on live sliders. `shot.mjs` captures the comparisons.
+
+Test case: **Ardumu**, LAND, 1084 plots, 45×45, PEAK 350 / HILL 332 / FLAT 402, 10 terrains, forest.
+
+### It works — and `plotType` is the load-bearing height source
+
+| shot | height model | result |
+|---|---|---|
+| `shot-civ-oblique` / `-low` | PEAK 3.4, HILL 1.0, elev ×6 | **Reads as terrain.** Legible ridges, valleys, light and shade. Closest thing to the target. |
+| `shot-heightmap-only` | PEAK 0, HILL 0, elev ×**30** | **A warped carpet.** No legible landforms — despite a *larger* total height range (5.25 vs 4.45 plot-widths). |
+| `shot-flat` | no relief | **A tilted painting.** The texture's rocky patches read as paint. This is what a 2D shear gets you. |
+
+The elevation result is the important one. Ardumu spans **99–145 of 255** — the real imported heightmap
+is continental and *low-frequency*, so exaggerating it just inflates a smooth swell. The eye reads
+terrain from the **discrete per-plot FLAT/HILL/PEAK variation**, which is how Civ4 gets its mountains
+too. This corroborates from the other direction the comment that removed the 2D hillshade
+(`plots.mjs:330-333`): elevation alone was never going to carry relief here.
+
+The `shot-flat` row also settles the earlier A-vs-B fork **visually rather than by argument**: 2.5D
+sprite relief really does miss this target.
+
+### Confirmed, with numbers
+
+- **The baked province canvas works as a mesh diffuse texture with no modification.** The single
+  biggest reuse claim in the 3D direction — all of `buildPlotTexCanvas`'s edge/corner blending, noise
+  masks, snow, coast shallows and rivers arrive intact. Now proven, not assumed.
+- **1084 quads / 2168 triangles** for a 1084-plot province, so the earlier performance argument holds
+  empirically: the Ground regime's mesh is trivially small.
+- **Corner-averaged vertex heights avoid the checkerboard.** Vertices sit on plot *corners* and take
+  the mean of the up-to-4 plots touching them, which interpolates instead of stamping a square per
+  plot — precisely the failure that killed the 2D hillshade. One smoothing pass suffices.
+- Tuning that looked right: **PEAK ≈ 3.4, HILL ≈ 1.0 plot-widths, elevation ×6, 1 smoothing pass.**
+
+### What the spike also exposes as required work
+
+- **The baked-flat trees are now a visible defect.** `plots.mjs:360-362` draws `featureSprite` into the
+  province offscreen, so on a lit slope the foliage reads as top-down symbols lying on the ground where
+  the target has upright 3D. Extracting upright content out of the baked canvas is confirmed
+  mandatory, not optional — and it remains the largest single piece of work in either direction.
+- **The stepped silhouette** in the shots is an artifact of rendering one province in isolation;
+  neighbours would fill it. Not a real problem, but do not mistake it for one later.
+
+### Consequence for this plan
+
+P4b (the `tiers` cull) stands on its own — it was a bug fix. P0–P2 leave behind a vendored renderer, a
+proven camera seam and a texture-sharing pattern, which are useful groundwork for *a* GPU renderer but
+not for this one. **P3–P8 should not proceed on the assumption that they lead to the target look.**
 
 ## Measuring this frontend — read before optimising anything
 
