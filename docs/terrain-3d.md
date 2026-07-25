@@ -53,6 +53,14 @@ elevation alone was never going to carry relief here.
 `shot-flat` also settles the 3D-vs-2.5D-sprite fork **visually rather than by argument**: sprite relief
 misses this target.
 
+> **CORRECTED 2026-07-25, after reading the target closely (§Relief is props, not displacement).** The
+> conclusion above is right about the DATA and wrong about the CONSEQUENCE. `plotType` is indeed the
+> load-bearing signal and the imported heightmap is indeed too smooth to carry relief — but the target does not
+> solve that by displacing the mesh either. It keeps the ground nearly flat and stands a mountain MODEL on each
+> peak tile. So `plotType` is load-bearing as *prop placement*, not as *vertex displacement*, and the spike's
+> question ("how much do I displace a peak?") had no good answer because it was the wrong question. P4b fixes
+> this; the terracing that P2 and P3 could only mitigate is a direct consequence of the misreading.
+
 ## Confirmed, with numbers
 
 - **The baked province canvas works as a mesh diffuse texture, unmodified.** So all of
@@ -390,6 +398,79 @@ that supersedes a decision made in the plan.
 `maptip`/`plotlabel` hover, the city screen, districts anchored to real mesh height, the minimap, and a
 no-WebGL fallback — which is cheap, because 3D only engages at band 5, so the 2D path below it *is* the
 fallback (clamp the zoom).
+
+## Relief is props, not displacement — what the target actually does
+
+**Read 2026-07-25 from `tools/samples/test2.png`, magnified.** This is the most consequential thing in the whole
+document and it took four phases to notice, because it only shows up when you look at what the tile borders do.
+
+**The tile-border lines and the roads run flat, between and around the mountain cones, at base level.** They do
+not climb over anything. Each peak is a discrete repeated cone model — snow cap, dark shadowed base, a contact
+shadow on the ground — sitting on one tile. The volcano is the same machinery with a different model.
+
+So Civ4's terrain surface is essentially **smooth**, carrying only gentle continental elevation, and
+"mountainous" means *a mountain object standing on a nearly flat tile*.
+
+Three things follow, and they matter more than any tuning done so far:
+
+1. **The terracing is architectural, not a tuning problem.** Displacing the mesh by PEAK = 3.4 plot-widths makes
+   a peak beside a flat plot a cliff by construction. No smoothing kernel and no exaggeration curve removes a
+   cliff the model puts there; the target simply never creates it.
+2. **It reverses the spike's headline** — see the correction under §It works. `plotType` is load-bearing as prop
+   placement, not as vertex displacement.
+3. **Much of P4's terrain-height seam becomes belt-and-braces.** On a near-flat surface, ground-anchored content
+   barely moves. It is still correct and still needed for the gentle relief that remains — but the 66 px it was
+   correcting was mostly relief that should not have been there.
+
+What is NOT the gap: the camera. Measured tile aspect in the target is ≈0.89, i.e. **~27° from vertical** (rough
+— two regions gave inconsistent tile sizes, so read it as 25–35°) against our 34°. And the target's ZOOM is about
+a band shallower than where the gates have been comparing: tiles are ~45–77 px in a 2241 px frame, so **~30–50
+tiles across** versus 26 plots at z=120, which puts the reference view near band 5.9–6.3 where `tiltAt` gives
+22–28°. The angle is already in the right neighbourhood and should not be touched until relief is fixed, because
+relief is what the angle reads against.
+
+### P4b — relief becomes props — PLANNED, art in hand
+
+- **Peaks and hills stop being cliffs.** `heightfield.HEIGHT` drops PEAK from 3.4 to ~0.8 plot-widths and HILL
+  from 1.0 to ~0.4, so mountainous ground is a gentle rise rather than a wall, and the continental heightmap
+  (×6) does what it is actually shaped for. Verified in a reverted prototype: the terracing goes away entirely.
+- **PEAK plots get a mountain prop** — the real Civ4 model, baked to a sprite — standing on the mesh through exactly the P3 billboard machinery — same
+  record shape, same geometry builder, same tilt-following pitch, so it inherits the placement guarantee and
+  the geometric gate for free.
+- **Every prop gets a contact shadow**: a flat, ground-plane, blended quad under it. The target's mountains and
+  trees all have one and it is a surprisingly large part of why they read as standing on something. (Prototyped
+  and reverted with the rest; it is independent of the art and can land first.)
+
+**Where the art comes from — and a false start worth recording.** C2C's `UnpackedArt/art/Terrain` has no `Peaks`
+or `Hills` directory; it holds only what C2C itself ships unpacked (`features`, `heightmap`, `improvements`,
+`natural_wonders`, `plottextures`, `resources`, `routes`, `sky`, `textures`, `water`, `waves`). A first attempt
+therefore GENERATED a mountain sprite from canvas primitives, on the reasoning that the real model was
+unreachable. It was reverted: inventing terrain art is the wrong answer in a project whose whole terrain
+pipeline is a faithful port (see the note on porting the C2C generator), and the generated cones looked exactly
+like what they were.
+
+The real art was reachable after all — it is packed rather than absent. `tools/fpk/unpack.mjs` reads the
+game's own FPK archives, and `Assets/Art0.FPK` yields:
+
+| file | what |
+|---|---|
+| `art/terrain/features/peak/peak_mountain{a,b,c}.nif` | the mountain models, three variants |
+| `art/terrain/features/peak/peak_hill{a,b,c}.nif` | hill models |
+| `art/terrain/features/peak/peak_single{,a,b,c}.nif` | the lone-peak variants |
+| `art/terrain/features/peak/peak_all.dds`, `peak_single.dds`, `mountaincraggy01.dds` | their textures |
+| `art/terrain/textures/peakdetail.dds` | the peak ground detail texture |
+
+So P4b's remaining work is a bake, not an invention: run these through `tools/nifbake` — the same path that
+already produced the cactus and bamboo sprites — into a sprite atlas, and feed it to the prop layer P3 built.
+
+**The bigger find behind it:** `C2C{0..3}.FPK` + `C2CPatch0.FPK` hold ~900 MB of C2C's OWN art, packed. Most of
+C2C's art was never in `UnpackedArt` either, which matters well beyond terrain — the building and unit models P5
+wants are in there.
+
+**One constraint this creates.** Extracted art is gitignored (`/.civ4-fpk/`): it is the publisher's, it is large,
+and it is one command to reproduce from a local install. But CI has no game install, so anything baked from it
+must have its OUTPUT committed — which is already how the tree and flag atlases work, so the pattern exists; it
+just has to be a deliberate choice rather than an accident.
 
 ### P5 — prop art at the oblique angle
 

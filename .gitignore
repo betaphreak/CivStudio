@@ -100,3 +100,9 @@ civstudio-server/target/
 # spike shots: only the four the plan doc cites by name are kept; shot.mjs regenerates the rest
 /tools/spike-iso3d/shot-topdown.png
 /tools/spike-iso3d/shot-strong.png
+
+# Art extracted from the installed game's FPK archives (tools/fpk/unpack.mjs). Never committed: it is the
+# publisher's art, it is hundreds of megabytes, and it is reproducible from a local install in one command.
+# Bakes that consume it must commit their OUTPUT (a sprite atlas), the way the tree and flag atlases already do,
+# because CI has no game install to extract from.
+/.civ4-fpk/
