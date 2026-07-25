@@ -1,9 +1,16 @@
 # Plan: the map to PixiJS — retained-mode rendering under the same band spine
 
-**Status:** P0–P2 BUILT 2026-07-25 (P0 = `7916f5e`, P1 = `154c430`). **P2's gate: PASS** — the plot
-layer is **~10× faster** on Pixi in the regime where it dominates (see P2). P2 ships **flag-gated,
-default off** (`?pixiPlots=1`), for reasons that reshaped the phase order — read P2's two findings
-before starting P3. P3–P8 proposed, and **P3/P4 have swapped**.
+**Status:** P0–P2 + **P4b** BUILT 2026-07-25 (P0 = `7916f5e`, P1 = `154c430`, P2 = `5038647`). P3–P8
+proposed, and **P3/P4 have swapped**.
+
+- **P2's gate: PASS** — the plot layer is **~10× faster** on Pixi in the regime where it dominates. It
+  ships **flag-gated, default off** (`?pixiPlots=1`) for reasons that reshaped the phase order; read
+  P2's two findings before starting P3.
+- **P4b — read this before doing any more migration.** The single biggest win here was **not** a Pixi
+  phase: `tiers` was 85% of layer cost at 5.5× because it built a whole-world `Path2D` every camera
+  change with no viewport cull. Fixing that took all layers at 5.5× from **30.89 ms to 0.45 ms** —
+  more than the entire migration has delivered. **Profile a layer for a missing cull before migrating
+  it.**
 
 This is the enabling work for an isometric Ground regime and for sprite counts canvas 2D cannot
 reach; it is *not* itself a visual feature.
@@ -289,13 +296,70 @@ sit in front of `plots`, so they belong after P4.
 placement assertion). Re-measure: the shallow-zoom rows should improve on their own once Pixi's fixed
 renderer cost is shared with P3's layers rather than added to them.
 
-## P4b — `tiers`, out of band
+## P4b — `tiers`, out of band — **DONE, and it was worth more than the migration so far**
 
-**Not a Pixi phase.** P2's profiling found `tiers` at **26.3 ms / 85% of layer cost at 5.5×** and
-23.0 ms / 75% at 8× — several times the plot layer it was assumed to be dwarfed by. Before migrating
-it, find out why a dissolved-boundary overlay costs that much; 26 ms smells like a per-frame
-re-tessellation or a cache that never hits, in which case it is a bug fix worth more than any phase
-here and independent of the renderer.
+**Not a Pixi phase, and it turned out not to need Pixi at all.** P2's profiling found `tiers` at
+**26.3 ms / 85% of layer cost at 5.5×**. The suspicion was a per-frame re-tessellation or a cache that
+never hits. It was the first, and the fix is 20 lines.
+
+### Diagnosis (`tools/webverify/tiers-probe.mjs`)
+
+```
+real layer draw:  cache MISS 13.7ms   cache HIT 0ms
+tessellate:       all 12.6ms   culled 0.2ms   culled+decimated 0.2ms
+stroke:           all+shadow 0ms   all no-shadow 0ms
+regions:          802 rings / 15862 pts — on screen: 30 rings / 1294 pts
+```
+
+**Stroking was free. `shadowBlur` was free — that hypothesis was wrong.** All of it was building a
+`Path2D` over **every ring of the whole world** on each camera change: 15,862 points to draw the 1,294
+that were on screen. `Path2D.lineTo` costs roughly **0.8 µs a point** in this browser, which is the
+number worth remembering — 16k points is a 12 ms frame all by itself, and the *projection* of those
+same points costs ~0.2 ms. Path construction, not arithmetic and not rasterisation.
+
+`tierPath` already cached per `S.viewVersion`, so a **still camera never paid this** (cache HIT 0 ms).
+It was purely the cost of panning and zooming — i.e. exactly when it is felt.
+
+### Fix
+
+Cull rings to the viewport before adding them to the path — the same thing `core.provOnScreen` has
+always done per province, and which this layer alone never had. `web/js/tier-geom.mjs` (pure,
+zero-import, 7 tests) precomputes each ring's **source-space** bounding box once when the geometry
+lands; the box never changes, so the per-frame cull projects two corners instead of every vertex,
+making it O(rings) not O(points). Valid because `pxr`/`pyr` are affine and monotonically increasing —
+noted in the module, because an isometric shear would break that assumption.
+
+### Result
+
+| | before | after |
+|---|---|---|
+| `tiers` layer, cache miss | 13.7 ms | **0.1–0.3 ms** |
+| all layers @ 5.5× | 30.89 ms | **0.45 ms** |
+| all layers @ 8× | 30.48 ms | **0.44 ms** |
+| diag chip @ tier zooms | ~29 fps / 34 ms | **~612 fps / 4 ms** |
+
+**Pixel-safe, proved not eyeballed.** The probe strokes the culled and un-culled paths to two
+offscreen canvases and diffs every pixel: **0 of 1,440,000 differ at k = 2, 3, 5.5, 8, 9**, against a
+**0-pixel control** (the same path stroked twice, establishing the renderer's noise floor — without
+that control a 3-pixel diff reads as a dropped boundary). The 8 px margin earns its keep: a margin-0
+cull *did* differ by 3 pixels at k=8, which is the stroke bleeding inward from just off-frame.
+
+### Two notes
+
+- **`tiers` comes off P5's migration list.** At 0.03 ms there is nothing left to win by moving it.
+- **The plot layer also reads far lower in the post-fix profile** (11.15 → 0.05 ms at 16×). I believe
+  that is indirect: with frames no longer costing 30 ms, `drawPlots`' deferred texture builds
+  (`PLOT_FRAME_BUDGET_MS`, which reschedules via `draw()`) now finish inside the settle window instead
+  of bleeding into the timing window. That is an **inference, not a measurement** — the dedicated
+  A/B in `pixi-p2-verify.mjs` remains the authority on the plot layer's steady-state cost, and it
+  still reports 7.3 ms → 0.8 ms (9.1×) at k=16 after this fix.
+
+### What this says about the rest of the plan
+
+The migration's premise was that canvas 2D is out of headroom. At the tier zooms it wasn't — one
+missing viewport cull was. **Before migrating any further layer, profile it and check for a missing
+cull or a cache that never hits.** `labels` is now the largest layer at 8× (0.18 ms / 41%) — which is
+small enough that P6 (BitmapText) should be re-justified rather than assumed.
 
 ## P5 — The dynamic session layers
 

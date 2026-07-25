@@ -6,14 +6,19 @@
 // (province → region → super-region → continent), and province borders fade out under them (see
 // main.renderScene). Rings are absolute source pixels, so they reuse the province projection
 // (pxr/pyr) and pin to the terrain 1:1.
-import { ctx, pxr, pyr, S, apiUrl } from "../core.mjs";
+import { ctx, pxr, pyr, S, VIEW, apiUrl } from "../core.mjs";
 import { bandAlpha, GEO_TIER_ENV } from "../bands.mjs";
+import { indexTierRings, tierRingVisible } from "../tier-geom.mjs";
 
 // { continents:{key:[[[x,y]…]…]}, superRegions:{…}, regions:{…} } — fetched lazily on first
 // approach to a tier zoom band, so the 90 KB (gzipped) asset never loads for a purely
 // zoomed-in session.
 let TIERS = null;
 let loading = false;
+// per tier: the same rings flattened, each with its SOURCE-space bounding box precomputed once, so
+// the per-frame viewport cull in tierPath is O(rings) rather than O(points). See js/tier-geom.mjs for
+// why this layer was the most expensive in the scene without it.
+let RINGS = null;
 
 // per tier: the stroke width and colour — coarser tiers read bolder/brighter. The visibility
 // envelope comes from bands.GEO_TIER_ENV, the single source shared with the tier labels and the
@@ -34,7 +39,13 @@ export function ensureTiers(redraw) {
   loading = true;
   fetch(apiUrl("/api/tiers"))
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
-    .then(d => { TIERS = d; loading = false; if (redraw) redraw(); })
+    .then(d => {
+      TIERS = d;
+      RINGS = {};
+      for (const tier in d) RINGS[tier] = indexTierRings(d[tier]);   // box every ring once, here
+      loading = false;
+      if (redraw) redraw();
+    })
     .catch(() => { loading = false; });   // no tiers → the map just keeps province borders
 }
 
@@ -45,12 +56,21 @@ function tierPath(tier) {
   const c = cache[tier];
   if (c.pv === S.viewVersion && c.path) return c.path;
   const path = new Path2D();
-  const groups = TIERS[tier] || {};
-  for (const key in groups)
-    for (const ring of groups[key]) {
-      ring.forEach((pt, i) => { const x = pxr(pt[0]), y = pyr(pt[1]); i ? path.lineTo(x, y) : path.moveTo(x, y); });
-      path.closePath();
+  // CULL FIRST. This was the most expensive layer in the whole scene purely because it did not:
+  // it built a Path2D over every ring of the WHOLE WORLD on every camera change — 15,862 points to
+  // draw the 1,294 that were on screen — and Path2D.lineTo costs ~0.8 us a point. Stroking was free,
+  // the shadow was free; it was all tessellation. Skipping off-screen rings took the layer from
+  // ~12.6 ms to ~0.2 ms. The cull mirrors core.provOnScreen, which every other geometry layer had and
+  // this one never did. Measured by tools/webverify/tiers-probe.mjs; see js/tier-geom.mjs.
+  for (const r of (RINGS && RINGS[tier]) || []) {
+    if (!tierRingVisible(r, pxr, pyr, VIEW.w, VIEW.h)) continue;
+    const ring = r.ring;
+    for (let i = 0; i < ring.length; i++) {
+      const x = pxr(ring[i][0]), y = pyr(ring[i][1]);
+      if (i) path.lineTo(x, y); else path.moveTo(x, y);
     }
+    path.closePath();
+  }
   c.path = path; c.pv = S.viewVersion;
   return path;
 }
