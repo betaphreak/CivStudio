@@ -35,8 +35,19 @@ import com.civstudio.util.RngSeed;
  *
  * <pre>
  * mvn -q compile exec:exec -Dsim.main=com.civstudio.geo.export.WorldPlotGenerator
+ * pwsh tools/run.ps1 WorldPlotGenerator                          # same, but takes arguments
+ * pwsh tools/run.ps1 WorldPlotGenerator lencenor_region          # bake ONE region (seconds)
  * </pre>
  *
+ * <b>The region filter is the local feedback loop.</b> Baking the world takes minutes and writes
+ * ~5000 files; when you are iterating on generation you want to look at <em>one</em> place in the
+ * real viewer, not a PNG. Naming an area / region / super-region bakes just that slice into the
+ * same versioned cache dir, so {@code tools/dev-local.ps1} serves it immediately. Because
+ * generation is a pure function of world position and the province's own canonical stream (see
+ * {@code docs/plot-generator.md} §Seamless generation), a slice baked this way is byte-identical to
+ * the same provinces in a full-world bake — it is a prefix of the same work, not an approximation.
+ * The place-naming pass runs only on a full bake (it is a whole-world pass over the region map).
+ * <p>
  * The generated caches are large (hundreds of MB) and regenerable, so they are
  * gitignored — this tool is how a clone rebuilds them for the world map.
  */
@@ -58,7 +69,15 @@ public final class WorldPlotGenerator {
 		// coastal-shelf water field (ProvincePlotField branches on type). RNW/Unused are already
 		// dropped upstream (not in the WorldMap). A deep-ocean province with no shelf yields an
 		// empty field and is not written (the web keeps drawing it as the open-sea ripple).
-		java.util.Collection<Province> all = map.provinces();
+		String scope = args.length > 0 && !args[0].isBlank() ? args[0] : null;
+		java.util.Collection<Province> all = scope == null ? map.provinces() : select(map, scope);
+		if (scope != null) {
+			if (all.isEmpty())
+				throw new IllegalArgumentException("no provinces for '" + scope
+						+ "' — expected an area / region / super-region raw_key (e.g. lencenor_region)");
+			System.out.println("scope '" + scope + "' -> " + all.size() + " provinces (partial bake:"
+					+ " no place-naming pass; re-run without a scope for the full world)");
+		}
 		int total = all.size(), gen = 0, skip = 0, empty = 0, fail = 0;
 		long t0 = System.currentTimeMillis();
 		System.out.println("generating plot fields for " + total + " provinces (land + coastal shelf)...");
@@ -94,7 +113,34 @@ public final class WorldPlotGenerator {
 		System.out.printf("done: %d generated, %d already present, %d empty (no shelf), %d failed, of %d provinces in %ds%n",
 				gen, skip, empty, fail, total, (System.currentTimeMillis() - t0) / 1000);
 
-		nameWorld(map, registry);
+		// The place-naming pass is a WHOLE-WORLD pass (it walks the region→country map and names by
+		// region), so it only makes sense on a full bake. A scoped bake is for looking at terrain in
+		// the viewer; its plots come out nameless, which the hover simply omits.
+		if (scope == null)
+			nameWorld(map, registry);
+		else
+			System.out.println("scoped bake: skipping the place-naming pass (whole-world only) —"
+					+ " these plots will have no place names");
+	}
+
+	/**
+	 * The provinces named by a scope: an <b>area</b>, <b>region</b> or <b>super-region</b>
+	 * {@code raw_key}, or a comma-separated list of province ids. Matched in that order, so the
+	 * unambiguous Anbennar keys work directly ({@code lencenor_region},
+	 * {@code western_cannor_superregion}, {@code venail_area}).
+	 */
+	private static java.util.List<Province> select(WorldMap map, String scope) {
+		if (scope.matches("\\d+(,\\d+)*")) {
+			java.util.List<Province> byId = new ArrayList<>();
+			for (String id : scope.split(","))
+				byId.add(map.province(Integer.parseInt(id)));
+			byId.removeIf(java.util.Objects::isNull);
+			return byId;
+		}
+		return map.provinces().stream()
+				.filter(p -> scope.equals(p.areaKey()) || scope.equals(p.regionKey())
+						|| map.superRegionOf(p.id()).map(sr -> scope.equals(sr.rawKey())).orElse(false))
+				.toList();
 	}
 
 	/**

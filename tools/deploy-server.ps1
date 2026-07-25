@@ -38,7 +38,10 @@
 param(
   [string]$Tag,
   [switch]$SkipBuild,
-  [switch]$ForceBuild
+  [switch]$ForceBuild,
+  # Skip the pre-roll plot-cache check. Only for a deploy that genuinely does not depend on the
+  # map cache, or when the storage check itself is broken — see Assert-PlotCacheBaked.
+  [switch]$SkipCacheCheck
 )
 $ErrorActionPreference = 'Stop'
 
@@ -48,6 +51,69 @@ $LOGIN    = 'ghcr.io'                          # registry login server
 $OWNER    = 'betaphreak'                       # ghcr namespace (GitHub owner, lowercase)
 $REPO     = 'civstudio-server'
 $HEALTH   = 'https://dev.civstudio.com/actuator/info'   # where we confirm the roll landed
+# The Azure Files share the Container App mounts at /mnt/anbennar (PLOT_CACHE_DIR=/mnt/anbennar/map),
+# i.e. where the regenerate-map workflow uploads the baked plot cache. Kept as constants alongside
+# $RG/$APP; they are verifiable with
+#   az containerapp env storage show -g civstudio -n <env> --storage-name anbennar
+$STORAGE  = 'civstudiostore'
+$SHARE    = 'anbennar-cache'
+$CACHEDIR = 'map'                              # subdir of the share; v<MAP_VERSION> lives under it
+
+# ── Pre-roll guard: never roll an image onto a MAP_VERSION whose cache was never baked ────────────
+# The release has three legs and only two are automated: deploy-web ships web/ in ~1 min, the
+# regenerate-map workflow bakes + uploads the cache in ~4, and THIS script is a manual local step
+# with no ordering constraint at all. Roll a v<N> image at a share with no map/v<N>/ and the server
+# does not fail — it silently regenerates every province on demand (slow) and writes into the share,
+# racing whatever azcopy is still uploading. That is the exact failure regenerate-map.yml's own
+# MAP_VERSION guard exists to prevent on the other side; this is the matching half.
+#
+# Fails CLOSED, including when the check cannot be *determined* (no az permission, CLI error): a
+# deploy that cannot prove the cache is there stops and names -SkipCacheCheck as the way past. A
+# credential hiccup blocking a deploy is far cheaper than prod regenerating 5268 provinces live.
+function Assert-PlotCacheBaked {
+  param([string]$RepoRoot)
+
+  $store = Join-Path $RepoRoot 'civstudio-engine/src/main/java/com/civstudio/settlement/ProvincePlotStore.java'
+  $line  = Select-String -Path $store -Pattern 'MAP_VERSION\s*=\s*(\d+)' | Select-Object -First 1
+  if (-not $line) { throw "could not read MAP_VERSION from $store" }
+  $version = $line.Matches[0].Groups[1].Value
+  $dir = "$CACHEDIR/v$version"
+  Write-Host "==> checking the plot cache for MAP_VERSION $version ($SHARE/$dir)" -ForegroundColor Cyan
+
+  $key = az storage account keys list -n $STORAGE -g $RG --query "[0].value" -o tsv 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $key) {
+    throw ("cannot read the storage key for $STORAGE (az storage account keys list failed), so the " +
+      "plot cache for MAP_VERSION $version cannot be verified. Fix the az session, or pass " +
+      "-SkipCacheCheck if you are certain map/v$version is baked.")
+  }
+
+  # one cheap listing of the cache root: are the version dirs there at all?
+  $versions = @(az storage file list --account-name $STORAGE --account-key $key `
+      --share-name $SHARE --path $CACHEDIR --query "[].name" -o tsv 2>$null)
+  if ($LASTEXITCODE -ne 0) {
+    throw ("cannot list $SHARE/$CACHEDIR, so the plot cache for MAP_VERSION $version cannot be " +
+      "verified. Pass -SkipCacheCheck to override.")
+  }
+  if ($versions -notcontains "v$version") {
+    throw ("PLOT CACHE MISSING: $SHARE/$dir does not exist, but this build serves MAP_VERSION " +
+      "$version. Rolling now would make prod regenerate every province on demand and write into " +
+      "the share. Bake it first:`n" +
+      "    gh workflow run 'Regenerate map'      # or push the MAP_VERSION bump`n" +
+      "  present on the share: $($versions -join ', ')")
+  }
+
+  # present — but an interrupted upload leaves a thin dir, so confirm it holds a real world.
+  # --num-results caps the listing (5000+ files); we only need "is this plausibly complete".
+  $sample = @(az storage file list --account-name $STORAGE --account-key $key `
+      --share-name $SHARE --path $dir --num-results 4000 --query "[].name" -o tsv 2>$null)
+  if ($sample.Count -lt 4000) {
+    throw ("PLOT CACHE INCOMPLETE: $SHARE/$dir holds only $($sample.Count) files (a full world is " +
+      "~5000). An upload was probably interrupted. Re-run the bake:`n" +
+      "    gh workflow run 'Regenerate map'`n" +
+      "  or pass -SkipCacheCheck to roll anyway.")
+  }
+  Write-Host "    ok: $SHARE/$dir is baked (>= $($sample.Count) province files)" -ForegroundColor Green
+}
 
 # Does OWNER/REPO:TAG already exist on GHCR? `docker manifest inspect` queries the registry directly
 # using Docker's stored credential (incl. helpers like wincred) and — verified — needs NO running
@@ -96,6 +162,14 @@ try {
 
   # sanity: the roll always needs an authed az session; Docker only matters when we actually build.
   az account show --query name -o tsv | Out-Null
+
+  # …and the cache this build's MAP_VERSION will read must already be on the share (see the function).
+  # Checked BEFORE the build so a missing bake costs seconds, not a full image build.
+  if ($SkipCacheCheck) {
+    Write-Warning "-SkipCacheCheck: NOT verifying the plot cache for this build's MAP_VERSION."
+  } else {
+    Assert-PlotCacheBaked -RepoRoot $repoRoot
+  }
 
   if (-not $SkipBuild) {
     docker info --format '{{.ServerVersion}}' | Out-Null

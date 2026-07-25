@@ -333,7 +333,8 @@ map silently break:
    > no GeoNames dump on the server). Deleting it leaves prod serving nameless plots until the
    > next CI bake. The only thing a version bump needs is that `map/v<new>` **exists**.
 
-   Bake it in CI — **`regenerate-map.yml`** (~24 min: bakes the whole world with names via
+   Bake it in CI — **`regenerate-map.yml`** (~18 min end to end — bake 2.5 min, azcopy upload 1.5, and the
+   rest is the prune of old cache versions; bakes the whole world with names via
    `WorldPlotGenerator`, then azcopy-uploads to `<share>/map/v<new>` and prunes old versions).
    It triggers on a master push touching `ProvincePlotStore.java`, and its guard compares
    `MAP_VERSION` against **the commit the branch was at before the push** — not `HEAD~1`, which
@@ -347,7 +348,7 @@ map silently break:
 
    `pwsh tools/deploy-plot-cache.ps1` is the local fallback (bakes on the dev box and uploads the
    same way) for when CI is unavailable; CI is the normal path — the point of moving it there was
-   to get the 24-minute bake off the dev box.
+   to get the whole-world bake off the dev box.
 
    Skip this step entirely for a pure server-code or web-JS change (generation unchanged).
 
@@ -356,6 +357,20 @@ map silently break:
    engine resources, server code, and the rebaked manifest. Do it **after** the bake (step 2),
    never before: the image serves `v<MAP_VERSION>`, so rolling it while `map/v<new>` is still
    empty makes prod regenerate every province on demand — nameless.
+
+   **That ordering is now enforced, not remembered.** `Assert-PlotCacheBaked` runs before the build:
+   it reads `MAP_VERSION` out of `ProvincePlotStore.java` and refuses to roll unless
+   `<share>/map/v<N>` exists on the Azure Files share *and* holds a plausible world (≥ 4000
+   province files, so an interrupted upload is caught too). It **fails closed**, including when the
+   check cannot be determined (no az permission, CLI error) — a credential hiccup blocking a deploy
+   is far cheaper than prod regenerating 5268 provinces live. `-SkipCacheCheck` is the documented
+   way past, for a deploy that genuinely does not depend on the cache.
+
+   The server reports the same thing from the other side: `ProvincePlotStoreConfigurer` logs
+   `PLOT CACHE MISSING` (error) or `PLOT CACHE INCOMPLETE` (warn) at startup. A missing cache is not
+   a crash — the store just regenerates on demand — which is exactly why it needs saying out loud:
+   the symptom is "the map got slow", minutes after a deploy, with nothing tying it to a bake that
+   never ran.
 4. **Deploy the web static site** — *only if `web/` (JS, `index.html`, committed assets) changed,
    and normally **automatic**.* `deploy-web.yml` triggers on every master push touching `web/**`:
    it runs the web unit tests (`npm test`) and then ships the prebuilt `web/` folder to SWA. Only

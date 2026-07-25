@@ -81,8 +81,9 @@ jobs:
               prev=$(git show "$before":"$store" 2>/dev/null | extract || true)
             fi
             echo "previous MAP_VERSION=${prev:-<none>} (baseline ${before:-<none>})"
-            # Fail OPEN: no resolvable baseline → bake. A redundant 24-minute bake is cheap next to
-            # rolling an image at a version whose cache does not exist.
+            # Fail OPEN: no resolvable baseline → bake. A redundant bake is cheap (~2.5 min since the
+            # GeoNames dump download was replaced by the committed subset) next to rolling an image
+            # at a version whose cache does not exist.
             if [ -n "$prev" ] && [ "$cur" = "$prev" ]; then
               echo "MAP_VERSION unchanged ($cur) — nothing to rebake."
               echo "skip=true" >> "$GITHUB_OUTPUT"

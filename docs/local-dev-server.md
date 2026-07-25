@@ -37,6 +37,40 @@ pwsh tools/dev-local.ps1 -Online                # let Maven reach the network
 Stop everything with `Ctrl-C` in the terminal — the node frontend is a child of the server JVM and
 is torn down on shutdown.
 
+## Running a dev tool: `tools/run.ps1`
+
+`mvn exec:exec` **cannot pass program arguments** — `civstudio-engine/pom.xml` hardcodes the JVM
+argument list and it ends at `${sim.main}`, so a tool that takes arguments has no way in. The
+workaround was `mvn dependency:build-classpath` plus a hand-written `java` invocation with the
+world-source flags, every time. `tools/run.ps1` is that, as one command: it compiles, resolves and
+**caches** the classpath (rebuilt only when a pom is newer), and passes the same world-source flags
+and `-ea` that `exec:exec` does.
+
+```powershell
+pwsh tools/run.ps1 TerrainPreviewExporter lencenor_region out.png 3   # short name → geo.export
+pwsh tools/run.ps1 WorldPlotGenerator western_cannor_superregion      # bake ONE region
+pwsh tools/run.ps1 -Heap 6g com.civstudio.geo.export.WorldPlotGenerator
+```
+
+## Looking at a generation change locally
+
+Two tools, in increasing fidelity:
+
+- **`TerrainPreviewExporter <region> <out.png> [scale]`** — renders a whole region's generated plot
+  field straight to a PNG and prints the terrain mix, the **seam score** (cross-border vs interior
+  terrain-change ratio; 1.0 = seamless) and the border relief/vegetation ratios. Seconds, no server,
+  no cache. This is how the province-seam bug was found and measured — a discontinuity at a border
+  is obvious in a region render and invisible in a single-province test.
+- **`WorldPlotGenerator <region>`** — bakes just that region into the local `.map/v<MAP_VERSION>`,
+  so `dev-local.ps1` serves it in the **real viewer** immediately. A scoped bake is byte-identical
+  to those provinces in a full-world bake (generation is a pure function of world position and the
+  province's own canonical stream), so it is a prefix of the same work, not an approximation — it
+  just skips the whole-world place-naming pass, leaving those plots nameless.
+
+Both take an area / region / super-region `raw_key` (`venail_area`, `lencenor_region`,
+`western_cannor_superregion`); `WorldPlotGenerator` also takes a comma-separated province-id list.
+See `docs/plot-generator.md`.
+
 ## World data: the fixture, not the classpath
 
 `generated/` is **no longer committed** — studio is the authoritative content store (see
