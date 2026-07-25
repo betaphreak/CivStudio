@@ -93,13 +93,16 @@ const unproject = (mx, my) => PROJ.unproject(mx, my);
  *  the fast path reproduces the old expression exactly. */
 const plotPxAt = (sx = 0, sy = 0) => PROJ.separable ? pxr(sx + 1) - pxr(sx) : scaleAt(project, sx, sy);
 
-// inverse of py: the latitude at a screen y (undo camera → crop rect → source pixel → the
-// Mercator sySrc). Used to colour the ocean by climate band down the viewport.
-const latAtScreenY = y => {
-  const sp = unproject(0, y)[1];
+// inverse of sySrc: the latitude at a SOURCE pixel row (undo the Mercator). Split out of latAtScreenY
+// so the 3D sea plane can bake its climate gradient in map space — the same colours the 2D gradient
+// samples per screen row, but independent of the camera (js/terrain3d.mjs).
+const latAtSourceY = sp => {
   const t = (1 - 2 * sp / MAP.H) * Math.PI;
   return (2 * Math.atan(Math.exp(t)) - Math.PI / 2) * 180 / Math.PI;
 };
+// inverse of py: the latitude at a screen y (undo camera → crop rect → source pixel → the
+// Mercator sySrc). Used to colour the ocean by climate band down the viewport.
+const latAtScreenY = y => latAtSourceY(unproject(0, y)[1]);
 const TCOL = BUNDLE.terrainColors || {};
 const K_PLOT = 5;                 // camera scale at which plots begin to fade in
 const K_TEX = 16;                 // camera scale at which flat tiles give way to real textures
@@ -355,4 +358,4 @@ export const S = {
 };
 
 export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py,
-  project, unproject, setProjector, separable, plotPxAt, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+  project, unproject, setProjector, separable, plotPxAt, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };

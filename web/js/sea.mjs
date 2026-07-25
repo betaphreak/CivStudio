@@ -20,7 +20,7 @@
 // Deleted rather than optimised. The per-plot coastal shelf floes (plots.drawSeaIce) are unaffected —
 // those are driven by real FEATURE_ICE terrain data at deep zoom and are baked into the plot canvas.
 import { VIEW, cam, MAP, SEA, SEA_BANDS, ctx, latAtScreenY, K_PLOT, K_TEX } from "./core.mjs";
-import { bandAlpha, kBand } from "./bands.mjs";
+import { bandAlpha, kBand, ground3D } from "./bands.mjs";
 
 // A redraw request, injected by main (initSea) so this module never imports main.mjs back — the
 // image loads are async and must repaint whenever they land. Same idiom as initMinimap(draw).
@@ -41,7 +41,7 @@ export function initSea(onLoad) {
 // piecewise sea colour by |latitude|: tropical (≤23°) → temperate (~40°) → polar (≥60°), then a
 // fade toward deep-ocean dark past 72° so the empty polar seas beyond the mapped land read as
 // deep water (and the soft-light ripple stops showing its tiling on that flat grey expanse).
-function seaColorAt(lat) {
+export function seaColorAt(lat) {
   const B = SEA_BANDS, a = Math.abs(lat);
   const mix = (u, v, f) => [u[0]+(v[0]-u[0])*f, u[1]+(v[1]-u[1])*f, u[2]+(v[2]-u[2])*f];
   let c;
@@ -55,6 +55,11 @@ function seaColorAt(lat) {
 // fill the viewport with the ocean base: the latitude colour gradient, then the ripple overlay
 const SEA_WAVE = 1.0;   // ripple tile size, in map-raster px per texture px (world-view wave scale)
 export function drawSeaBase() {
+  // From band 5 the 3D ground owns the back of the frame and draws the ocean as a plane at sea level
+  // (js/terrain3d.mjs §1). This fill is viewport-wide and opaque, so leaving it on would hide the mesh
+  // entirely — it is the wall of opaque full-area fills that forced Pixi's back-to-front migration.
+  // Note the ripple below already fades out by K_TEX (band 4), so nothing is lost at these zooms.
+  if (ground3D()) return;
   const w = VIEW.w, h = VIEW.h;
   if (SEA_BANDS) {
     const g = ctx.createLinearGradient(0, 0, 0, h);

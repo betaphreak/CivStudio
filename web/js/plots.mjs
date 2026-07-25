@@ -5,7 +5,7 @@
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
 import { P, terrainRgb, provSrcBox, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, px, py, pxr, pyr, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
-import { bandAlpha, kBand, atLeast, BAND } from "./bands.mjs";
+import { bandAlpha, kBand, atLeast, BAND, ground3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
 import { paintCoast, drawSeaIce } from "./coast.mjs";
@@ -121,6 +121,12 @@ function buildPlotCanvas(p, plots) {
 // (see main.drawUnderworld); called with no argument it draws the whole world.
 function drawPlots(only) {
   if (cam.k < K_PLOT) return;
+  // From band 5 the 3D ground drapes these very offscreens over its meshes (js/terrain3d.mjs §3), so the
+  // BLITS below are skipped — but everything else here still has to run, and that is the point: the
+  // viewport cull, the lazy loadPlots, the per-frame build budget, MAX_TEX_PLOTS and the bonus overlay
+  // are all machinery terrain3d would otherwise have to reimplement. It reads `p._tcanvas`/`_tbox`
+  // straight off what this pass maintains.
+  const blit = !ground3D();
   const textured = atLeast(BAND.TERRAIN) && ttReady && !S.dragging;   // real textures from band 4 (16×); flat tiles while panning
   const a = bandAlpha(kBand([K_PLOT, 6.5]));   // fade in over the plots band
   const smooth = ctx.imageSmoothingEnabled;
@@ -143,11 +149,12 @@ function drawPlots(only) {
       if (!p._tcanvas) {
         if (performance.now() >= buildDeadline) {   // out of frame budget — flat placeholder now, texture next frame
           deferred = true;
-          if (p._pcanvas) { ctx.imageSmoothingEnabled = false; blitProvinceCanvas(p._pcanvas, p._pbox); }
+          if (blit && p._pcanvas) { ctx.imageSmoothingEnabled = false; blitProvinceCanvas(p._pcanvas, p._pbox); }
           continue;
         }
         buildPlotTexCanvas(p);                       // textured offscreen, built once
       }
+      if (!blit) continue;
       // the textured offscreen is real ground art being scaled up → SMOOTH sampling
       ctx.imageSmoothingEnabled = true;
       blitProvinceCanvas(p._tcanvas, p._tbox);
@@ -157,6 +164,7 @@ function drawPlots(only) {
       if (performance.now() >= buildDeadline) { deferred = true; continue; }   // out of budget — build next frame
       buildPlotCanvas(p, p._plots);                  // flat-colour offscreen, built once
     }
+    if (!blit) continue;
     // the flat offscreen is one pixel PER PLOT → NEAREST sampling; smoothing would smear it to mush
     ctx.imageSmoothingEnabled = false;
     blitProvinceCanvas(p._pcanvas, p._pbox);

@@ -1,5 +1,6 @@
 import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, py, pxr, pyr, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm } from "./core.mjs";
-import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO } from "./bands.mjs";
+import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO, ground3D } from "./bands.mjs";
+import { renderTerrain3D } from "./terrain3d.mjs";   // the 3D ground, band 5 and deeper
 import { drawPlots } from "./plots.mjs";                       // still used directly by drawCavernPlots
 import { scheduleLegendRefresh } from "./overlays/political.mjs";
 import { ensureTiers } from "./overlays/tiers.mjs";
@@ -52,6 +53,9 @@ function resize() {
   const r = stage.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio||1, 2);
   if (!(r.width > 0) || !(r.height > 0)) return;   // ignore degenerate sizes (mid-layout / panel drag)
   cv.width = r.width*dpr; cv.height = r.height*dpr; VIEW.dpr = dpr;
+  // (The WebGL canvas is NOT resized here: VIEW is still the pre-fitView size at this point, and
+  // renderTerrain3D resizes from VIEW on every frame anyway — guarded, so it costs nothing until the
+  // dimensions actually change. The paint() at the foot of this function is that frame.)
   // Preserve the geographic point at the viewport centre AND the on-screen magnification across the
   // resize, so opening/closing/dragging the info panel beside the map (which shrinks/grows the stage)
   // never moves or rescales the world. fitView recomputes the base fit scale from the new size; we
@@ -142,6 +146,10 @@ function paint() {
 function paintScene() {
   updateRegimeSignal();   // top-bar band-name chip + regime cursor + boundary pulse (replaces the raw × readout)
   S.markers = [];   // cave-entrance / teleporter hit-targets, repopulated this frame (hover reads them)
+  // The 3D ground, on its own canvas BENEATH #map (docs/terrain-3d.md). A no-op below band 5, where the
+  // 2D sea/raster/plot layers below still draw the ground themselves; from band 5 up those three suppress
+  // and this owns the back of the frame. Drawn first because it is behind everything.
+  renderTerrain3D();
   const w=VIEW.w, h=VIEW.h, dpr=VIEW.dpr;
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
@@ -245,6 +253,10 @@ function drawImpassable() {
 
 // the baked terrain raster, scaled by the camera — the base of every band
 function drawRaster() {
+  // From band 5 the 3D ground draws this as a plane just above sea level (terrain3d.mjs §2), where it
+  // serves the same purpose it does here: the fallback under every province whose plots have not landed.
+  // It is opaque over the whole map region, so leaving it on would hide the mesh completely.
+  if (ground3D()) return;
   if (!mapReady) return;
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(mapImg, 0, 0, MAP.dw, MAP.dh,

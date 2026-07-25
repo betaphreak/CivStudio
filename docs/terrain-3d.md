@@ -1,7 +1,9 @@
 # 3D terrain — the target look, the spike that validated it, and the plan
 
-**Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`); the approach is **validated**
-and **PLANNED** (§The plan, decided 2026-07-25). Nothing is built in `web/` yet.
+**Status:** SPIKED 2026-07-25 (`tools/spike-iso3d/`, commit `27b27dc`), **PLANNED** P0–P5 (§The plan),
+and **P0 + P1 SHIPPED** 2026-07-25 — the 3D ground is live from band 5 up, at tilt 0, gated on a frame
+diff against the 2D path it replaces (mean delta 0.71/255 at z=120). P2 (the tilt) is next and is where
+the look actually arrives.
 
 ## The target
 
@@ -119,7 +121,7 @@ the mesh turns on, so every visible province already has its texture — no new 
 `plotType`/`elevation` already ride the per-plot JSON, so **P0–P1 need no engine, server or bundle
 change**.
 
-### P0 — the projection seam (no three.js)
+### P0 — the projection seam (no three.js) — SHIPPED
 
 `pxr`/`pyr` become calls into a swappable projector; the affine one stays the default. Add
 `unproject(sx, sy)` — the inverse exists today only hand-rolled inside `hittest.plotAt` and
@@ -128,7 +130,52 @@ change**.
 Acceptance: **pixel-identical** frames via `tools/webverify` at k = 1, 8, 20, 40, 120. Ships and reverts
 alone, and is worth having regardless of what renderer follows.
 
-### P1 — the ground mesh at tilt 0
+### P1 — the ground mesh at tilt 0 — SHIPPED
+
+Built as `js/terrain3d.mjs` (the renderer), `js/heightfield.mjs` + tests (the pure height model), and
+`tools/webverify/terrain3d-verify.mjs` (the gate). **Results: mean delta 0.71/255 at z=120 and 3.60 at
+z=40, p99 9 and 29, 99.6%/95.9% of pixels within 16.** Below band 5 the check asserts something stronger
+than a diff — `ground3D()` false, `#gl` hidden, `#map` fully opaque, and **zero network requests for
+three** — so "bands 0–4 are untouched" is verified rather than asserted.
+
+The design as built, and the six things that were not obvious going in:
+
+- **`drawPlots` still runs; only its BLITS are skipped.** It was tempting to have the renderer own plot
+  loading and texture building, and it would have duplicated the viewport cull, the lazy `loadPlots`, the
+  6 ms/frame build budget and `MAX_TEX_PLOTS`. Instead `drawPlots` keeps all of it and terrain3d reads
+  `p._tcanvas`/`_tbox` off what that pass maintains. The 3D path added no fetching or scheduling code.
+- **Three loads lazily, and that answers the bundle objection.** 751 KB / 188 KB gz behind a dynamic
+  `import()` fired the first time the camera crosses band 5, so the cost falls only on sessions that
+  actually zoom in. The verifier asserts zero `three.*.js` requests at band 3.
+- **The sea lost nothing.** The worry was `drawSeaBase`'s ripple, which a plane can't reproduce without a
+  shader — but the ripple already fades out by `K_TEX` (band 4), one band *below* where 3D starts. At
+  every zoom the 3D ground is active, the 2D sea is the bare latitude gradient, which the sea plane bakes
+  in map space at 512 rows against the 2D path's 17 gradient stops.
+- **"Flat lighting" must mean UNLIT, not a white ambient light.** Two rounds were lost here. Leaving the
+  ambient at its scene colour (a blue-grey `0x8fa8c8`) multiplies the texture down and tints it; even a
+  pure-white ambient at intensity 1 leaves a uniform factor from three's physically-correct light units and
+  Lambert's 1/π. Both render as "the 3D ground is too dark" and diff as a large near-uniform delta — a
+  lighting artifact wearing the costume of a projection bug. `MeshBasicMaterial` takes the lighting model
+  out of the comparison entirely, which is the only version of the gate that measures what it claims to.
+- **The sun needed a GAIN the spike could not supply, and it is not linear.** The spike judged its
+  intensities on one province in a dark void, where "too dim?" has no reference; here the terrain must sit
+  at the same brightness as the texture the 2D path blits or crossing band 5 reads as the sun going down.
+  Measured, the spike's values render the ground at **0.66** of its texture. The trap: lighting is computed
+  in linear space and converted to sRGB on output, so a gain of *g* moves measured brightness by
+  **g^(1/2.2)**, not by *g* — a first attempt at `1/0.66 = 1.52` duly landed at 0.80. The correction is
+  `GAIN /= ratio^2.2`, giving 2.5, which measures 1.017. The verifier prints the ratio so this is
+  recalibrated by arithmetic rather than by eye.
+- **Water plots index at height 0.** SEA/LAKE shelf plots carry `elevation` that means DEPTH. They must
+  still be indexed rather than skipped, because a coastal land corner averages them — that is what makes
+  the shore ramp down to sea level instead of ending in a cliff the height of the continental heightmap
+  (~2.4 plot-widths at a typical coast).
+
+And one honest limitation: **at tilt 0 the relief can only read as gentle shading.** Viewed from straight
+down, a Lambert surface's brightness depends solely on its normal, so the geometry is present and correct
+but understated — the spike's dramatic landforms came from the OBLIQUE camera. P1 buys the correctness;
+P2 is where it becomes the look.
+
+#### The original P1 plan, for reference
 
 Vendor `three.module.min.js` **and** `three.core.min.js` (0.185.1) — the module imports the core, which
 is not obvious and cost the spike a debugging round. A `<canvas id="gl">` beneath `#map`; from band 5
@@ -176,6 +223,14 @@ Acceptance, in this order: (1) with lighting flat (ambient 1.0, sun off) the fra
 mesh is the same picture; (2) then the sun goes on and the comparison is `shot-civ-oblique.png`.
 **Test for pixels, not placement**: Pixi rendered a perfect frame that was 100% occluded and the
 placement assertion passed.
+
+...and the trap that caught the verifier itself, which is worth more than the plan above. A WebGL canvas
+created with the default `preserveDrawingBuffer: false` has its drawing buffer **discarded once the browser
+composites the frame**, so reading it from a later task — a separate `page.evaluate`, i.e. a separate turn
+of the event loop — yields an empty buffer. The first run reported a mean delta of 108 against a blank 3D
+frame: the renderer was fine and the measurement was lying. Render and read in the same synchronous block.
+The Pixi effort's lesson was "test for pixels, not placement"; the sequel is **make sure the pixels you
+test are the ones that were drawn.**
 
 ### P2 — the tilt
 

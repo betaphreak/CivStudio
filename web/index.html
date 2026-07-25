@@ -179,6 +179,10 @@
     </header>
 
     <div class="stage" id="stage">
+      <!-- the 3D ground (docs/terrain-3d.md): BENEATH #map, and active only from band 5 up, where it
+           takes over the sea base + baked raster + plot layer wholesale. #map stays the whole scene
+           below that band, and everything above the ground at every band. -->
+      <canvas id="gl" class="off"></canvas>
       <canvas id="map"></canvas>
       <!-- the wordmark, moved off the top bar (§ space-saving) into a faint, unobtrusive watermark over
            the map; still clickable (back to server selection · reset to the world view) -->

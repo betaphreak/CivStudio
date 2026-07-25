@@ -281,6 +281,13 @@ body {
   box-shadow: inset 0 0 140px 10px rgba(4,7,12,.55);
 }
 canvas#map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 1; }
+/* the 3D ground (js/terrain3d.mjs), UNDER #map — which is transparent wherever the 3D ground is active,
+   because main suppresses the sea/raster/plot blits there. z-index 0 puts it above .stage's void
+   background and below every 2D layer. `.off` (the default) keeps the last WebGL frame from lingering
+   under the 2D ground when the camera leaves band 5 — display:none rather than a clear, so an inactive
+   renderer costs nothing at all. */
+canvas#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
+canvas#gl.off { display: none; }
 
 /* the project wordmark (leftmost in the top bar) */
 .brand {

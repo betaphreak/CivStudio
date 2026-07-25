@@ -7,8 +7,8 @@
 // seam that binds it to the camera; the constants (BAND, BAND_NAMES, REGIME, REGIME_INFO,
 // GEO_TIER_ENV, kBand) are re-exported below so every caller still imports them from "./bands.mjs"
 // and nothing outside needs to know about the split. See docs/zoom-bands.md.
-import { cam } from "./core.mjs";
-import { bandAlphaAt, bandNameAt, regimeAt, REGIME } from "./band-math.mjs";
+import { cam, S } from "./core.mjs";
+import { bandAlphaAt, bandNameAt, regimeAt, REGIME, BAND } from "./band-math.mjs";
 
 export { BAND, BAND_NAMES, REGIME, REGIME_INFO, GEO_TIER_ENV, kBand } from "./band-math.mjs";
 
@@ -32,3 +32,29 @@ export function regime() {
   _regime = regimeAt(band(), _regime);
   return _regime;
 }
+
+// ---- who owns the ground (docs/terrain-3d.md §The plan) ----
+// From band 5 (LOCALE, 32×) the ground — the sea base, the baked raster and the plot layer — is drawn
+// by the 3D renderer instead of canvas 2D. Below it, nothing changes at all; that boundary is the whole
+// reason the phase can be verified rather than argued about.
+//
+// The predicate lives HERE, not in terrain3d.mjs, because sea.mjs and plots.mjs have to consult it and
+// must not import the renderer (terrain3d imports both — sea for the climate gradient, plots for the
+// baked province canvases). It is a question about the zoom band, so the band module is its home.
+//
+// ?terrain3d=0 forces the 2D ground back on, ?terrain3d=1 forces 3D from band 0 — the flags the
+// verifier flips to shoot the same camera both ways.
+const _force3D = typeof location !== "undefined"
+  ? new URLSearchParams(location.search).get("terrain3d") : null;
+// Set false by terrain3d.mjs when WebGL is missing or three fails to load: the 2D path below band 5 is
+// then also the fallback ABOVE it, which is why this phase needs no separate degraded mode.
+let _has3D = _force3D !== "0";
+export function set3DAvailable(ok) { _has3D = ok; }
+export const ground3D = () =>
+  // The UNDERWORLD keeps the 2D ground at every band. Its plots come through the same drawPlots (called
+  // as drawPlots(isUnderground) by main.drawCavernPlots), so suppressing the blits there without a mesh to
+  // replace them would leave the Serpentspine empty at band 5 — and terrain3d deliberately builds no
+  // meshes for z=-1, which is a second plane with its own veil and rims (docs/underworld.md). z-levels are
+  // P2 territory; until then the plane toggle is also the 3D toggle.
+  S.plane !== "underworld"
+  && _has3D && (_force3D === "1" || atLeast(BAND.LOCALE));
