@@ -248,7 +248,12 @@ body {
    over the map (title, legend, transport, tooltip) is pinned to the dark palette
    regardless of the UI theme the rail follows. */
 .stage {
-  position: absolute; top: var(--bar-h); left: 0; right: 0; bottom: var(--foot-h); z-index: 0; overflow: hidden; background: #090d14; cursor: grab;
+  /* background = THE VOID beyond the rendered map (docs/pixi-migration-plan.md P3 step 1). This used
+     to be repainted as an opaque full-viewport fillRect by main.paintScene on every frame, which made
+     it impossible for anything on the Pixi canvas beneath #map to be seen. It is a static backdrop, so
+     it belongs here: neither renderer owns it, and it costs nothing. (It was #090d14 — a different
+     dark that had been invisible all along, because the fill covered it every frame.) */
+  position: absolute; top: var(--bar-h); left: 0; right: 0; bottom: var(--foot-h); z-index: 0; overflow: hidden; background: #070a10; cursor: grab;
   transition: right .22s ease;   /* the panel resizes the map (see .app.rail-open); a ResizeObserver refits the canvas */
   --panel: #141a26; --panel-2: #1a2130;
   --ink: #e7ecf4; --ink-soft: #9aa6ba; --ink-faint: #6b7688;

@@ -78,15 +78,11 @@ export function initPixi(opts = {}) {
   const a = new Application();
   booting = a.init({
     canvas,
-    // THE CLEAR COLOUR IS A HANDOFF, not decoration. main.paintScene opens every frame with an
-    // OPAQUE full-viewport `#070a10` fill (the void beyond the map) on the 2D canvas — which means
-    // nothing drawn on #gl beneath it can ever be seen, no matter how correct it is. P2 found this
-    // the hard way: the plot sprites were placed exactly right and rendered a perfectly good frame
-    // that was 100% occluded.
-    //
-    // So whoever paints the void owns the back of the scene. Default (transparent, alpha 0) leaves
-    // that with the 2D canvas and #gl is invisible — correct for P0/P1, which draw nothing. A caller
-    // migrating real layers passes the void colour here AND stops the 2D fill (main.paintScene).
+    // TRANSPARENT, and it should stay that way. The void beyond the map is `.stage`'s CSS background
+    // (P3 step 1) — it used to be an opaque full-viewport fill on the 2D canvas, which is why P2's plot
+    // sprites were placed exactly right and rendered a frame that was 100% occluded. A static backdrop
+    // belongs to neither renderer; if this canvas ever clears opaque it becomes an occluder in its own
+    // right for anything layered under it. The options exist for tests, not for the app.
     background: opts.background ?? 0x070a10,
     backgroundAlpha: opts.backgroundAlpha ?? 0,
     // Size the BACKING STORE only and let styles.css keep owning the display size (canvas#gl is

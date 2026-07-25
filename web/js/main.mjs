@@ -50,10 +50,9 @@ if (ACTIVE_REALM && _fowTile) {
 // last draws in the scene that weren't in a registry. They now live in js/sea.mjs and are ordered by
 // the SCREEN_LAYERS stack (layers.mjs); initSea wires their async art loads to a repaint.
 initSea(draw);
-// Boot the #gl renderer (background, never fatal — js/pixi.mjs). When the P2 plot layer is driving,
-// Pixi also takes over the VOID FILL: the 2D canvas's opaque `#070a10` covers the whole viewport and
-// would otherwise occlude everything on #gl (see initPixi's clear-colour note and paintScene below).
-initPixi(pixiPlotsEnabled() ? { backgroundAlpha: 1 } : {});
+// Boot the #gl renderer (background, never fatal — js/pixi.mjs). It stays TRANSPARENT: the void is
+// `.stage`'s CSS background now (P3 step 1), so no renderer has to own it.
+initPixi();
 function resize() {
   const r = stage.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio||1, 2);
   if (!(r.width > 0) || !(r.height > 0)) return;   // ignore degenerate sizes (mid-layout / panel drag)
@@ -156,12 +155,11 @@ function paintScene() {
   const w=VIEW.w, h=VIEW.h, dpr=VIEW.dpr;
   ctx.setTransform(dpr,0,0,dpr,0,0);
   ctx.clearRect(0,0,w,h);
-  // The void beyond the rendered latitude band. OPAQUE — and the first of the four full-area fills that
-  // make up the back of this frame, all of which hide anything drawn on #gl beneath it. When Pixi owns
-  // the background they all stand down and its clear colour supplies the void instead; see
-  // pixi-plots.pixiOwnsBackground for why, and initPixi for the handoff.
+  // (The void beyond the rendered map used to be an opaque `#070a10` fillRect here. It is now
+  // `.stage`'s CSS background — a static backdrop has no business being repainted every frame, and as
+  // an opaque canvas fill it made everything on the Pixi canvas beneath #map invisible.
+  // docs/pixi-migration-plan.md P3 step 1.)
   const pixiBack = pixiOwnsBackground();
-  if (!pixiBack) { ctx.fillStyle = "#070a10"; ctx.fillRect(0,0,w,h); }
 
   // clip the whole scene to the imported map's own raster extent — BOTH axes — rather than out to
   // ±89° / the full viewport width. Beyond the mapped land there is no real data, so the polar

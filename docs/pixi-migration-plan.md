@@ -1,7 +1,10 @@
 # Plan: the map to PixiJS — retained-mode rendering under the same band spine
 
-**Status:** P0–P2 + **P4b** BUILT 2026-07-25 (P0 = `7916f5e`, P1 = `154c430`, P2 = `5038647`). P3–P8
-proposed, and **P3/P4 have swapped**.
+**Status:** P0–P2 + **P4b** + **P3 step 1** BUILT 2026-07-25 (P0 = `7916f5e`, P1 = `154c430`,
+P2 = `5038647`, P4b = `89c0259`). P3 steps 2–5 and P4–P8 proposed, and **P3/P4 have swapped**.
+
+**Start with *Measuring this frontend* below.** Every wrong turn in P2–P4b was a measurement error,
+and one of them nearly cost two unnecessary ports.
 
 - **P2's gate: PASS** — the plot layer is **~10× faster** on Pixi in the regime where it dominates. It
   ships **flag-gated, default off** (`?pixiPlots=1`) for reasons that reshaped the phase order; read
@@ -66,6 +69,64 @@ The codebase is better positioned for this than it looks:
 - **Culling and cache-versioning exist**: `provOnScreen`, `provPath`, `S.baseVersion`/`S.viewVersion`.
 - **Pure modules are already split out for testability** — `band-math`, `river-geom`,
   `route-tiling`, `district-plots`, `plotstats`. All renderer-agnostic; all survive untouched.
+
+## Measuring this frontend — read before optimising anything
+
+Every wrong turn in P2–P4b was a measurement error, not a coding error. Three traps, the metrics that
+are actually trustworthy, and the current baseline. **This section is the most reusable thing in this
+document.**
+
+### Trap 1 — `draw()` → rAF is NOT a frame cost
+
+`js/repaint.mjs` coalesces to one paint per animation frame behind a **30 fps cap**, re-queueing a
+frame that comes due early. So a tight `draw()` loop iterates at ~60 Hz while paints land at ~30 Hz:
+**half the awaits measure no paint at all**, and the wall reports rAF cadence (~16 ms) or the cap
+(~33–50 ms) depending on where the loop happens to land.
+
+Subtracting the layer sum from that wall produced a "residual" that read as **21–30 ms of mystery work
+at some zooms and 0 ms at the same zoom minutes later**. Two hypotheses were chased and disproved
+(`seaBase` — 0.08–0.12 ms; then the realm fog — 0 ms in every variant, `tools/webverify/fog-probe.mjs`)
+before the metric itself turned out to be the bug. For the record: at 2× the rAF wall is 41.9 ms and
+the real paint is **2.7 ms**.
+
+### Trap 2 — a 0 ms canvas draw is not proof of zero cost
+
+Canvas 2D `fillRect`/`stroke` queue work and return, so per-call CPU timing captures **command
+issuing**, not rasterisation. Stroking 113k inked pixels of tier boundary timed at 0 ms. That is why
+the fix that worked in P4b was the CPU-side one (`Path2D` construction at ~0.8 µs a point) — the
+rasterisation genuinely was free, but the timing alone could not have told you that. Corroborate with
+the whole-frame number before concluding a draw is cheap.
+
+### Trap 3 — warm-up contaminates everything
+
+The same k profiled at different points in a multi-zoom run gives layer sums of 0.4 ms or 2.5 ms,
+because plot-grid fetches and province offscreen builds are still in flight (`drawPlots` defers builds
+past a 6 ms budget and reschedules via `draw()`). Settle on a **stable count of what is actually on
+screen** and hold it for several rounds; a global "how many provinces have a canvas" tally converges
+while the visible set is still building.
+
+### The metrics that are trustworthy
+
+| Question | How |
+|---|---|
+| Whole-frame cost | The **diag chip's tooltip** — `main.paint()` times `paintScene()` synchronously and feeds `diag.noteFrame()`. Parse `Render cost: X ms mean`. This is the only honest frame number. |
+| Per-layer attribution | Wrap `layers.LAYERS` and `layers.SCREEN_LAYERS` entries' `draw` fns (`layer-profile.mjs`). Measures CPU issuing — see Trap 2. |
+| Did a change alter the picture? | Stroke both versions to offscreen canvases and **diff every pixel, against a control** (the same path drawn twice, to establish the renderer's noise floor). Without the control a 3-pixel diff reads as a dropped boundary. |
+| Is a benchmark camera actually looking at anything? | Assert a non-zero count of the thing being measured **on screen**, and fail the row otherwise. Parking on a province's `provSrcBox` centre then `clampPan` can leave the viewport empty — that produced a confident "0.21× SLOWER" from one sprite at global x = −2694. |
+
+### Baseline after P4b (1600×900, warm)
+
+| `cam.k` | `paintScene` | of which layer registries | largest layer |
+|---|---|---|---|
+| 1 | 2.9 ms | 1.52 ms | |
+| 2 | 2.7 ms | 2.35 ms | `caveEntrances` / `impassable` / `tiers` ≈ 0.5 ms each |
+| 4 | 1.7 ms | 0.67 ms | `tiers` 0.75 ms |
+| 5.5 | 1.6 ms | 0.51 ms | `plots` 0.43 ms |
+| 8 | 1.6 ms | 0.47 ms | `labels` 0.43 ms |
+| 16 | 1.9 ms | 0.59 ms | `tradeGoods` 0.13 ms |
+
+**The whole scene now paints in under 3 ms at every zoom.** No layer exceeds ~0.8 ms. Any future phase
+here has to justify itself on something other than frame time — see P3.
 
 ## P0 — Vendor Pixi, stand up an empty stage
 
@@ -255,18 +316,44 @@ cannot be made pixel-identical, stop here and revert. P0–P2 is a bounded, dele
 
 ## P3 — The back prefix, and the registry becomes a container tree
 
-**Swapped with the old P4 — see P2 Finding 2.** This is now the phase that unblocks everything: until
-the opaque back prefix has migrated, no layer on `#gl` is visible, so P2 could only ever be a flagged
-spike. The registry work folds in here rather than standing alone, because migrating five layers at
-once is exactly when the registry has to express "container or `draw`".
+**Swapped with the old P4 — see P2 Finding 2.** Until the opaque back prefix has migrated, no layer on
+`#gl` is visible, so P2 could only ever be a flagged spike.
+
+### ⚠ P3 has NO performance justification. Read this before starting it.
+
+P3 opened with a profile rather than a port (the P4b lesson), and the profile says the work is not
+worth doing for speed:
+
+- **`paintScene` is 1.6–2.9 ms at every zoom** after P4b, and no layer exceeds ~0.8 ms (see
+  *Measuring this frontend*). There is nothing left to win.
+- The specific layers P3 would migrate are the cheapest in the scene: `raster` **0.03 ms**,
+  `lakes` 0.13 ms, `seaCells` 0.24 ms, `screen:seaBase` **0.08–0.12 ms**, realm fog **0 ms**.
+
+So the *only* remaining reason to do P3 is **structural**: it is the prerequisite for shipping the plot
+layer unflagged (back-to-front ordering), which is in turn the prerequisite for an isometric Ground
+regime and for sprite counts canvas 2D cannot reach. That is a real reason — it is just not a
+performance reason, and it should be a deliberate choice rather than momentum. **If the isometric
+client is not actually the next goal, stop after step 1 below.**
 
 **Goal.** Pixi owns the back of the scene, unflagged, with the plot layer still on 2D — i.e. the
 mirror image of P2, and pixel-identical to today.
 
-1. **The void fill** becomes Pixi's clear colour (`initPixi({ backgroundAlpha: 1 })`), and
-   `paintScene`'s `#070a10` `fillRect` goes away. Already implemented behind P2's flag; this makes it
-   unconditional, which means Pixi's init failure path stops being cosmetic — if the renderer is
-   absent the void is unpainted, so `initPixi`'s "never fatal" branch needs a real fallback here.
+1. **The void fill leaves the render path entirely — DONE.** Not "becomes Pixi's clear colour" as
+   originally planned: it becomes **CSS**, `.stage { background: #070a10 }`, and `paintScene`'s
+   `fillRect` is deleted. Better than handing it to the renderer for three reasons: neither renderer
+   owns it (so `initPixi`'s "never fatal" branch does not quietly become load-bearing for a visible
+   backdrop), it *removes* one of the four occluders instead of transferring it, and a static backdrop
+   should not be repainted 30 times a second.
+
+   Safe because nothing depended on that fill: the only main-canvas blend mode is `sea.mjs`'s
+   `soft-light`, which composites against the opaque sea gradient laid down immediately before it, not
+   against the void; nothing reads pixels back from `#map`; and the only thing drawn over raw void is
+   `drawRealmFog`'s hatch, which is plain source-over alpha — mathematically identical whether it
+   composites onto an equal-coloured canvas fill or onto an equal-coloured CSS background.
+
+   Note `.stage` was `#090d14`, a *different* dark that has been invisible all along because the fill
+   covered it every frame; it only ever showed pre-first-paint. `sea.mjs`'s `#090d14` no-`SEA_BANDS`
+   fallback is a separate use and is left alone.
 2. **`seaBase`** → a `Container` child of `stage` (not `world`): screen-space, so the camera cannot
    reach it, which is the rule `layers.mjs:28-36` currently enforces with a comment.
 3. **`drawRealmFogUnder`** → a container between sea and raster; `drawRealmFog` (the void hatch) → a
