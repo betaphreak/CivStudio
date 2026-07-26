@@ -60,6 +60,9 @@ const MODULATE2X = 2;
 /** Every TerrainArtInfo `<Path>` is a 4×8 sheet of 32 square cells (256×512 at 64px, measured). */
 const ATLAS_COLS = 4;
 
+/** Corner configurations the land blend table covers: 1–14. See bakeLandBlendCells (hoisted for the same reason). */
+const LAND_BLEND_CFGS = 14;
+
 // Baked art assets ship as WebP (see docs) rather than PNG: the ground-texture atlas alone drops
 // ~2.7 MB → ~0.37 MB, and the whole eager image payload roughly quarters, with no visible loss.
 // sharp's encoder is async, so bakes stay synchronous and just QUEUE their raw pixels here (the
@@ -435,6 +438,7 @@ const coastTiles = bakeCoastTiles();         // Civ4's painted shore transition 
 const terrainColors = terrainDisplayColors(terrainRealColors(), waterColors(seaBands, coastTiles));
 const terrainLayer = terrainLayerOrders();   // TERRAIN_* -> Civ4 LayerOrder (drives edge blending)
 const terrainTiles = bakeTerrainTiles(terrainColors);
+const landBlend = bakeLandBlendCells();      // Civ4's authored land transition cells, or null (renderer keeps its feather)
 const river = bakeRiverTile();               // {src, tile} water tile, or null (flat-fill fallback)
 const sea = bakeSeaTile();                   // {src, tile} greyscale ripple tile, or null (gradient-only fallback)
 const shore = bakeShoreTile();               // {src, tile} greyscale shore-wave tile for the shallows, or null
@@ -569,7 +573,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
+  map, realms, terrainColors, terrainLayer, terrainTiles, landBlend, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -588,6 +592,7 @@ console.log(`  terrain crop ${map.dw}×${map.dh}px`);
 console.log(`  geo labels: ${geo.continents.length} continents · ${geo.superRegions.length} super-regions · ${geo.regions.length} regions`);
 console.log(`  plots: ${plotProvinceCount} provinces have a canonical grid (served per-province by the server at /api/plots/{id}; ring-less bboxes computed)`);
 console.log(`  terrain tiles: ${terrainTiles ? terrainTiles.src + ' (' + Object.keys(terrainTiles.cols).length + ' textures)' : 'skipped (no terrain-art.json / LFS textures)'}`);
+console.log(`  land blend: ${landBlend ? `${landBlend.src} (${Object.keys(landBlend.index).length} terrains × ${landBlend.cols} configs @${landBlend.cell}px)` : 'skipped (no terrain-art.json / land blend atlases) — renderer keeps its procedural feather'}`);
 console.log(`  river tile: ${river ? river.src : 'skipped (no allriverssmall.dds / LFS)'}`);
 console.log(`  sea tile: ${sea ? sea.src : 'skipped (no seadetail.dds / LFS)'} · bands trop/temp/polar ${JSON.stringify([seaBands.trop, seaBands.temp, seaBands.polar])}`);
 console.log(`  beach ramps: ${beach ? `real Civ4 sand, temp ${beach.temp[0].join(',')} → ${beach.temp[beach.temp.length - 1].join(',')}` : 'skipped (no coastblend.dds) — renderer keeps its hand-picked sand'}`);
@@ -1054,6 +1059,154 @@ function authoredGroundTile(e, T) {
   const out = Buffer.alloc(T * T * 3);
   for (let k = 0; k < T * T * 3; k++) out[k] = Math.min(255, b[k] * d[k] / 255 * MODULATE2X) | 0;
   return out;
+}
+
+// as boxSample, but for the ALPHA channel — the land blend cells carry their corner mask there.
+function boxSampleAlpha(img, T, sx = 0, sy = 0, sw = img.width, sh = img.height) {
+  const bx = sw / T, by = sh / T;
+  const out = new Float64Array(T * T);
+  for (let j = 0; j < T; j++)
+    for (let i = 0; i < T; i++) {
+      let a = 0, n = 0;
+      const y0 = Math.min(sy + sh - 1, sy + Math.floor(j * by)), y1 = Math.max(y0 + 1, sy + Math.floor((j + 1) * by));
+      const x0 = Math.min(sx + sw - 1, sx + Math.floor(i * bx)), x1 = Math.max(x0 + 1, sx + Math.floor((i + 1) * bx));
+      for (let y = y0; y < y1 && y < sy + sh && y < img.height; y++)
+        for (let x = x0; x < x1 && x < sx + sw && x < img.width; x++) { a += img.rgba[(y * img.width + x) * 4 + 3]; n++; }
+      out[j * T + i] = a / n;
+    }
+  return out;
+}
+
+/**
+ * The land terrain's authored blend table: `{cfg: cell}` for configs 1–14, or null when this terrain
+ * does not have the LAND table.
+ *
+ * Three tables exist across the 33 manifest entries, and this recognises the land one STRUCTURALLY
+ * rather than by a terrain list: 14 configs, exactly one variant each, every rotation 0. The eight
+ * water terrains carry the coast table (multi-variant and full of rotations — see bakeCoastTiles) and
+ * the nine synthetic terrains carry no table at all, so both fall out here without being named.
+ *
+ * Config 15 (all four corners this terrain) is the flat interior and belongs to authoredGroundTile;
+ * config 0 (no corner is) selects nothing and draws nothing.
+ */
+function landBlendTable(e) {
+  if (!e.blend) return null;
+  const table = {};
+  for (let cfg = 1; cfg <= LAND_BLEND_CFGS; cfg++) {
+    const m = /^(\d+),0$/.exec(String(e.blend[String(cfg).padStart(2, '0')] ?? '').trim());
+    if (!m) return null;
+    table[cfg] = +m[1];
+  }
+  return table;
+}
+
+/**
+ * THE LAND BLEND CELLS — Civ4's hand-painted terrain transitions, and the authored table that picks
+ * between them. docs/land-blend-plan.md phase 1; the coast half of the same idea is bakeCoastTiles.
+ *
+ * For every land terrain and every 4-bit corner configuration, `CIV4ArtDefines_Terrain.xml` names one
+ * cell of that terrain's base atlas whose ALPHA is the mask for exactly those corners. So a boundary
+ * between two terrains is drawn by stamping the higher terrain's cell for the corners it owns — no
+ * procedural feather, no invented falloff. That the alpha really is the corner mask is not assumed:
+ * this bake MEASURES it per cell (see the corner check below) and reports the tally.
+ *
+ * PER TERRAIN, NOT PER ATLAS. The 16 land terrains share 9 base atlases but have 16 DISTINCT detail
+ * sheets — GRASSLAND, PLAINS and TAIGA all draw off PlainsBlend but grain with Grass/Plains/Taiga
+ * detail respectively. Since a cell is composited base × detail × 2 (the ground's own rule, so a
+ * blend cell cannot differ in palette from the ground it lands on), one cell per ATLAS would paint
+ * TAIGA's transitions in PLAINS' colour. Hence 16 × 14 = 224 cells rather than 9 × 14.
+ *
+ * ONE TIER AT THE AUTHORED SIZE. Every land blend atlas is 256×512 of 64px cells and no hi-res
+ * sibling exists in the tree, so 64 is the ceiling, not a choice. It is also more than the renderer
+ * can use: the blend pass runs from ~12 px/plot and the deepest measured zoom is ~32, so the cell is
+ * downscaled 2–5× even at the floor. Upscaling would only stair-step the mask — boxSample clamps to
+ * nearest on an upscale — so the sheet ships single-tier, unlike the ground atlas's [128, 256].
+ *
+ * Returns {src, cell, cols, index:{TERRAIN_*: row}, cells:{cfg: atlas cell}} or null when the
+ * manifest or the art is absent (the renderer then keeps its procedural blend).
+ */
+function bakeLandBlendCells() {
+  const manifest = bundleResourceOpt('/map/terrain-art.json');
+  if (!manifest.length) return null;
+  const entries = manifest.map(e => [e, landBlendTable(e)]).filter(([, t]) => t);
+  if (!entries.length) return null;
+  const CELL = 64, COLS = LAND_BLEND_CFGS;
+  // every land terrain names the same cell per config; ship one map, but verify rather than assume
+  const table = entries[0][1];
+  const shared = entries.every(([, t]) => Object.keys(table).every(k => t[k] === table[k]));
+
+  const baked = [];
+  let checked = 0, matched = 0;
+  for (const [e] of entries) {
+    const baseFile = resolveArt(e.path), detFile = resolveArt(e.detail);
+    if (!baseFile || !detFile) continue;
+    const base = decodeCached(baseFile), det = decodeCached(detFile);
+    if (!base || !det) continue;
+    const C = base.width / ATLAS_COLS;              // square cells, so the row pitch is the same
+    const d = boxSample(det, CELL);                 // the grain, once per cell — authoredGroundTile's 1:1 rule
+    const cells = [];
+    for (let cfg = 1; cfg <= COLS; cfg++) {
+      const c = table[cfg];
+      const sx = ((c - 1) % ATLAS_COLS) * C, sy = Math.floor((c - 1) / ATLAS_COLS) * C;
+      const b = boxSample(base, CELL, sx, sy, C, C);
+      const a = boxSampleAlpha(base, CELL, sx, sy, C, C);
+      const N = CELL * CELL;
+      const rgba = Buffer.alloc(N * 4);
+      // ALPHA BLEED, the same trap bakeCoastTiles documents: lossy WebP does not preserve colour
+      // under alpha 0 and the cell is downscaled on screen, so whatever sits in the transparent
+      // pixels is dragged back into the visible ones. Fill them with the cell's own opaque mean.
+      let br = 0, bg = 0, bb = 0, bn = 0;
+      for (let k = 0; k < N; k++) {
+        if (a[k] < 200) continue;
+        br += b[k * 3]; bg += b[k * 3 + 1]; bb += b[k * 3 + 2]; bn++;
+      }
+      for (let k = 0; k < N; k++) {
+        const al = Math.round(a[k]);
+        for (let ch = 0; ch < 3; ch++) {
+          const v = al || !bn
+            ? Math.min(255, b[k * 3 + ch] * d[k * 3 + ch] / 255 * MODULATE2X)
+            : [br, bg, bb][ch] / bn * d[k * 3 + ch] / 255 * MODULATE2X;
+          rgba[k * 4 + ch] = Math.min(255, v) | 0;
+        }
+        rgba[k * 4 + 3] = al;
+      }
+      // MEASURE the corner binding: mean alpha over the outer eighth of each corner must be set for
+      // exactly the corners this config names, in the 1=NW 2=NE 4=SE 8=SW order water-terrain.mjs
+      // proved for the coast. Measured over all 9 atlases this separates 240 (set) from 11 (clear),
+      // so the threshold is nowhere near a boundary. Do NOT measure quadrant means instead — a
+      // diagonal cell runs a soft band through its middle and quadrants read it as a set corner.
+      const K = Math.max(1, CELL >> 3);
+      const corner = (cx, cy) => {
+        let s = 0;
+        for (let y = 0; y < K; y++) for (let x = 0; x < K; x++) s += a[(cy + y) * CELL + cx + x];
+        return s / (K * K);
+      };
+      const q = [corner(0, 0), corner(CELL - K, 0), corner(CELL - K, CELL - K), corner(0, CELL - K)];
+      checked++;
+      if (q.reduce((m, v, i) => m | (v > 128 ? 1 << i : 0), 0) === cfg) matched++;
+      cells.push(rgba);
+    }
+    baked.push({ terrain: e.terrain, cells });
+  }
+  if (!baked.length) return null;
+
+  const W = COLS * CELL, H = baked.length * CELL;
+  const sheet = Buffer.alloc(W * H * 4);
+  const index = {};
+  baked.forEach(({ terrain, cells }, row) => {
+    index[terrain] = row;
+    cells.forEach((rgba, col) => {
+      for (let y = 0; y < CELL; y++) {
+        const dst = ((row * CELL + y) * W + col * CELL) * 4;
+        rgba.copy(sheet, dst, y * CELL * 4, (y + 1) * CELL * 4);
+      }
+    });
+  });
+  // quality 92: the sheet is small enough that the headroom is free, and the alpha IS the artwork here
+  const src = queueWebpRGBA('terrain/land-blend', W, H, sheet, { quality: 92 });
+  console.log(`  land blend: ${baked.length} terrains × ${COLS} configs @${CELL}px (${W}×${H})`
+    + `, corner check ${matched}/${checked}${shared ? '' : ' — WARNING: config→cell tables differ between terrains'}`);
+  return { src, cell: CELL, cols: COLS, index, cells: table };
 }
 
 /**

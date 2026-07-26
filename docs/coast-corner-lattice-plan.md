@@ -81,6 +81,9 @@ cells 1–14 in place. The land blend itself is still `BLEND_NOISE`.
 Whether that work still wants a corner lattice is now an open question rather than a settled one. The
 coast case proved the index can come from per-plot adjacency data; the land case may too.
 
+**That half is now written up on its own**, with the land table, the per-quadrant alpha measurements
+and the resolution survey: [`land-blend-plan.md`](land-blend-plan.md). Start there.
+
 ## 4. Traps — all of these still cost time
 
 - **Two nibbles, and they mean different things.** Low = orthogonal EDGES (`1=E 2=W 4=S 8=N`), high =
