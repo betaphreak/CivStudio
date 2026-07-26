@@ -256,6 +256,30 @@ function drawImpassable() {
 // because they close over main's raster/camera state and the province-polygon helpers.
 
 // the baked terrain raster, scaled by the camera — the base of every band
+// NO BATHYMETRY IN POLITICAL VIEW. The baked raster carries the sea as a semi-transparent wash over
+// the sea gradient — measured, 68.3% of its pixels sit at alpha 168 with a mean of 24,35,46 — which
+// is what draws the depth shading. Under real terrain art that reads as ocean floor; under flat
+// ownership polygons it reads as dirty smudges in an otherwise clean diagram, and it is baked at one
+// fixed resolution so it softens as you zoom.
+//
+// Land and sea separate cleanly in the ALPHA, so no mask is needed and nothing is guessed: land is
+// 255 and the sea is 168, with only lossy-WebP stragglers between. This clears everything below the
+// gap once, into a cached canvas — the raster is still the land base political fills sit on, so it
+// cannot simply be skipped.
+const LAND_ALPHA = 210;   // between the sea's 168 and the land's 255
+let landOnlyImg = null;
+function landOnlyRaster() {
+  if (landOnlyImg) return landOnlyImg;
+  const c = document.createElement("canvas");
+  c.width = MAP.dw; c.height = MAP.dh;
+  const x = c.getContext("2d", { willReadFrequently: false });
+  x.drawImage(mapImg, 0, 0, MAP.dw, MAP.dh, 0, 0, MAP.dw, MAP.dh);
+  const im = x.getImageData(0, 0, c.width, c.height), d = im.data;
+  for (let i = 3; i < d.length; i += 4) if (d[i] < LAND_ALPHA) d[i] = 0;
+  x.putImageData(im, 0, 0);
+  landOnlyImg = c;
+  return c;
+}
 function drawRaster() {
   // From band 5 the 3D ground draws this as a plane just above sea level (terrain3d.mjs §2), where it
   // serves the same purpose it does here: the fallback under every province whose plots have not landed.
@@ -263,7 +287,8 @@ function drawRaster() {
   if (ground3D()) return;
   if (!mapReady) return;
   ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(mapImg, 0, 0, MAP.dw, MAP.dh,
+  const src = isPolitical() ? landOnlyRaster() : mapImg;
+  ctx.drawImage(src, 0, 0, MAP.dw, MAP.dh,
     cam.x + cam.k * VIEW.dx, cam.y + cam.k * VIEW.dy, cam.k * VIEW.dw, cam.k * VIEW.dh);
 }
 // freshwater lakes: EU4 paints them with the ocean indices, so the raster leaves them the blue sea
