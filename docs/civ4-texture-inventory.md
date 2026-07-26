@@ -85,8 +85,8 @@ worth checking against this list first.
 
 ## 3. The gap, ranked
 
-1. **Coast/beach blend art.** The sand is now real (§4, P1 shipped); the surf, the depth ring and the
-   authored shoreline *shape* are still procedural. §4 P2/P3.
+1. **Coast/beach blend art.** The sand and the surf are now real (§4, P1 + P2 shipped). What is still
+   procedural is the shoreline *shape* — and that is the one worth doing next. §4 P3.
 2. **Bonuses (364 textures + `.nif`).** Every resource on the map is a procedural glyph. The blocker is
    the offline `.nif`→sprite baker, which now exists (`tools/nifbake`, already used for cactus and
    grass) — so this is work, not a blocker.
@@ -161,12 +161,13 @@ baked at all.
 | `coastblend.dds` | **P1** | the sand + shallows source. One cell's cross-section is a complete beach profile: dry sand → wet sand → turquoise shallow → deep. Sliced into a repeating along-shore strip |
 | `coasttropblend` / `coastpolarblend` | **P1** | the same slice per climate band. `bakeSeaBands` already bands the sea by latitude — the beach reuses those band boundaries and varies with latitude for free |
 | `coasttempblend` | P1, opportunistic | bound by no `ART_DEF`, so Civ4 never draws it. Bake it as the mid-latitude band and A/B it against plain `coastblend`; keep whichever reads better |
-| `coastdeepblend.dds` | **P2** | the shallow→deep outer ring, which `drawSeaBase` currently computes as a procedural distance band |
-| `coastdetail.dds` | **P2** | the coast-specific grain overlay, soft-lit over the shallows. **Read RGB and ignore alpha** — the file is alpha-0 by design, it is a detail layer, not a sprite |
+| `coastdeepblend.dds` | ~~P2~~ ✗ **tried, rejected** | intended as the shallow→deep outer ring. Its opaque pixels average `104,103,104` — a flat neutral grey with no hue, a blend MASK, the same trap `bakeSeaBands` already documents for `shoreblend`. And the band it drove made the coast worse regardless of colour (see P2 below) |
+| `coastdetail.dds` | **P2 shipped** | not a ripple at all — grey shingle, a *ground* texture. That makes it the coast bed, and it is what every `ART_DEF_TERRAIN_*_COAST` binds, so it replaced `water/shoredetail.dds` (a `LAKE_SHORE` texture) as the shallows' grain source. Read RGB; the file is alpha-0 by design |
 | `coastlandblends.dds` | **P3** | the shoreline *shape*. 64×128 = the same 4×8 grid as `coastblend` at 16 px/cell, holding each cell's alpha as a hard black/white cut. The cheap way to get Civ4's wiggle without decoding the full 700 KB atlas |
 | `coastscalemask.tga` | **P3** | the same 4×8 grid again, but as a **soft grey ramp** — the falloff *strength* to `coastlandblends`' hard *shape*. Together they are the shoreline gradient, and they are 9 KB |
 | `coastblendmasks/coastscalemask00..15.tga` | **P3** | sixteen 16×16 greyscale ramps, one per 4-bit neighbour configuration (00 and 15 are solid white — fully-open and fully-enclosed). This is the authored falloff that replaces `coastDepth`'s hash, keyed on `q.coast` folded from 8-bit to 4-bit |
-| `wave_base.dds` + `wave_crest.dds` | **P2** | the surf. Two 256×128 scalloped strips — a soft grey base and a white crest — stamped along the shoreline polyline. **Static art, not animation**: one blit per shore edge |
+| `wave_crest.dds` | **P2 shipped** | the surf. 256×128 of pure white rgb with the whole shape in ALPHA — a foam *mask* that tiles along its long axis. **Static art, not animation**: one blit per shore edge |
+| `wave_base.dds` | ✗ **empty** | listed as the crest's soft base, and it is not: flat grey rgb, alpha mean 20 / max 153. A near-blank smudge with no structure. Only the crest carries art |
 | `coastgrids.dds` | ✗ **no use** | the atlas with Civ4's hex grid burned in. We draw our own grid |
 | `heightmap/coasts/coasttile*.tga` | ✗ not 2D | 16×16 seabed-drop heightmaps. Real value, but only to `terrain3d.mjs` — the shelf's underwater relief. Park until 3D touches water |
 | `coastwave*.nif` | ✗ animation | 29 animated surf meshes. Out of scope by the same rule that keeps every other `.nif` out of the client |
@@ -212,11 +213,34 @@ temperate is the golden one, polar sits between with a colder tail:
 Against the old hand-picked `226,208,164`, the real sand is duller and less yellow — the previous
 colour read as a lemon rim glowing against the water at every latitude.
 
-**P2 — surf and depth.** `wave_crest.dds` is *already prefetched* (it was dropped from the renderer
-when the continuous shallows landed, not from the bake), so the surf is a renderer change alone:
-`drawFoam`'s white feather becomes the crest strip stamped along each shore edge, base under crest.
-`coastdeepblend` + `coastdetail` then replace the procedural outer depth band and give the shallows
-real grain.
+**P2 — surf and depth. SHIPPED, minus one part that was tried and rejected.**
+
+*The surf (shipped).* `bakeFoamStrip()` crops `wave_crest.dds` to its dense crest rows and emits an
+RGBA strip (`web/assets/water/foam.webp`, 256×26) as `BUNDLE.foam`; `drawFoam` stamps it along each
+water edge via a per-edge transform, seaward of the sand. Two tunings were found by looking rather
+than by reasoning, and both are load-bearing:
+
+- **Crop to the crest, not the wash.** The alpha runs rows 2–48, but it is dense over 3–21 and then
+  trails at a tenth of that for another 27. Shipping the trail made the coastline a pale *haze* — a
+  few screen pixels cannot resolve a long soft ramp, so all it does is lighten everything.
+- **A lap, not a band.** 0.18 cells of reach at 0.34 alpha, scaled by the same `detail` ramp the
+  beach uses. The first cut (0.3 cells, 0.72 alpha) read as fog around the whole coast.
+
+*The shelf-edge band (rejected).* The plan was for the shallows to ramp to a dimmer shelf tone rather
+than fade out. It fails twice over, and the second reason is the interesting one:
+
+1. `coastdeepblend` has no hue to ramp to — measured above.
+2. **Even with a good colour it makes the coast worse.** Fed `coastblend`'s painted water
+   (`84,102,112`, a real blue-grey), the band put a mid tone between bright shallows and dark open
+   sea — which *widens the pale halo* instead of deepening it. The existing fade to transparent over
+   dark water was already doing the job better. Shipped as a comment in `drawCoastBands` explaining
+   why there is one band and not two, so the next reader does not re-derive it.
+
+*The shallows' grain (shipped, quietly).* `bakeShoreTile`'s C2C source moved from
+`water/shoredetail.dds` to `textures/coastdetail.dds`. Neither is a wave texture — both are ground
+detail, and either works as neutral grain — but coastdetail is what `ART_DEF_TERRAIN_*_COAST` binds
+while shoredetail belongs to `LAKE_SHORE`, and our shallows are the sea shelf. A correctness fix, not
+a visible one: the Civ6 coast tile still wins where it is available.
 
 **P3 — faithful shoreline shape.** Two halves, and they are separable:
 
@@ -229,8 +253,24 @@ real grain.
   `ART_DEF`s export their `TextureBlend` tables (every one carries a full 15-entry table already), then
   select the atlas cell by bitmask + rotation instead of hashing. Same unlock as §3.4 for land.
 
-Order matters: P1 was a bake plus a fill change, P2 is renderer-only, P3 is the one that touches the
-Java exporter.
+Order matters: P1 was a bake plus a fill change, P2 a bake plus a renderer change, P3 is the one that
+touches the Java exporter.
+
+### What stays procedural, on purpose
+
+Replacing art with art is not the goal — three of these files were rejected above precisely because
+the procedural version was better. The line that has held so far:
+
+- **Authored art wins on *material*** — what sand is, what foam is. A hand-picked `226,208,164` was a
+  guess standing in for a painting.
+- **Procedural wins on *variation at map scale*.** The shoreline's wavy outline is still a corner-
+  continuous hash (`coastDepth`), and the surf *keeps* a per-cell hash on top of the real art to pick
+  its window and flip — because one authored scallop stamped into every coastal cell of a 5,264-
+  province world reads as a rhythm, which is worse than noise. Even P3, which replaces the falloff
+  with the sixteen authored masks, should keep a procedural phase on top for the same reason.
+- **Procedural also wins when the asset is simply worse.** `FEATURE_VERY_TALL_GRASS` draws as
+  `stampGrass` tufts because the C2C `sword_grass` billboard is a muddy wheat crop (§5), and
+  `drawCoastBands` stays one band because the authored second one hurt.
 
 ---
 

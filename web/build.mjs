@@ -325,9 +325,10 @@ await (async () => {
     'Art/Terrain/textures/water/seadetail.dds', 'Art/Terrain/textures/water/shoredetail.dds',
     'Art/Terrain/textures/water/seablend.dds', 'Art/Terrain/textures/water/seatropblend.dds',
     'Art/Terrain/textures/water/seapolblend.dds', 'Art/Terrain/textures/water/seadeepblend.dds',
-    // the coast blend atlases the beach ramps are rectified out of (bakeBeachRamps)
+    // the coast blend atlases the beach ramps are rectified out of (bakeBeachRamps), the shallows'
+    // grain (bakeShoreTile), and the surf strip (bakeFoamStrip)
     'Art/Terrain/textures/coastblend.dds', 'Art/Terrain/textures/coasttropblend.dds',
-    'Art/Terrain/textures/coastpolarblend.dds',
+    'Art/Terrain/textures/coastpolarblend.dds', 'Art/Terrain/textures/coastdetail.dds',
     'Art/Terrain/features/icepack/icepack_1024.dds', 'Art/Terrain/features/treeleafy/trees_1024.dds',
     'Art/Terrain/features/savanna/palms_1024.dds', 'Art/Terrain/features/swamp/trees1.dds');
   arts.push(...routeArtPaths());   // the road/rail segment nifs + their textures (bakeRoutes)
@@ -353,6 +354,7 @@ const districtTiles = bakeDistrictTiles();   // {DISTRICT_TYPE: {src,w,h}} flat 
 const fow = bakeFowTiles();                   // {HATCH_*|PARCHMENT: {src,tile}} Civ6 fog-of-war tiles, or null (art only — no RevealedMap yet)
 const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} climate sea + shore colours
 const beach = bakeBeachRamps();              // {trop, temp, polar} real Civ4 sand ramps, or null (hand-picked sand)
+const foam = bakeFoamStrip();                // {src, w, h} real Civ4 wave-crest strip, or null (procedural feather)
 const plotProvinceCount = computeWaterBboxes(provinces);
 
 // encode every queued art asset to WebP (one async pass now the bakes have run); imgSizes feeds the
@@ -473,7 +475,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach,
+  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach, foam,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -495,6 +497,7 @@ console.log(`  terrain tiles: ${terrainTiles ? terrainTiles.src + ' (' + Object.
 console.log(`  river tile: ${river ? river.src : 'skipped (no allriverssmall.dds / LFS)'}`);
 console.log(`  sea tile: ${sea ? sea.src : 'skipped (no seadetail.dds / LFS)'} · bands trop/temp/polar ${JSON.stringify([seaBands.trop, seaBands.temp, seaBands.polar])}`);
 console.log(`  beach ramps: ${beach ? `real Civ4 sand, temp ${beach.temp[0].join(',')} → ${beach.temp[beach.temp.length - 1].join(',')}` : 'skipped (no coastblend.dds) — renderer keeps its hand-picked sand'}`);
+console.log(`  foam strip: ${foam ? `${foam.src} (${foam.w}×${foam.h})` : 'skipped (no wave_crest.dds) — renderer keeps its procedural feather'}`);
 console.log(`  ice tile: ${ice ? ice.src : 'skipped (no icepack_1024.dds / LFS)'}`);
 console.log(`  improvement overlays: ${improvementOverlays ? Object.keys(improvementOverlays).length + ' Civ6 SV (placement deferred)' : 'skipped (no Civ6 depot)'}`);
 
@@ -997,14 +1000,55 @@ function bakeSeaTile() {
 }
 
 // The shore shallows carry the same treatment (docs/coastlines.md Phase D): a neutral-mean
-// greyscale ripple from the Civ4 shore wave texture (textures/water/shoredetail.dds), drawn
-// over the shallow band with `soft-light` so it ripples the shore hue without recolouring it.
-// A touch more contrast than the open sea so the near-shore chop reads. Null → flat shallows.
+// greyscale detail, drawn over the shallow band with `soft-light` so it grains the shore hue without
+// recolouring it. A touch more contrast than the open sea so the near-shore chop reads. Null → flat
+// shallows.
+//
+// The C2C source is `textures/coastdetail.dds`, not `water/shoredetail.dds` as it used to be. Neither
+// is a wave texture — both are ground detail (coastdetail is grey shingle, shoredetail a yellow-green
+// gravel), and either works as neutral grain — but `coastdetail` is the one every
+// `ART_DEF_TERRAIN_*_COAST` actually binds, while `shoredetail` belongs to `ART_DEF_TERRAIN_LAKE_SHORE`.
+// Our shallows are the sea shelf, so coastdetail is the correct binding. Visible only when the Civ6
+// coast tile is absent, since that still wins (docs/civ6-art-replacement.md).
 function bakeShoreTile() {
-  const s = waterSrcImg(civ6.coastTile(), 'Art/Terrain/textures/water/shoredetail.dds');
+  const s = waterSrcImg(civ6.coastTile(), 'Art/Terrain/textures/coastdetail.dds');
   if (!s) return null;
-  console.log(`  shore ripple: ${s.civ6 ? 'Civ6 SV_TerrainHexCoast' : 'C2C shoredetail'}`);
+  console.log(`  shore grain: ${s.civ6 ? 'Civ6 SV_TerrainHexCoast' : 'C2C coastdetail'}`);
   return bakeRippleTile(s.img, `water/shore`, s.civ6 ? 3.5 : 1.3);
+}
+
+// The SURF — real Civ4 foam for the water's edge (docs/civ4-texture-inventory.md §4 P2).
+//
+// `waves/wave_crest.dds` is 256×128 of pure WHITE rgb with the whole shape in its ALPHA: a scalloped
+// foam band starting at row 2, densest at rows 8–13, trailing off to nothing by ~row 48. So it is a
+// foam MASK, not a colour texture, and it tiles along its 256px axis — exactly a shoreline strip.
+//
+// Its sibling `wave_base.dds` is NOT used, and that is a finding rather than an oversight: its rgb is
+// flat grey and its alpha peaks at 153 with a mean of 20 — a near-empty smudge with no structure. The
+// pair reads as "soft base + white crest" in the file listing; measured, only the crest carries art.
+//
+// Returns {src, w, h} (RGBA, so the renderer can tint and stamp it) or null when the art is absent —
+// drawFoam then keeps its procedural white feather.
+//
+// Only the CREST is kept, not the whole wash. The alpha runs 2..~48, but it is dense over rows 3–21
+// and then trails at a tenth of that for another 27 — and shipping the trail made the shoreline read
+// as a pale haze at map zooms rather than a line of surf, because a few screen pixels cannot resolve
+// a long soft ramp. Cropping to the dense rows gives a crisp lap that survives downscaling.
+const FOAM_ROWS = 26;                                  // rows of wave_crest that carry the dense crest
+function bakeFoamStrip() {
+  const file = resolveArt('Art/Terrain/waves/wave_crest.dds');
+  const img = file && decodeCached(file);
+  if (!img) return null;
+  const W = img.width, H = Math.min(FOAM_ROWS, img.height);
+  const out = Buffer.alloc(W * H * 4);
+  for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++) {
+      const s = ((y + 2) * img.width + x) * 4, d = (y * W + x) * 4;   // +2: skip the two blank rows
+      out[d] = out[d + 1] = out[d + 2] = 255;                          // the art is white; keep it white
+      out[d + 3] = img.rgba[s + 3];
+    }
+  console.log(`  foam strip: C2C wave_crest ${W}×${H}`);
+  return { src: queueWebpRGBA('water/foam', W, H, out, { quality: 88 }), w: W, h: H };
 }
 
 // Bake a seamless COLOUR ice tile for the polar sea-ice floes (drawSeaIce). Civ6-first
@@ -1598,6 +1642,15 @@ function bakeSeaBands() {
     shore: band('Art/Terrain/textures/water/seatropblend.dds', [116, 178, 196]),
   };
 }
+
+// NO shelf-edge colour is baked, and that is a decision rather than an omission — see
+// docs/civ4-texture-inventory.md §4 P2. `textures/CoastDeepBlend.dds` is what every
+// `ART_DEF_TERRAIN_*_COAST_DEEP` binds and looks like the obvious source, but its opaque pixels
+// average 104,103,104: a flat neutral grey with no hue to take, the same trap bakeSeaBands already
+// documents for `shoreblend`. And even with a good colour (coastblend's painted water reads
+// 84,102,112) the band it drove made the coast WORSE — a mid tone between bright shallows and dark
+// open sea widens the pale halo instead of deepening it. The shallows' fade to transparent over dark
+// water is already the better answer.
 
 // The BEACH ramps — the real Civ4 sand, one per climate band (docs/civ4-texture-inventory.md §4).
 // The rectification itself lives in web/beachramp.mjs (unit-tested there); this just resolves the

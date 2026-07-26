@@ -158,6 +158,10 @@ const SEA_BANDS = BUNDLE.seaBands; // {trop, temp, polar, shore} climate sea + s
 // bakeBeachRamps): {trop, temp, polar} each an RGB ramp running the LAND edge → past the waterline.
 // Null when the art was absent — coast.mjs then keeps its hand-picked sand.
 const BEACH = BUNDLE.beach;
+// the real Civ4 wave-crest strip {src, w, h} for the surf at the water's edge, or null (coast.mjs
+// then keeps its procedural white feather). White rgb + the foam shape in alpha, tiling along its
+// long axis — so it stamps along a shoreline edge.
+const FOAM = BUNDLE.foam;
 // per-province trade good (docs/trade-goods.md), loaded eagerly from the static web/tradegoods.js
 // (a <script defer> in index.html, so window.TRADEGOODS is set before the app module evaluates).
 // {icons:{src,cell,cols,index:{key:col}}, goods:{key:{name,color,category}}, prov:{provId:key}} or null.
@@ -415,4 +419,4 @@ export const S = {
 };
 
 export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, pll,
-  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, BEACH, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, BEACH, FOAM, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };

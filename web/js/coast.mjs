@@ -10,7 +10,7 @@
 // coast is a smooth wavy line across cells, not a grid staircase; (2) the real Civ4 shoredetail ripple
 // clipped to that shallow shape. (Earlier per-cell rectangular bites read as blue blotches on the land,
 // and the wave-crest foam lapped onto land — both dropped for this continuous shallows.)
-import { SHORE, ICE_ART, SEA_BANDS, BEACH } from "./core.mjs";
+import { SHORE, ICE_ART, SEA_BANDS, BEACH, FOAM } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
 // the baked greyscale shore-wave tile for the coast shallows (docs/coastlines.md Phase D); null →
@@ -21,6 +21,10 @@ const shoreImg = loadArt(SHORE, () => { shoreReady = true; });
 // falls back to flat pale floes
 let iceReady = false, icePat = null;
 const iceImg = loadArt(ICE_ART, () => { iceReady = true; });
+// the real Civ4 wave-crest strip for the surf (docs/civ4-texture-inventory.md §4 P2); null → drawFoam
+// keeps its procedural white feather
+let foamReady = false;
+const foamImg = loadArt(FOAM, () => { foamReady = true; });
 // the shallows tint — the Civ4 shoreblend hue baked into the bundle, or the old teal fallback
 const SHORE_COL = (SEA_BANDS && SEA_BANDS.shore) ? SEA_BANDS.shore.join(",") : "116,178,196";
 // beach sand — the hand-picked pair this used before the real art arrived. Still the fallback when
@@ -64,7 +68,7 @@ export function paintCoast(o, W, H, plots, x0, y0, tpp, lat = 45) {
   // first (in the water), then the beach on top: land → dry sand → wet sand → shallows → sea.
   const beach = () => { if (detail > 0) for (const q of coastal) drawBeach(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q, ramp); };
   // a soft foam lap just seaward of the sand (repurposes the retired foam crest)
-  const foam = () => { if (detail > 0) for (const q of coastal) drawFoam(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast); };
+  const foam = () => { if (detail > 0) for (const q of coastal) drawFoam(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast, q.x, q.y, detail); };
   if (!shoreReady) { bands(o); beach(); foam(); return; }   // no ripple art → flat shore-hue bands
   // 1) shore-hue bands on a scratch layer (its alpha = the shallow-water shape)
   const cc = document.createElement("canvas"); cc.width = W; cc.height = H;
@@ -134,6 +138,12 @@ function outwardBands(o, cx, cy, s, mask, col, f, a0) {
 // the shallow-water band: the Civ4 shoreblend hue reaching ~1 cell out from the shoreline into the
 // sea (its alpha is the shape the shore ripple is clipped to). The sand beach is drawn OVER this
 // afterward, so the visible shallows ring sits just beyond the wavy shore.
+//
+// A shelf-edge band was TRIED here and removed — see docs/civ4-texture-inventory.md §4 P2. The idea
+// was that the shallows should ramp to a dimmer shelf tone instead of fading out. It fails twice:
+// coastdeepblend carries no hue to ramp TO (its opaque pixels are flat grey), and any mid-tone ring
+// between bright shallows and the dark open sea just makes the pale halo WIDER — the fade to
+// transparent over dark water already reads as deepening. Left as one band deliberately.
 function drawCoastBands(o, cx, cy, s, mask) {
   outwardBands(o, cx, cy, s, mask, SHORE_COL, s * 1.35, ".85");
 }
@@ -178,11 +188,53 @@ function drawBeach(o, cx, cy, s, q, ramp) {
   // dry sand feathering back onto the land — the bright body of the beach, fading inland
   inwardBands(o, cx, cy, s, q.coast, rgbOf(ramp, SAND_DRY, SAND), s * 0.62, ".95");
 }
-// A thin foam lap right at the water's edge: a soft white feather fading seaward, drawn just
-// outside the sand. (The real Civ4 wave-crest art this once used was retired — it never read
-// cleanly at these zooms — so the procedural feather is now the only path.)
-function drawFoam(o, cx, cy, s, mask) {
-  outwardBands(o, cx, cy, s, mask, "255,255,255", s * 0.3, ".5");
+// The surf: the real Civ4 wave-crest strip stamped along each water edge, just seaward of the sand.
+//
+// The art is one scalloped foam band that tiles along its long axis, so a naive stamp would repeat
+// the SAME scallop in every coastal cell — a visible rhythm along the whole coastline. Procedural
+// variation is what stops that: each cell picks its own window into the strip and its own flip from
+// the plot hash, so the crest phase wanders the way a real shoreline does. Real art for the material,
+// a hash for the variety — neither does the other's job well.
+//
+// Corners keep the procedural radial feather: the art has no corner piece, and a strip stamped across
+// a diagonal reads as a seam.
+// A lap, not a band: 0.18 cells of reach at low opacity, faded by the same `detail` ramp the beach
+// uses. Wider or brighter than this and it stops reading as surf and starts reading as haze around
+// the whole coastline — the failure the first cut of this shipped, and the reason the crest is
+// cropped to its dense rows at bake time.
+const FOAM_REACH = 0.18;
+// local (x along shore, y seaward) → world, per edge. Canvas transform(a,b,c,d,e,f):
+// x' = a·x + c·y + e, y' = b·x + d·y + f.
+const FOAM_TX = {
+  1: (cx, cy, s) => [0, 1, 1, 0, cx + s, cy],       // E: seaward +x, shore runs +y
+  2: (cx, cy, s) => [0, 1, -1, 0, cx, cy],          // W: seaward -x
+  4: (cx, cy, s) => [1, 0, 0, 1, cx, cy + s],       // S: seaward +y, shore runs +x
+  8: (cx, cy, s) => [1, 0, 0, -1, cx, cy],          // N: seaward -y
+};
+function drawFoam(o, cx, cy, s, mask, gx, gy, detail) {
+  if (!foamReady) { outwardBands(o, cx, cy, s, mask, "255,255,255", s * 0.3, ".5"); return; }
+  const f = s * FOAM_REACH, win = Math.max(8, Math.min(FOAM.w, Math.round(FOAM.w / 4)));
+  for (const [bit] of COAST_EDGES) {
+    if (!(mask & bit)) continue;
+    // per-edge window + flip, so neighbouring cells never stamp the same crest
+    const h = chash(gx * 3 + bit, gy * 5 + bit);
+    const sx = Math.floor(h * (FOAM.w - win));
+    o.save();
+    o.transform(...FOAM_TX[bit](cx, cy, s));
+    if (chash(gx * 7 + bit, gy * 11) > 0.5) { o.translate(s, 0); o.scale(-1, 1); }   // mirror along the shore
+    o.globalAlpha = 0.34 * detail;
+    o.drawImage(foamImg, sx, 0, win, FOAM.h, 0, 0, s, f);
+    o.restore();
+  }
+  // diagonal sea corners: the soft feather, at the same weight the edges now carry
+  const a = (0.2 * detail).toFixed(2);
+  for (const [bit, ux, uy] of COAST_CORNERS) {
+    if (!(mask & bit)) continue;
+    const px = cx + ux * s, py = cy + uy * s;
+    const gr = o.createRadialGradient(px, py, 0, px, py, f);
+    gr.addColorStop(0, `rgba(255,255,255,${a})`); gr.addColorStop(1, "rgba(255,255,255,0)");
+    o.fillStyle = gr; o.fillRect(px - (ux ? 0 : f), py - (uy ? 0 : f), f, f);
+  }
 }
 // Polar sea ice on a water province's shelf (docs/coastlines.md Phase E/G). Coverage is per-cell
 // (sparse at sub-polar latitudes, near-solid by the pole), so drawing cells as SQUARES read as a
