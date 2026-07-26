@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -85,30 +85,16 @@ const RIVER_TINT = [93, 133, 169];
 /** Sea/lake province — its plots are all water, which changes how they are sampled and coloured. */
 const isWater = p => p.type === "SEA" || p.type === "LAKE";
 
-// A water plot's colour, interpolated by DEPTH rather than taken flat from its terrain key.
+// THERE IS NO WATER FILL COLOUR, and that is deliberate. Water plots used to be painted from
+// `terrainColors.TERRAIN_COAST` / `TERRAIN_SEA` — #5c9cb2 and friends, display colours invented for a
+// flat map that had no shore art. Once Civ4's painted coast tiles were stamped on top, that bright
+// blue read as an overlay swamping them (measured on screen at 88,144,160 against the atlas's own
+// painted water at 43,71,101).
 //
-// The keys are only two-valued (TERRAIN_COAST touching land, TERRAIN_SEA beyond), so a flat fill
-// puts a hard step through the water; landDist gives the real depth. From MAP_VERSION 13 a sea
-// province carries a plot for EVERY water cell it owns, not a 3px shelf, so this ramp now covers the
-// open ocean too — which is the whole point. The old shelf ended at a plot-square boundary between
-// two different renderings of water, and no amount of feathering that edge helped, because the edge
-// was the artefact.
-//
-// WATER_DEPTH is where the ramp bottoms out, in plots from shore. It is a look parameter, not a
-// generation one: past it every plot is simply open-sea colour.
-// The ramp must run from ONE shallow anchor, not from each plot's own terrain colour. The keys are
-// two-valued — TERRAIN_COAST at landDist 1, TERRAIN_SEA from 2 outward — so lerping from
-// `terrainRgb(q.terrain)` restarts the ramp on a much darker base at ring 2 and reinstates exactly
-// the hard step it was meant to remove. (It did; this cost a round.) Mapping SEA→COAST (and
-// LAKE→LAKE_SHORE) gives the climate's shallow hue for every water plot, so depth alone drives it.
-const WATER_DEPTH = 10;
-const shallowKey = t => t.replace("TERRAIN_SEA", "TERRAIN_COAST").replace(/^TERRAIN_LAKE$/, "TERRAIN_LAKE_SHORE");
-function shelfRgb(q) {
-  const shallow = terrainRgb(shallowKey(q.terrain));
-  const deep = (SEA_BANDS && SEA_BANDS.temp) || [50, 53, 98];
-  const t = Math.min(1, Math.max(0, (q.landDist - 1) / WATER_DEPTH));   // 0 at the coast, →1 outward
-  return [0, 1, 2].map(i => Math.round(shallow[i] + (deep[i] - shallow[i]) * t));
-}
+// So water plots are now left TRANSPARENT in both province canvases. What shows through is the real
+// sea: the screen-space latitude gradient with its depth band (sea.mjs drawSeaBase), which is the
+// layer that was always meant to be the ocean. On top of it, on the plots that touch land, sits
+// Civ4's painted coast tile (coast.mjs extendCoastIntoWater). Nothing invents a water colour anywhere.
 
 // rasterise a province's plots to a 1px/plot offscreen canvas: terrain colour, relief
 // shading (hill lighter, peak toward rock-grey), a light feature tint, and river blend
@@ -117,16 +103,7 @@ function buildPlotCanvas(p, plots) {
   // terrain key); the land-only relief/feature/river tints below are skipped for them
   const water = p.type === "SEA" || p.type === "LAKE";
   const { canvas, box } = buildPixelCanvas(plots, (q, d, o) => {
-    // A water plot takes the depth ramp here too, not just in the textured canvas — drawPlots blits
-    // this cheap canvas UNDERNEATH that one, so a flat fill here would show straight through any
-    // treatment applied there. (That is not hypothetical: it is what made an earlier shelf fade
-    // invisible, and cost three wrong diagnoses before the layering was noticed.)
-    if (water && q.landDist) {
-      const g = shelfRgb(q);
-      d[o] = g[0]; d[o + 1] = g[1]; d[o + 2] = g[2];
-      d[o + 3] = 255;   // water is CONTINUOUS from v13 — nothing to dissolve into behind it
-      return;
-    }
+    if (water) return;   // transparent: the sea gradient behind IS the water (see the note above)
     const c = terrainRgb(q.terrain); let r = c[0], g = c[1], b = c[2];
     if (!water) {
       const f = q.feature;
@@ -215,8 +192,8 @@ function drawPlots(only) {
     // WATER takes the opposite, and this is the coastline staircase in one line. A water plot has no
     // texture to protect, so nearest-sampling it blows every plot up into a hard square and a run of
     // them along a diagonal coast IS the staircase — which is why nothing done inside the canvases
-    // ever moved it. Smoothing interpolates between plot centres instead, turning shelfRgb's
-    // shallow→deep ramp into a genuine gradient.
+    // ever moved it. Smoothing interpolates between plot centres instead — which still matters for
+    // the ice and the coast tiles that sit on the water canvas.
     ctx.imageSmoothingEnabled = isWater(p);
     blitProvinceCanvas(p._pcanvas, p._pbox);
   }
@@ -286,27 +263,9 @@ function buildPlotTexCanvas(p) {
   const water = p.type === "SEA" || p.type === "LAKE";
   // 1) base terrain as continuous repeating patterns (no per-plot tile seam)
   //
-  // WATER IS RASTERISED, NOT TILED, and that is the whole fix for the coastline staircase. A water
-  // plot has no texture, so it used to be a flat `fillRect` per plot — which is a hard-edged square,
-  // and a run of them along a diagonal coast is a staircase by construction. Depth-ramping the colour
-  // does not help while each plot is still a square: it only makes the squares differ more gently.
-  //
-  // So water is drawn at ONE PIXEL PER PLOT into a small canvas and blitted back upscaled with
-  // smoothing — the trick the snow cap already uses. The bilinear filter interpolates between plot
-  // centres, so shelfRgb's shallow→deep ramp becomes a genuine gradient and the squares disappear.
-  // Land keeps its per-plot tiling: it HAS texture, and smoothing it would blur the ground.
-  if (water) {
-    const wc = document.createElement("canvas"); wc.width = w; wc.height = h;
-    const wx = wc.getContext("2d"), im = wx.createImageData(w, h);
-    for (const q of p._plots) {
-      const g = q.landDist ? shelfRgb(q) : terrainRgb(q.terrain);
-      const k = ((q.y - y0) * w + (q.x - x0)) * 4;
-      im.data[k] = g[0]; im.data[k + 1] = g[1]; im.data[k + 2] = g[2]; im.data[k + 3] = 255;
-    }
-    wx.putImageData(im, 0, 0);
-    o.imageSmoothingEnabled = true;
-    o.drawImage(wc, 0, 0, w, h, 0, 0, w * tpp, h * tpp);
-  }
+  // 1) base terrain as continuous repeating patterns (no per-plot tile seam). LAND ONLY — a water
+  // province paints no ground at all (see the note at the head of this file: the sea gradient behind
+  // is the water, and the painted coast tile is the shore).
   const pat = {};
   if (!water) for (const q of p._plots) {
     const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
@@ -465,8 +424,8 @@ function buildPlotTexCanvas(p) {
     provSrcBox(p) ? latAtSourceY((provSrcBox(p).y0 + provSrcBox(p).y1) / 2) : 45);
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
   // (No shelf-edge fade any more. From MAP_VERSION 13 a sea province draws EVERY water cell it owns,
-  // so there is no shelf boundary left to dissolve — the depth ramp in shelfRgb carries the water
-  // from shore to deep on its own. fadeShelfEdge existed to feather an edge that no longer exists.)
+  // so there is no shelf boundary left to dissolve. fadeShelfEdge existed to feather an edge that no
+  // longer exists, and there is no water fill left for it to feather either.)
   p._tcanvas = oc; p._tbox = { x0, y0, w, h }; p._grid = grid;   // grid: q.x*1e5+q.y → plot, for the resource tooltip
   p._tfoliage = bakeFoliage;   // which way this canvas was baked — drawPlots invalidates it when that flips
 }

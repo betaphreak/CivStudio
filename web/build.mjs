@@ -1128,16 +1128,17 @@ function bakeCoastTiles() {
     const file = resolveArt(art);
     const img = file && decodeCached(file);
     if (!img) return null;
-    // ONLY THE SAND SURVIVES. A cell carries the whole Civ4 coast tile — sand, shallows AND deep
-    // water — and Civ4 uses it as the base terrain with its alpha letting the neighbour through. We
-    // already draw the water underneath at the right colour, so stamping the whole cell paints a
-    // second, darker water over it and every coastal plot reads as a dark SQUARE (measured: it does).
-    // So the alpha is weighted by warmth, r-b: the painted sand keeps it, the painted water loses it,
-    // and what lands on the map is the shore band alone over our own water.
+    // ONLY THE SAND IS KEPT. A cell carries the whole Civ4 coast tile — sand AND its own water —
+    // because Civ4 uses it as the base terrain. We have no base to replace: water plots are drawn
+    // TRANSPARENT and the sea gradient behind is the ocean (plots.mjs). Shipping the cell whole
+    // therefore lays the atlas's own water (43,71,101) over that gradient, and every coast plot reads
+    // as a dark SQUARE — tried, measured, reverted. The alpha is weighted by warmth (r-b) so the
+    // painted shore band survives and the painted water does not: real art on the real sea, with no
+    // invented fill colour anywhere in between.
     const rgba = Buffer.alloc(img.width * img.height * 4);
     for (let i = 0; i < img.width * img.height; i++) {
       const r = img.rgba[i * 4], g = img.rgba[i * 4 + 1], b = img.rgba[i * 4 + 2];
-      const warm = Math.max(0, Math.min(1, (r - b) / 40));   // 0 by the time it is water, 1 on sand
+      const warm = Math.max(0, Math.min(1, (r - b) / 40));   // 0 once it is water, 1 on sand
       rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b;
       rgba[i * 4 + 3] = Math.round(img.rgba[i * 4 + 3] * warm);
     }
