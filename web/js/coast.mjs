@@ -19,6 +19,7 @@
 // ripped out, so nothing has to be re-derived if a future layer wants a sand colour or a surf strip.
 import { ICE_ART, COAST_TILES } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
+import { waterBand } from "./water-terrain.mjs";
 
 // the real Civ4 pack-ice tile (docs/coastlines.md Phase G), features/icepack; null → drawSeaIce
 // falls back to flat pale floes
@@ -28,7 +29,7 @@ const iceImg = loadArt(ICE_ART, () => { iceReady = true; });
 const ctImg = {}, ctReady = {};
 if (COAST_TILES) for (const b of ["trop", "temp", "polar"])
   ctImg[b] = loadArt(COAST_TILES[b], () => { ctReady[b] = true; });
-/** Which climate atlas a latitude takes — the same bands the sea gradient uses. */
+/** Which climate atlas a latitude takes — the FALLBACK band, for a plot with no terrain key. */
 const bandOf = lat => { const a = Math.abs(lat); return a <= 23 ? "trop" : a >= 60 ? "polar" : "temp"; };
 
 // deterministic 0..1 hash — the same integer-mix idiom drawSeaIce uses, for jitter that is
@@ -58,13 +59,22 @@ const chash = (a, b) => ((Math.imul(a | 0, 2654435761) ^ Math.imul(b | 0, 40503)
  * away and stamp a visible rhythm along every shore.
  */
 export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
-  const A = COAST_TILES && ctImg[bandOf(lat)];
-  if (!A || !ctReady[bandOf(lat)]) return;
+  if (!COAST_TILES) return;
+  const provBand = bandOf(lat);
   const C = COAST_TILES.cell, cols = COAST_TILES.cols, blend = COAST_TILES.blend;
   o.save();
   o.imageSmoothingEnabled = true;
   for (const q of plots) {
     if (q.landDist !== 1) continue;                       // only the ring that touches land
+    // The atlas is picked PER PLOT, from its own terrain key, falling back to the province latitude
+    // for a plot whose key is missing. Latitude was the only input before, and on this map it is the
+    // wrong one: the engine bands water by temperature precisely because the EU4 projection's
+    // inverse-Mercator latitudes put temperate Cannor at 60–75°, which the |lat| ≥ 60 rule calls
+    // polar. The shallow water under these tiles reads the same key (js/water-terrain.mjs), so tile
+    // and water still come from one atlas — which is the entire point of the fill.
+    const band = waterBand(q.terrain) || provBand;
+    const A = ctImg[band];
+    if (!A || !ctReady[band]) continue;
     const cfg = (q.coast >> 4) & 15;
     const variants = blend[cfg];
     if (!variants || !variants.length) continue;          // config 0 has no entry — nothing to blend

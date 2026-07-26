@@ -31,10 +31,11 @@ import tools.jackson.databind.ObjectMapper;
  * </pre>
  *
  * The curated set mirrors {@link TerrainExporter#KEEP the gameplay curation}
- * (settleable land only; hills/peaks are a {@code PlotType} axis, water/space are
- * skipped). The {@code .dds} paths it records point into the {@code UnpackedArt/art}
- * source tree; the web build (see {@code docs/ported-terrain-art-system.md} §10)
- * decodes and bakes them — the raw {@code .dds} never ships. See also §4.1.
+ * (settleable land, plus the eight WATER terrains a shelf plot can carry; hills/peaks
+ * are a {@code PlotType} axis, space is skipped). The {@code .dds} paths it records
+ * point into the {@code UnpackedArt/art} source tree; the web build (see {@code
+ * docs/ported-terrain-art-system.md} §10) decodes and bakes them — the raw {@code
+ * .dds} never ships. See also §4.1.
  */
 public final class TerrainArtExporter {
 
@@ -42,13 +43,42 @@ public final class TerrainArtExporter {
 	private static final String INFOS = "CIV4TerrainInfos.xml";
 	private static final String OUTPUT = "civstudio-engine/target/generated/map/terrain-art.json";
 
-	/** The curated land subset — the same 16 terrains {@link TerrainExporter} keeps. */
+	/**
+	 * The curated subset — the same terrains {@link TerrainExporter} keeps: 16 land, then
+	 * the 8 water ones.
+	 *
+	 * <p>The water half was skipped for years on the reasoning that a 2D client has no
+	 * seabed to draw. That was wrong once the shelf became real plots: {@link
+	 * com.civstudio.geo.MapTerrainCodec} stamps every water plot with {@code
+	 * TERRAIN_COAST}/{@code TERRAIN_SEA} (plus a climate suffix) or the {@code
+	 * TERRAIN_LAKE} pair, and with no art entry the web bake had nothing to key on, so the
+	 * whole shelf fell back to a flat interpolated colour. These eight bind the same way
+	 * land does — Civ4's own {@code CoastDetail}/{@code SeaDetail}/{@code ShoreDetail}
+	 * ground textures — and the bake recolours each to its water display colour.
+	 */
 	private static final Set<String> KEEP = new LinkedHashSet<>(List.of(
 			"TERRAIN_GRASSLAND", "TERRAIN_LUSH", "TERRAIN_PLAINS", "TERRAIN_SCRUB",
 			"TERRAIN_MARSH", "TERRAIN_MUDDY", "TERRAIN_ROCKY", "TERRAIN_BADLAND",
 			"TERRAIN_JAGGED", "TERRAIN_BARREN", "TERRAIN_DESERT", "TERRAIN_DUNES",
 			"TERRAIN_SALT_FLATS", "TERRAIN_TAIGA", "TERRAIN_TUNDRA",
-			"TERRAIN_PERMAFROST"));
+			"TERRAIN_PERMAFROST",
+			"TERRAIN_COAST", "TERRAIN_COAST_POLAR", "TERRAIN_COAST_TROPICAL",
+			"TERRAIN_SEA", "TERRAIN_SEA_POLAR", "TERRAIN_SEA_TROPICAL",
+			"TERRAIN_LAKE_SHORE", "TERRAIN_LAKE"));
+
+	/**
+	 * Detail textures overridden away from what the art define names, and the only place
+	 * this exporter departs from the XML.
+	 *
+	 * <p>{@code ART_DEF_TERRAIN_LAKE} binds {@code Art/Shared/GreyDetail.dds} — a flat
+	 * neutral grey. That is not laziness in Civ4: a lake's look there comes from {@code
+	 * LakeBlend.dds} modulating the grey, and we do not read the blend textures at all
+	 * (the web bake reads {@code detail} and recolours it). Taking Civ4 literally would
+	 * bake a featureless tile and give a lake less grain than the ocean beside it, so the
+	 * lake takes the deep-water grain its own shore already uses.
+	 */
+	private static final Map<String, String> DETAIL_OVERRIDE = Map.of(
+			"TERRAIN_LAKE", "Art/Terrain/Textures/Water/SeaDetail.dds");
 
 	/**
 	 * Art bindings for the authored, source-less terrains (see {@link
@@ -136,7 +166,7 @@ public final class TerrainArtExporter {
 					terrain, tag,
 					Civ4Xml.text(ai, "Path"),
 					Civ4Xml.text(ai, "Grid"),
-					Civ4Xml.text(ai, "Detail"),
+					DETAIL_OVERRIDE.getOrDefault(terrain, Civ4Xml.text(ai, "Detail")),
 					Civ4Xml.intVal(ai, "LayerOrder", 0),
 					Civ4Xml.boolVal(ai, "AlphaShader"),
 					blendTable(ai)));

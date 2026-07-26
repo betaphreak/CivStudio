@@ -37,6 +37,17 @@ the given zoom, waits for the terrain to bake, and screenshots the viewport — 
 Use this to eyeball deep-zoom terrain/blend/feature changes instead of hand-rolling a Playwright
 script each time. Needs a bundle server up (local `spring-boot:run`, or the deployed one via `--live=`).
 
+### `seabed-shot.mjs` — screenshot a shelf (the water-terrain art)
+```bash
+node seabed-shot.mjs <provId> <zoom> <outPng> [waitMs] [base] [server]
+# e.g. node seabed-shot.mjs 1270 26 shelf.png        # Anbenncost — temperate, at "polar" latitude
+#      node seabed-shot.mjs 1361 26 tropical.png     # Gulf of Rahen — tropical
+```
+Same shape as `shot.mjs`, with the two deviations a Live page needs: `waitUntil: 'load'` (the SSE
+stream means `networkidle` never fires, which is why `shot.mjs` times out here) and an `Escape` press
+to dismiss the lobby. Point it at a **sea** province to fill the frame with shelf. Those two province
+IDs are the useful pair: they differ only by climate band, so the water art should visibly differ.
+
 ### `verify-pack.mjs` — end-to-end `plots.pack` range-fetch check
 ```bash
 node verify-pack.mjs <webDir> <provId> <outPng>

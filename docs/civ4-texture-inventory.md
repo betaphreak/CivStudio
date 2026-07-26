@@ -53,7 +53,7 @@ node tools/fpk/unpack.mjs list "$G\Assets\Art0.FPK" art/terrain --all
 |--------|---------:|------------|--------------|
 | `resources/` | 364 | per-bonus model skins | ✗ — bonuses are procedural glyphs (`bonusGlyph`) |
 | `heightmap/` | 215 | relief + blend masks (`coasts` 29, `hills` 82, `peaks` 81, `flats` 7, `coastblendmasks` 16) | ✗ (peak/hill *models* are used; these masks are not) |
-| `textures/` | 149 | ground + coast + water blend/detail/grid | **partial** — 16 land `detail`, 6 water; **all coast art unused** |
+| `textures/` | 149 | ground + coast + water blend/detail/grid | **partial** — 16 land + 8 water `detail`, 6 water blend; coast atlases in use (§4 P3, §6) |
 | `features/` | 130 | forest/jungle/ice/reef/… skins | 5 in use of 51 feature dirs |
 | `routes/` | 59 | road/rail/river/bridge skins | 4 in use |
 | `natural_wonders/` | 57 | unique map wonders | ✗ |
@@ -67,12 +67,16 @@ worth checking against this list first.
 
 ### What is in use today
 
-- **16 land terrains** via the `terrain-art.json` manifest (`TerrainArtExporter`'s `KEEP` set):
-  `detail` is decoded into the recoloured tile atlas, `path` (the blend texture) is read for a **mean
-  colour only**, and `grid` is prefetched but never read. The exported **16-way `TextureBlend` table is
-  still unread** — the on-screen blend is `BLEND_NOISE`, a procedural feather.
-- **6 water textures** — `textures/water/{sea,seatrop,seapol,seadeep}blend.dds`, `seadetail.dds`,
-  `shoredetail.dds` (`bakeSeaBands`/`bakeSeaTile`/`bakeShoreTile`).
+- **24 terrains** via the `terrain-art.json` manifest (`TerrainArtExporter`'s `KEEP` set) — 16 land and,
+  since the seabed work (§6), the **8 water ones**: `detail` is decoded into the recoloured tile atlas,
+  `path` (the blend texture) is read for a **mean colour only**, and `grid` is prefetched but never
+  read. Plus 9 source-less `SYNTHETIC` entries repurposing a land texture, for 33 atlas columns in all.
+  The exported **16-way `TextureBlend` table is still unread** — the on-screen blend is `BLEND_NOISE`,
+  a procedural feather.
+- **6 water blend/detail textures** — `textures/water/{sea,seatrop,seapol,seadeep}blend.dds`,
+  `seadetail.dds`, `shoredetail.dds` (`bakeSeaBands`/`bakeSeaTile`/`bakeShoreTile`). `seadetail`,
+  `shoredetail` and `coastdetail` do **double duty** since §6: they are also the seabed's ground
+  texture, decoded per water terrain into the tile atlas.
 - **4 route textures** — `rivers/allriverssmall.dds`, `path/roadprimitive.dds`, `railroads/railroad.dds`,
   `roman roads/roadroman.dds`.
 - **5 feature textures** — `icepack_1024`, `treeleafy/trees_1024`, `savanna/palms_1024`, `swamp/trees1`,
@@ -85,8 +89,9 @@ worth checking against this list first.
 
 ## 3. The gap, ranked
 
-1. **Coast/beach blend art.** The sand and the surf are now real (§4, P1 + P2 shipped). What is still
-   procedural is the shoreline *shape* — and that is the one worth doing next. §4 P3.
+1. **Coast/beach blend art.** The sand and the surf are now real (§4, P1 + P2 shipped), and so is the
+   water they sit on (§6). What is still procedural is the shoreline *shape* — and that is the one
+   worth doing next. §4 P3.
 2. **Bonuses (364 textures + `.nif`).** Every resource on the map is a procedural glyph. The blocker is
    the offline `.nif`→sprite baker, which now exists (`tools/nifbake`, already used for cactus and
    grass) — so this is work, not a blocker.
@@ -342,3 +347,93 @@ Worth knowing about, but each is blocked on the *generator*, not on art:
 - **Marsh variety** — `bog`, `peatbog`, `wetlands` beside the single `swamp` sheet.
 - **`volcano`, `volcano2`, `tornado`, `fallout`, `crater`** — no gameplay hook; noted only so a future
   reader does not re-inventory them.
+
+---
+
+## 6. The seabed
+
+### The gap
+
+The shoreline work (§4) put real painted art on the water plots that touch land. Everything *under*
+those tiles was still a computed colour: `plots.mjs` filled a water plot by interpolating two numbers
+across `landDist`, and that was the entire seabed. Land, on the same canvas, tiled a recoloured Civ4
+ground texture per plot.
+
+The cause was one line upstream. `TerrainArtExporter.KEEP` was "settleable land only; hills/peaks are a
+`PlotType` axis, **water/space are skipped**" — a reasonable call when a water plot was just a hole in
+the map, and wrong once the shelf became real plots. `MapTerrainCodec.water()` has been stamping every
+water plot with a real key for as long as the shelf has existed (`TERRAIN_COAST`/`TERRAIN_SEA` plus a
+climate suffix, or `TERRAIN_LAKE_SHORE`/`TERRAIN_LAKE`), `TerrainExporter.KEEP` kept all eight, and the
+browser received them — but with no art entry there was no atlas column to key on, so the renderer read
+`landDist` and threw the key away. A polar shelf, a tropical shelf and a lake were the same pixels.
+
+### What it binds
+
+The eight water terrains join `KEEP` and bind like land does:
+
+| terrain | Civ4 `<Detail>` |
+|---|---|
+| `TERRAIN_COAST`, `_POLAR`, `_TROPICAL` | `textures/CoastDetail.dds` |
+| `TERRAIN_SEA`, `_POLAR`, `_TROPICAL` | `textures/Water/SeaDetail.dds` |
+| `TERRAIN_LAKE_SHORE` | `textures/Water/ShoreDetail.dds` |
+| `TERRAIN_LAKE` | `textures/Water/SeaDetail.dds` — **overridden**, see below |
+
+Civ4 gives the three coast variants one detail texture and the three sea variants another: the climate
+difference lives in the *blend*, not the grain, so only the recolour differs per band. `TERRAIN_LAKE`
+is the one departure from the XML — it binds `Art/Shared/GreyDetail.dds`, a flat neutral grey that
+works in Civ4 because `LakeBlend.dds` modulates it, and we read `detail` only. Taken literally it would
+bake a featureless tile, so the lake takes the deep-water grain (`TerrainArtExporter.DETAIL_OVERRIDE`,
+the only place that exporter departs from the source).
+
+### The colours are measured, not chosen
+
+`bakeTerrainTiles` recolours each detail texture so its mean equals the terrain's display colour, which
+made the display colour the decision. The old water values (`#5c9cb2` and friends) were invented for a
+flat map with no shore art, and the shallow-fill fix had already measured them as wrong on screen —
+88,144,160 against the coast atlas's own painted water at 43,71,101.
+
+So `waterColors()` derives all eight from the art the renderer already ramps between: the coast keys
+from `coastTiles[band].water` (the mean of the painted atlas's cold pixels), the sea keys from
+`seaBands[band]`. That required moving `bakeSeaBands`/`bakeCoastTiles` ahead of `terrainDisplayColors`
+in `build.mjs` — a pure reorder, they depend on nothing in between. Lakes take the temperate pair:
+there is no lake atlas to measure, and temperate water is what a lake already rendered as.
+
+The payoff is that the tile atlas, the shelf ramp and the painted coast tile now all resolve to the
+same numbers, which is why they agree instead of fighting.
+
+### The renderer
+
+`js/water-terrain.mjs` owns the mapping: key → climate band, key → the pair its ramp runs between.
+`COAST` and `SEA` of a band share **one** pair, which is what keeps the shelf continuous where the key
+flips at `landDist` 2. `plots.mjs` tiles the plot's own atlas column; `coast.mjs` picks its coast atlas
+the same way.
+
+**The flat ramp is no longer drawn over the texture.** It was, briefly, at 62% — and 62% of a flat fill
+over real grain is mostly flat fill, the same mistake as the invented blue in a different key. What
+that costs is the smooth shallow→deep gradient: the ramp was rasterised at 1px/plot and blitted
+upscaled, and that interpolation was the only thing spreading the coast→sea transition (water has no
+edge-blend pass). Textured, the shelf steps once, at the ring where the terrain key itself changes.
+The ramp still paints where texture cannot — a bundle with no water columns, or a key with no tile —
+so an older client degrades to exactly the shelf that shipped before.
+
+Measured on one frame (Anbenncost, z26), the water goes mean 54,70,100 / sd 13.4 → **41,65,91 / sd
+20.4**: closer to the art's own colour, with half again the variance — which is the grain.
+
+### The climate band was a latitude bug
+
+Both the shallow fill and the coast atlas picked their band from the **province's latitude** (`|lat| ≤
+23` tropical, `≥ 60` polar). The engine had already abandoned that rule and says why in
+`MapTerrainCodec.climateBand`: it bands on temperature because "the EU4 map's inverse-Mercator
+latitudes put temperate Cannor at 60–75°, so its seas rendered polar and iced over". The client kept
+the discredited rule, so Cannor's shelf drew with the **polar** coast atlas and the polar shallow
+colour. Reading the terrain key fixes it as a side effect — visible as pale grey shore sand turning
+warm tan around Anbenncost.
+
+### What is still missing
+
+- The coastal shelf still grows **nothing** — `reef`, `kelp`, `coral`, `seagrass` all have art and no
+  generator hook (§5, "features with art but nothing placing them"). That is the natural next step now
+  that the ground beneath them is real.
+- `CoastDeepDetail.dds` and the `*_DEEP` terrains are unbound: the engine stamps no deep-coast key, so
+  there is nothing to bind them to.
+- The water terrains' own 16-way `TextureBlend` tables are exported and unread, exactly like land's.

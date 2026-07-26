@@ -391,7 +391,12 @@ await (async () => {
 // Warm the Anbennar trade-good icon strip + its ordering source for bakeTradeGoodIcons (see anbennar.mjs).
 await anbPrefetch(['gfx/interface/resources.dds', 'common/tradegoods/00_tradegoods.txt', 'map/terrain.bmp', 'map/provinces.bmp', 'map/definition.csv']);
 
-const terrainColors = terrainDisplayColors(terrainRealColors());
+// The two WATER art bakes run FIRST, ahead of the terrain colours, because the water terrains take
+// their display colour from them (waterColors) and the tile atlas is recoloured to those colours.
+// Everything else here is independent, so this is a pure reorder.
+const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} climate sea + shore colours
+const coastTiles = bakeCoastTiles();         // Civ4's painted shore transition tiles + the authored blend table, or null
+const terrainColors = terrainDisplayColors(terrainRealColors(), waterColors(seaBands, coastTiles));
 const terrainLayer = terrainLayerOrders();   // TERRAIN_* -> Civ4 LayerOrder (drives edge blending)
 const terrainTiles = bakeTerrainTiles(terrainColors);
 const river = bakeRiverTile();               // {src, tile} water tile, or null (flat-fill fallback)
@@ -404,11 +409,10 @@ const trees = bakeFeatureSprites();          // {leafy,palm,swamp:{src,w,h,sprit
 const routes = bakeRoutes();                 // {trail,road,rail:{src,w,h,cell:{piece:[x,y,w,h]}}} baked route sprites, or null
 const improvementOverlays = bakeImprovementOverlays(); // {IMPROVEMENT_*: {src,w,h}} Civ4 improvement models via nifbake, or null
 const districtTiles = null;                   // Civ6-only art, removed — no Civ4 district-hex equivalent exists
-const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} climate sea + shore colours
+// (seaBands + coastTiles are baked above, ahead of the terrain colours that read them)
 const beach = bakeBeachRamps();              // {trop, temp, polar} real Civ4 sand ramps, or null (hand-picked sand)
 const foam = bakeFoamStrip();                // {src, w, h} real Civ4 wave-crest strip, or null (procedural feather)
 const coastMask = bakeCoastMasks();          // {src, cell, n} Civ4 16-way shoreline stencil, or null (square plots)
-const coastTiles = bakeCoastTiles();         // Civ4's painted shore transition tiles + the authored blend table, or null
 const plotProvinceCount = computeWaterBboxes(provinces);
 
 // encode every queued art asset to WebP (one async pass now the bakes have run); imgSizes feeds the
@@ -783,7 +787,7 @@ function terrainRealColors() {
     map.set(e.terrain, c);
   }
   if (!map.size) { console.log('  terrain-art: no textures decoded (LFS not pulled?) — using hand-tuned tints'); return null; }
-  console.log(`  terrain-art: recoloured ${map.size} land terrains from real Civ4 textures`);
+  console.log(`  terrain-art: recoloured ${map.size} terrains from real Civ4 textures`);
   return map;
 }
 
@@ -827,7 +831,37 @@ function terrainLayerOrders() {
   } catch { return {}; }
 }
 
-function terrainDisplayColors(real) {
+// The WATER display colours, measured rather than chosen — the same two art sources the renderer
+// already ramps between, now bound to the terrain keys so one number serves both the tile atlas and
+// the shelf gradient.
+//
+//   COAST/LAKE_SHORE ← coastTiles[band].water — the mean of the painted coast atlas's own cold pixels
+//   SEA/LAKE         ← seaBands[band]         — the open-sea gradient's colour for that band
+//
+// This is the whole reason the fix that put the shallow fill back works: the coast tile and the water
+// under it come from one atlas, so they agree. Binding the terrain colours to the same numbers keeps
+// that true when the tile atlas recolours a ground texture to them — the grain lands in the right hue
+// instead of the old invented blues (#5c9cb2 and friends), which measured 88,144,160 on screen against
+// the atlas's painted water at 43,71,101 and read as an overlay swamping the art.
+//
+// LAKES take the TEMPERATE water colours. There is no lake atlas to measure and no authored lake
+// colour that would not be an invention; temperate water is also exactly what a lake renders as today
+// (the old fill keyed on province latitude and had no lake case at all), so this changes no pixels
+// while removing the last invented water number. What a lake gains is its own GRAIN — ShoreDetail on
+// the rim, SeaDetail in the middle.
+function waterColors(seaBands, coastTiles) {
+  if (!seaBands || !coastTiles) return null;
+  const coast = b => coastTiles[b] && coastTiles[b].water;
+  const sea = b => seaBands[b] && seaBands[b].map(v => Math.round(v));
+  if (!coast('temp') || !sea('temp')) return null;
+  return {
+    TERRAIN_COAST: coast('temp'), TERRAIN_COAST_POLAR: coast('polar'), TERRAIN_COAST_TROPICAL: coast('trop'),
+    TERRAIN_SEA: sea('temp'), TERRAIN_SEA_POLAR: sea('polar'), TERRAIN_SEA_TROPICAL: sea('trop'),
+    TERRAIN_LAKE_SHORE: coast('temp'), TERRAIN_LAKE: sea('temp'),
+  };
+}
+
+function terrainDisplayColors(real, water) {
   const fallback = {
     TERRAIN_GRASSLAND: [81, 91, 33], TERRAIN_LUSH: [37, 74, 11], TERRAIN_PLAINS: [103, 88, 45],
     TERRAIN_SCRUB: [100, 91, 62], TERRAIN_MARSH: [65, 72, 36], TERRAIN_MUDDY: [90, 79, 51],
@@ -845,11 +879,13 @@ function terrainDisplayColors(real) {
     // built-up city ground — a concrete/pavement grey the city sprite stands on (docs/urban-plots.md)
     TERRAIN_URBAN: [120, 116, 110],
     // water (coastal-shelf plots only — deep ocean has no plots and stays the animated base
-    // gradient). COAST is the bright shallow shelf, SEA the darker shelf edge, so the terrain
-    // key alone gives a coast→sea depth ramp; polar reads greyer, tropical more turquoise.
-    TERRAIN_COAST: [92, 156, 178], TERRAIN_COAST_POLAR: [120, 158, 172], TERRAIN_COAST_TROPICAL: [102, 178, 190],
-    TERRAIN_SEA: [52, 104, 140], TERRAIN_SEA_POLAR: [64, 96, 120], TERRAIN_SEA_TROPICAL: [46, 120, 150],
-    TERRAIN_LAKE: [54, 118, 128], TERRAIN_LAKE_SHORE: [86, 150, 150],
+    // gradient). COAST is the shallow shelf, SEA the darker shelf edge, so the terrain key
+    // alone gives a coast→sea depth ramp. These are the LAST-RESORT values, used only when the
+    // coast/sea art fails to decode: waterColors() overrides all eight from the art below, and
+    // these hand-picked blues are the invented ones the shallow-fill fix measured as wrong.
+    TERRAIN_COAST: [43, 71, 101], TERRAIN_COAST_POLAR: [48, 70, 92], TERRAIN_COAST_TROPICAL: [40, 78, 106],
+    TERRAIN_SEA: [30, 66, 96], TERRAIN_SEA_POLAR: [36, 62, 82], TERRAIN_SEA_TROPICAL: [38, 82, 108],
+    TERRAIN_LAKE: [30, 66, 96], TERRAIN_LAKE_SHORE: [43, 71, 101],
   };
   // the synthetic terrains repurpose an existing ground texture (rocky/lush), so their
   // MEASURED average (via terrainRealColors) is the wrong hue — a cavern must read dark and
@@ -868,6 +904,12 @@ function terrainDisplayColors(real) {
   for (const k in fallback) out[k] = hex(fallback[k]);        // colourful default (already lifted)
   if (real) for (const [k, v] of real) out[k] = hex(lift(v)); // real textures override
   for (const k of AUTHORED) out[k] = hex(fallback[k]);        // …but authored terrains keep their hue
+  // …and the eight water terrains take their colour from the coast/sea art (waterColors), which is
+  // measured, so it outranks both. `real` would otherwise hand them their BLEND texture's mean —
+  // wrong twice over: a blend map is a sandy transition sheet with no usable water hue (the same trap
+  // bakeSeaBands documents for shoreblend), and the ×2.35 LIFT would then brighten it past the coast
+  // tile it has to sit under.
+  if (water) for (const k in water) out[k] = hex(water[k]);
   return out;
 }
 

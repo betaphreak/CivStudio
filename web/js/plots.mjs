@@ -3,7 +3,8 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { shelfColor } from "./water-terrain.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -78,18 +79,20 @@ const isWater = p => p.type === "SEA" || p.type === "LAKE";
 // So the fill is back, but nothing about it is chosen: COAST_TILES[band].water is the mean of the
 // painted coast atlas's own cold pixels (43,71,101 temperate). The tile and the water it sits on come
 // from the same Civ4 art, which is why they agree; the old #5c9cb2 came from nowhere.
-const WATER_DEPTH = 10;
+//
+// The ramp's endpoints now come from the PLOT'S OWN TERRAIN KEY (js/water-terrain.mjs) rather than
+// from the province's latitude, so a tropical shelf ramps to tropical open water instead of to the
+// temperate colour every province used to share, and a lake is its own pair. The art-derived values
+// below stay as the FALLBACK for a page served an older bundle, whose colour table has no water keys.
 const bandOf = lat => { const a = Math.abs(lat); return a <= 23 ? "trop" : a >= 60 ? "polar" : "temp"; };
-function shallowOf(p) {
+const tcol = k => { const h = TCOL[k]; return h ? [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)] : null; };
+function fallbackPair(p) {
   const box = provSrcBox(p);
   const band = bandOf(box ? latAtSourceY((box.y0 + box.y1) / 2) : 45);
-  return (COAST_TILES && COAST_TILES[band] && COAST_TILES[band].water) || null;
+  const shallow = (COAST_TILES && COAST_TILES[band] && COAST_TILES[band].water) || null;
+  return shallow ? { shallow, deep: (SEA_BANDS && SEA_BANDS.temp) || [38, 62, 91] } : null;
 }
-function shelfRgb(q, shallow) {
-  const deep = (SEA_BANDS && SEA_BANDS.temp) || [38, 62, 91];
-  const t = Math.min(1, Math.max(0, (q.landDist - 1) / WATER_DEPTH));   // 0 at the coast → 1 outward
-  return [0, 1, 2].map(i => Math.round(shallow[i] + (deep[i] - shallow[i]) * t));
-}
+const shelfRgb = (q, fb) => shelfColor(q.terrain, q.landDist, tcol, fb);
 
 // (kept for the record) Water plots used to be painted from
 // `terrainColors.TERRAIN_COAST` / `TERRAIN_SEA` — #5c9cb2 and friends, display colours invented for a
@@ -108,11 +111,11 @@ function buildPlotCanvas(p, plots) {
   // a sea/lake province's shelf plots render as flat water terrain (coast→sea depth ramp from the
   // terrain key); the land-only relief/feature/river tints below are skipped for them
   const water = p.type === "SEA" || p.type === "LAKE";
+  const fb = water ? fallbackPair(p) : null;
   const { canvas, box } = buildPixelCanvas(plots, (q, d, o) => {
     if (water) {
-      const sh = q.landDist && shallowOf(p);
-      if (!sh) return;                     // no art → transparent, the sea gradient shows
-      const g = shelfRgb(q, sh);
+      const g = q.landDist && shelfRgb(q, fb);
+      if (!g) return;                      // no colour for this key → transparent, the sea gradient shows
       d[o] = g[0]; d[o + 1] = g[1]; d[o + 2] = g[2]; d[o + 3] = 255;
       return;
     }
@@ -275,23 +278,54 @@ function buildPlotTexCanvas(p) {
   const water = p.type === "SEA" || p.type === "LAKE";
   // 1) base terrain as continuous repeating patterns (no per-plot tile seam)
   //
-  // 1) base terrain. Water is rasterised at 1px/plot and blitted upscaled with smoothing so the
-  // shallow→deep ramp is continuous rather than per-plot squares; land keeps its per-plot tiling,
-  // which has real texture that smoothing would blur.
+  // 1) base terrain. Land tiles its ground texture per plot, and SO DOES WATER NOW: CoastDetail /
+  // SeaDetail / ShoreDetail, recoloured in the bake to each water terrain's display colour, tiled as a
+  // repeating pattern anchored to the canvas — continuous across plots exactly as land ground is.
+  // Until the seabed bake there was nothing to tile: the terrain atlas was baked from land terrains
+  // only, so the eight water keys had no column and the shelf was flat colour by construction.
+  //
+  // THE FLAT DEPTH RAMP IS NOT DRAWN OVER THE TEXTURE. It was, at 62% — and 62% of a flat fill over
+  // real grain is mostly flat fill: it washed the art back out, which is the same mistake in a
+  // different key as the invented blue that swamped the coast tiles. The texture is the article; it
+  // is already in the right hue, because the colour it was recoloured to is the ramp's own endpoint
+  // for that terrain.
+  //
+  // What that costs is the SMOOTH shallow→deep gradient. The ramp is rasterised at 1px/plot and blitted
+  // upscaled, and that bilinear interpolation was the only thing spreading the coast→sea transition
+  // across the shelf (water has no edge-blend pass — see stage 2). Textured, the shelf steps once,
+  // where the terrain key itself flips COAST→SEA at landDist 2. That is the real data boundary rather
+  // than a smoothing artefact, but it is a step, and if it reads as a ring along the coast the fix is
+  // to bring the ramp back as a light multiply rather than to re-cover the art.
+  //
+  // The ramp still paints where texture cannot: an older bundle with no water columns, or a plot whose
+  // key has no tile. Those plots keep exactly the flat shelf that shipped before.
   if (water) {
-    const sh = shallowOf(p);
-    if (sh) {
+    const fb = fallbackPair(p);
+    const flat = [];                          // plots the seabed texture did not cover
+    const wpat = {};
+    for (const q of p._plots) {
+      if (!q.landDist) continue;
+      let pp = wpat[q.terrain];
+      if (pp === undefined) { const tc = ttTiles && ttTiles[q.terrain]; pp = wpat[q.terrain] = tc ? o.createPattern(tc, "repeat") : null; }
+      if (pp) { o.fillStyle = pp; o.fillRect((q.x - x0) * tpp, (q.y - y0) * tpp, tpp, tpp); }
+      else flat.push(q);
+    }
+    if (flat.length) {
       const wc = document.createElement("canvas"); wc.width = w; wc.height = h;
       const wx = wc.getContext("2d"), im = wx.createImageData(w, h);
-      for (const q of p._plots) {
-        if (!q.landDist) continue;
-        const g = shelfRgb(q, sh);
+      let any = false;
+      for (const q of flat) {
+        const g = shelfRgb(q, fb);
+        if (!g) continue;
         const k = ((q.y - y0) * w + (q.x - x0)) * 4;
         im.data[k] = g[0]; im.data[k + 1] = g[1]; im.data[k + 2] = g[2]; im.data[k + 3] = 255;
+        any = true;
       }
-      wx.putImageData(im, 0, 0);
-      o.imageSmoothingEnabled = true;
-      o.drawImage(wc, 0, 0, w, h, 0, 0, w * tpp, h * tpp);
+      if (any) {
+        wx.putImageData(im, 0, 0);
+        o.imageSmoothingEnabled = true;
+        o.drawImage(wc, 0, 0, w, h, 0, 0, w * tpp, h * tpp);
+      }
     }
   }
   const pat = {};
