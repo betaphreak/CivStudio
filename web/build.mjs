@@ -359,6 +359,7 @@ const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} clima
 const beach = bakeBeachRamps();              // {trop, temp, polar} real Civ4 sand ramps, or null (hand-picked sand)
 const foam = bakeFoamStrip();                // {src, w, h} real Civ4 wave-crest strip, or null (procedural feather)
 const coastMask = bakeCoastMasks();          // {src, cell, n} Civ4 16-way shoreline stencil, or null (square plots)
+const coastTiles = bakeCoastTiles();         // Civ4's painted shore transition tiles + the authored blend table, or null
 const plotProvinceCount = computeWaterBboxes(provinces);
 
 // encode every queued art asset to WebP (one async pass now the bakes have run); imgSizes feeds the
@@ -479,7 +480,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach, foam, coastMask,
+  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach, foam, coastMask, coastTiles,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -503,6 +504,7 @@ console.log(`  sea tile: ${sea ? sea.src : 'skipped (no seadetail.dds / LFS)'} �
 console.log(`  beach ramps: ${beach ? `real Civ4 sand, temp ${beach.temp[0].join(',')} → ${beach.temp[beach.temp.length - 1].join(',')}` : 'skipped (no coastblend.dds) — renderer keeps its hand-picked sand'}`);
 console.log(`  foam strip: ${foam ? `${foam.src} (${foam.w}×${foam.h})` : 'skipped (no wave_crest.dds) — renderer keeps its procedural feather'}`);
 console.log(`  coast masks: ${coastMask ? `${coastMask.src} (${coastMask.n}×${coastMask.cell}²)` : 'skipped (no coastblendmasks) — renderer keeps square coastal plots'}`);
+console.log(`  coast tiles: ${coastTiles ? `${Object.keys(coastTiles.blend).length} configs, 3 bands` : 'skipped (no coast*blend.dds / XML) — renderer keeps the flat sand tint'}`);
 console.log(`  ice tile: ${ice ? ice.src : 'skipped (no icepack_1024.dds / LFS)'}`);
 console.log(`  improvement overlays: ${improvementOverlays ? Object.keys(improvementOverlays).length + ' Civ6 SV (placement deferred)' : 'skipped (no Civ6 depot)'}`);
 
@@ -1098,6 +1100,64 @@ function bakeCoastMasks() {
   }
   console.log(`  coast masks: C2C coastblendmasks ${N}×${C}²`);
   return { src: queueWebpRGBA('water/coastmask', N * C, C, strip, { quality: 100 }), cell: C, n: N };
+}
+
+// THE COAST TILES — Civ4's painted shore transition tiles, and the authored table that picks between
+// them (docs/civ4-texture-inventory.md §4 P3, the "wiggle" half).
+//
+// `textures/coast*blend.dds` is a 4x8 atlas of 32 hand-painted 128px tiles: sand, shallows and deep
+// water with the shoreline carried in the alpha. `CIV4ArtDefines_Terrain.xml` says which cell to draw
+// for each 4-bit diagonal configuration, and at what rotation — `<TextureBlend3>3,0  7,180  11,0 …`
+// is config 3 offering cells 3/7/11/… as VARIANTS, each with its own rotation. Variants are what stop
+// a long coastline repeating one painted curve, so they are kept and the renderer picks per plot.
+//
+// This is drawn on the WATER plot, never the land one — see coast.mjs extendCoastIntoWater for why
+// that direction is the whole point.
+//
+// Returns {cell, cols, blend:{cfg:[[cell,rot],…]}, temp/trop/polar:{src}} or null.
+const COAST_TILE_ATLASES = {
+  temp:  ['Art/Terrain/textures/coastblend.dds',      'ART_DEF_TERRAIN_COAST'],
+  trop:  ['Art/Terrain/textures/coasttropblend.dds',  'ART_DEF_TERRAIN_COAST_TROPICAL'],
+  polar: ['Art/Terrain/textures/coastpolarblend.dds', 'ART_DEF_TERRAIN_COAST_POLAR'],
+};
+function bakeCoastTiles() {
+  let xml;
+  try { xml = civ4Get('CIV4ArtDefines_Terrain.xml').toString('utf8'); } catch { return null; }
+  const out = { cell: 128, cols: 4, blend: null };
+  for (const [band, [art, artDef]] of Object.entries(COAST_TILE_ATLASES)) {
+    const file = resolveArt(art);
+    const img = file && decodeCached(file);
+    if (!img) return null;
+    // ONLY THE SAND SURVIVES. A cell carries the whole Civ4 coast tile — sand, shallows AND deep
+    // water — and Civ4 uses it as the base terrain with its alpha letting the neighbour through. We
+    // already draw the water underneath at the right colour, so stamping the whole cell paints a
+    // second, darker water over it and every coastal plot reads as a dark SQUARE (measured: it does).
+    // So the alpha is weighted by warmth, r-b: the painted sand keeps it, the painted water loses it,
+    // and what lands on the map is the shore band alone over our own water.
+    const rgba = Buffer.alloc(img.width * img.height * 4);
+    for (let i = 0; i < img.width * img.height; i++) {
+      const r = img.rgba[i * 4], g = img.rgba[i * 4 + 1], b = img.rgba[i * 4 + 2];
+      const warm = Math.max(0, Math.min(1, (r - b) / 40));   // 0 by the time it is water, 1 on sand
+      rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b;
+      rgba[i * 4 + 3] = Math.round(img.rgba[i * 4 + 3] * warm);
+    }
+    out[band] = { src: queueWebpRGBA(`water/coast-${band}`, img.width, img.height, rgba, { quality: 90 }) };
+    if (out.blend) continue;
+    // parse the table off the TEMPERATE define; every coast variant carries the same 15-entry table
+    const block = new RegExp(`<TerrainArtInfo>\\s*<Type>${artDef}</Type>[\\s\\S]*?</TerrainArtInfo>`).exec(xml);
+    if (!block) return null;
+    const blend = {};
+    for (const m of block[0].matchAll(/<TextureBlend(\d+)>([\s\S]*?)<\/TextureBlend\d+>/g)) {
+      const variants = m[2].trim().split(/\s+/).map(tok => tok.split(',').map(Number))
+        .filter(v => v.length === 2 && Number.isFinite(v[0]) && Number.isFinite(v[1]));
+      if (variants.length) blend[+m[1]] = variants;
+    }
+    if (Object.keys(blend).length < 15) return null;   // a partial table would mis-tile every coast
+    out.blend = blend;
+  }
+  const variants = Object.values(out.blend).reduce((n, v) => n + v.length, 0);
+  console.log(`  coast tiles: C2C coast*blend 4x8@128 x3 bands · ${Object.keys(out.blend).length} configs, ${variants} variants`);
+  return out;
 }
 
 // Bake a seamless COLOUR ice tile for the polar sea-ice floes (drawSeaIce). Civ6-first

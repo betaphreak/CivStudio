@@ -262,7 +262,7 @@ public final class WorldBundle {
 		// arrives null (nothing renders it yet).
 		for (String k : List.of("map", "realms", "terrainColors", "terrainLayer", "terrainTiles", "river",
 				"sea", "shore", "ice", "bonusIcons", "trees", "routes", "featureOverlays", "improvementOverlays",
-				"districtTiles", "fow", "seaBands", "beach", "foam", "coastMask", "loading"))
+				"districtTiles", "fow", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading"))
 			root.set(k, manifest.get(k));
 		root.set("geo", geo);
 		root.set("adjacencies", adjacencies);

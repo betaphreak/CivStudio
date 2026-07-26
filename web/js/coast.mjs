@@ -10,7 +10,7 @@
 // coast is a smooth wavy line across cells, not a grid staircase; (2) the real Civ4 shoredetail ripple
 // clipped to that shallow shape. (Earlier per-cell rectangular bites read as blue blotches on the land,
 // and the wave-crest foam lapped onto land — both dropped for this continuous shallows.)
-import { SHORE, ICE_ART, SEA_BANDS, BEACH, FOAM, COAST_MASK } from "./core.mjs";
+import { SHORE, ICE_ART, SEA_BANDS, BEACH, FOAM, COAST_MASK, COAST_TILES } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
 // the baked greyscale shore-wave tile for the coast shallows (docs/coastlines.md Phase D); null →
@@ -28,6 +28,12 @@ const foamImg = loadArt(FOAM, () => { foamReady = true; });
 // Civ4's 16-way shoreline stencil (§4 P3); null → coastal plots stay square
 let cmReady = false;
 const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
+// Civ4's painted coast tiles, one atlas per climate band (§4 P3); null → no coast tile is drawn
+const ctImg = {}, ctReady = {};
+if (COAST_TILES) for (const b of ["trop", "temp", "polar"])
+  ctImg[b] = loadArt(COAST_TILES[b], () => { ctReady[b] = true; });
+/** Which climate atlas a latitude takes — the same bands the sea gradient and the beach ramp use. */
+const bandOf = lat => { const a = Math.abs(lat); return a <= 23 ? "trop" : a >= 60 ? "polar" : "temp"; };
 
 // fadeShelfEdge lived here and is GONE. It feathered the coastal shelf's outer edge, because the
 // shelf stopped at an arbitrary 3px band whose boundary against the open-sea gradient stepped with
@@ -36,41 +42,48 @@ const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
 // the water from shallow to deep on its own.
 
 /**
- * Extend the COAST into each shallow water tile, along Civ4's authored 16-way blend curve.
+ * Draw Civ4's painted COAST TILE on each shallow water plot.
  *
- * DIRECTION MATTERS, and the first cut of this had it backwards. It stamped the mask on the LAND
- * plot, which paints water INTO the land — so a tile like Gadhinglaj (4367), whose only water contact
- * is one diagonal corner, grew a bite of sea inside it while the water tile beside it stayed square.
- * Civ4 does the opposite: the coast tile is drawn on the WATER plot and blends toward the land, so
- * the shore reaches out into the sea. Land is never painted over.
+ * This is the authored article rather than an approximation of it: `coast*blend.dds` is a 4x8 atlas of
+ * 32 hand-painted 128px tiles — sand, shallows and deep water, shoreline in the alpha — and
+ * `CIV4ArtDefines_Terrain.xml` says which cell and rotation each 4-bit diagonal configuration takes.
+ * Both ship in the bundle (build.mjs bakeCoastTiles).
  *
- * Keyed on the WATER tile's OWN adjacency, which is what makes it read correctly in an inlet. The
- * tile NE of Gadhinglaj has `coast = 24` — only N and NW are water, six of its eight neighbours are
- * land — so its mask index is 1, white (land) almost everywhere, and the sand fills nearly the whole
- * tile. A tile facing open sea gets a thin rim instead. Same nibble convention as everywhere else:
- * ProvinceRaster.seaMask's diagonals are NW/NE/SE/SW = the mask's TL/TR/BR/BL, computed globally, so
- * there is no province seam even though the water and the land it hugs are usually different provinces.
+ * ON THE WATER PLOT, NEVER THE LAND ONE, and that is the whole point. An earlier cut stamped the mask
+ * on the land plot, which paints sea INWARD: Gadhinglaj (province 4367) has `coast = 32`, one NE
+ * diagonal bit and no edge bits at all, so the only thing that happened to it was a bite of water
+ * appearing inside a tile whose four orthogonal neighbours are all land. Civ4 draws the coast tile on
+ * the water and lets it blend toward the shore, so the coast reaches OUT.
  *
- * The baked strip's alpha is WATER coverage, and here we want the complement — sand where the land
- * is — so the tint is punched out by the strip rather than clipped to it.
+ * Keyed on the WATER tile's own adjacency, which is what makes an inlet read right: the tile NE of
+ * Gadhinglaj has `coast = 24` — only N and NW are water, six of its eight neighbours are land — so it
+ * takes a config whose painted tile is nearly all shore, while a tile facing open sea takes a thin rim.
+ *
+ * VARIANTS are per plot, from the plot hash. The table offers several cells per configuration
+ * precisely so a long coastline does not repeat one painted curve; picking the first would throw that
+ * away and stamp a visible rhythm along every shore.
  */
 export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
-  if (!cmReady) return;
-  const C = COAST_MASK.cell, ramp = beachRamp(lat);
-  const tc = document.createElement("canvas"); tc.width = COAST_MASK.n * C; tc.height = C;
-  const t = tc.getContext("2d");
-  t.fillStyle = `rgb(${rgbOf(ramp, SAND_WET, WET_SAND)})`;
-  t.fillRect(0, 0, tc.width, tc.height);
-  t.globalCompositeOperation = "destination-out";   // erase by WATER coverage → sand on the LAND side
-  t.drawImage(cmImg, 0, 0);
+  const A = COAST_TILES && ctImg[bandOf(lat)];
+  if (!A || !ctReady[bandOf(lat)]) return;
+  const C = COAST_TILES.cell, cols = COAST_TILES.cols, blend = COAST_TILES.blend;
   o.save();
-  o.globalAlpha = 0.8;
   o.imageSmoothingEnabled = true;
   for (const q of plots) {
-    if (q.landDist !== 1) continue;                 // only the ring that actually touches land
-    const i = (q.coast >> 4) & 15;
-    if (i === 15) continue;                         // every diagonal is water — nothing to reach in
-    o.drawImage(tc, i * C, 0, C, C, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, tpp);
+    if (q.landDist !== 1) continue;                       // only the ring that touches land
+    const cfg = (q.coast >> 4) & 15;
+    const variants = blend[cfg];
+    if (!variants || !variants.length) continue;          // config 0 has no entry — nothing to blend
+    const [cell, rot] = variants[Math.floor(chash(q.x * 31 + cfg, q.y * 17) * variants.length) % variants.length];
+    const sx = ((cell - 1) % cols) * C, sy = Math.floor((cell - 1) / cols) * C;
+    const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
+    if (rot) {                                            // authored rotations are 0/90/180/270
+      o.save();
+      o.translate(cx + tpp / 2, cy + tpp / 2);
+      o.rotate(rot * Math.PI / 180);
+      o.drawImage(A, sx, sy, C, C, -tpp / 2, -tpp / 2, tpp, tpp);
+      o.restore();
+    } else o.drawImage(A, sx, sy, C, C, cx, cy, tpp, tpp);
   }
   o.restore();
 }
