@@ -12,12 +12,10 @@ const LY = {
   TERRAIN_CAVERN: 13, TERRAIN_URBAN: 13,
   TERRAIN_COAST: 50, TERRAIN_SEA: 56,
 };
-const WATER = new Set(["TERRAIN_COAST", "TERRAIN_SEA"]);
-const isWater = t => WATER.has(t);
 const plot = (x, y, terrain) => ({ x, y, terrain });
 // NOTE the order: indexTerrain keeps the FIRST write for a pixel (test 2), so a plot that overrides
 // one cell of a block has to be listed BEFORE it.
-const built = (...plots) => { const m = new Map(); indexTerrain(m, plots, isWater); return m; };
+const built = (...plots) => { const m = new Map(); indexTerrain(m, plots); return m; };
 // a filled w×h block of one terrain with its top-left at (x0,y0)
 const block = (x0, y0, w, h, t) => {
   const out = [];
@@ -25,21 +23,19 @@ const block = (x0, y0, w, h, t) => {
   return out;
 };
 
-test("water is indexed as null, so 'sea' and 'not loaded' stay distinguishable", () => {
+test("every terrain is indexed, so an absent key means 'not loaded' and nothing else", () => {
   const m = built(plot(1, 1, "TERRAIN_GRASSLAND"), plot(2, 1, "TERRAIN_COAST"));
   assert.equal(m.get(pkey(1, 1)), "TERRAIN_GRASSLAND");
-  assert.equal(m.get(pkey(2, 1)), null);      // known, and known not to be land
-  assert.equal(m.has(pkey(2, 1)), true);
-  assert.equal(m.get(pkey(9, 9)), undefined); // not loaded
+  assert.equal(m.get(pkey(2, 1)), "TERRAIN_COAST");
   assert.equal(m.has(pkey(9, 9)), false);
 });
 
 test("re-indexing a province reports nothing new, so it cannot invalidate cached canvases", () => {
   const m = new Map();
   const plots = [plot(1, 1, "TERRAIN_GRASSLAND"), plot(2, 1, "TERRAIN_SEA")];
-  assert.equal(indexTerrain(m, plots, isWater), 2);
-  assert.equal(indexTerrain(m, plots, isWater), 0);
-  assert.equal(indexTerrain(m, [...plots, plot(3, 1, "TERRAIN_LUSH")], isWater), 1);
+  assert.equal(indexTerrain(m, plots), 2);
+  assert.equal(indexTerrain(m, plots), 0);
+  assert.equal(indexTerrain(m, [...plots, plot(3, 1, "TERRAIN_LUSH")]), 1);
 });
 
 test("a corner belongs to the highest LayerOrder among the four plots touching it", () => {
@@ -49,11 +45,23 @@ test("a corner belongs to the highest LayerOrder among the four plots touching i
   assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_DUNES");   // 31 beats 8, 7, 3
 });
 
-test("water owns no corner — the land↔water edge is the coast tile's job, not this one", () => {
-  const m = built(plot(4, 4, "TERRAIN_SEA"), plot(5, 4, "TERRAIN_COAST"),
-                  plot(4, 5, "TERRAIN_SEA"), plot(5, 5, "TERRAIN_TUNDRA"));
-  assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_TUNDRA");  // despite SEA's LayerOrder 56
-  assert.equal(cornerOwner(built(plot(5, 5, "TERRAIN_SEA")), 5, 5, LY), null);
+test("water WINS the corners it touches — its LayerOrder is above every land terrain's", () => {
+  const m = built(plot(4, 4, "TERRAIN_DUNES"), plot(5, 4, "TERRAIN_COAST"),
+                  plot(4, 5, "TERRAIN_DUNES"), plot(5, 5, "TERRAIN_TUNDRA"));
+  assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_COAST");   // 50 beats DUNES' 31
+});
+
+test("a water-won corner SUPPRESSES the land blend rather than drawing one", () => {
+  // DUNES would otherwise take (5,5)'s NW corner off TUNDRA; a single coast plot at that vertex
+  // takes it instead, and the caller has no cell for coast — so nothing is painted there and the
+  // shoreline is left to coast.mjs, which draws that vertex from the water plot.
+  const dry = built(plot(4, 4, "TERRAIN_DUNES"), ...block(4, 4, 3, 3, "TERRAIN_TUNDRA"));
+  assert.deepEqual(dry.get(pkey(4, 4)), "TERRAIN_DUNES");
+  assert.deepEqual(blendConfigs(dry, 5, 5, LY).configs, [["TERRAIN_DUNES", 1]]);
+  const wet = built(plot(4, 4, "TERRAIN_DUNES"), plot(5, 4, "TERRAIN_COAST"),
+                    ...block(4, 4, 3, 3, "TERRAIN_TUNDRA"));
+  // COAST now owns NW (it touches it) and NE (ditto); DUNES is outranked and drops out entirely
+  assert.deepEqual(blendConfigs(wet, 5, 5, LY).configs, [["TERRAIN_COAST", 3]]);
 });
 
 test("nothing loaded yet owns nothing — no guess gets baked in", () => {
@@ -71,12 +79,13 @@ test("an equal-LayerOrder tie breaks stably, whatever the visit order", () => {
 test("cornerResolved is false until all four touching plots are known", () => {
   const m = built(plot(4, 4, "TERRAIN_TUNDRA"), plot(5, 4, "TERRAIN_TUNDRA"), plot(4, 5, "TERRAIN_TUNDRA"));
   assert.equal(cornerResolved(m, 5, 5), false);
-  indexTerrain(m, [plot(5, 5, "TERRAIN_TUNDRA")], isWater);
+  indexTerrain(m, [plot(5, 5, "TERRAIN_TUNDRA")]);
   assert.equal(cornerResolved(m, 5, 5), true);
-  // a water plot RESOLVES a corner — it is an answer, just not an owner
+  // an all-water corner is resolved AND owned — open sea, with no land blend to draw there
   const w = built(plot(4, 4, "TERRAIN_SEA"), plot(5, 4, "TERRAIN_SEA"),
                   plot(4, 5, "TERRAIN_SEA"), plot(5, 5, "TERRAIN_SEA"));
   assert.equal(cornerResolved(w, 5, 5), true);
+  assert.equal(cornerOwner(w, 5, 5, LY), "TERRAIN_SEA");
 });
 
 test("an interior plot has no blend work — which is most of the map", () => {
@@ -124,8 +133,8 @@ test("a plot ringed by a higher layer reports config 15 — the flat interior, n
 
 test("the answer does not depend on which province arrived first", () => {
   const west = block(4, 4, 1, 3, "TERRAIN_DUNES"), east = block(5, 4, 2, 3, "TERRAIN_GRASSLAND");
-  const a = new Map(); indexTerrain(a, west, isWater); indexTerrain(a, east, isWater);
-  const b = new Map(); indexTerrain(b, east, isWater); indexTerrain(b, west, isWater);
+  const a = new Map(); indexTerrain(a, west); indexTerrain(a, east);
+  const b = new Map(); indexTerrain(b, east); indexTerrain(b, west);
   assert.deepEqual(blendConfigs(a, 5, 5, LY), blendConfigs(b, 5, 5, LY));
   assert.deepEqual(blendConfigs(a, 5, 5, LY).configs, [["TERRAIN_DUNES", 9]]);   // NW + SW
 });
@@ -135,7 +144,7 @@ test("gaps name the unresolved corners, and close as the neighbours land", () =>
   const lone = blendConfigs(m, 5, 5, LY);
   assert.deepEqual(lone.gaps, [pkey(5, 5), pkey(6, 5), pkey(6, 6), pkey(5, 6)]);
   assert.deepEqual(lone.configs, []);                       // …and it guesses nothing meanwhile
-  indexTerrain(m, block(4, 4, 3, 3, "TERRAIN_DUNES"), isWater);   // (5,5) already indexed, so it holds
+  indexTerrain(m, block(4, 4, 3, 3, "TERRAIN_DUNES"));   // (5,5) already indexed, so it holds
   const filled = blendConfigs(m, 5, 5, LY);
   assert.deepEqual(filled.gaps, []);
   assert.deepEqual(filled.configs, [["TERRAIN_DUNES", 15]]);

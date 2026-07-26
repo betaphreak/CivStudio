@@ -40,35 +40,38 @@ const CORNER_OFFSETS = [[0, 0], [1, 0], [1, 1], [0, 1]];   // NW, NE, SE, SW —
 const TOUCHING = [[-1, -1], [0, -1], [-1, 0], [0, 0]];      // the four plots meeting at a corner
 
 /**
- * Index a province's plots by source pixel, storing the terrain for land and `null` for water.
+ * Index a province's plots by source pixel. EVERY terrain is stored, water included.
  *
- * WATER IS STORED, AS NULL, AND THAT IS THE WHOLE POINT. Water plots take no part in the land blend —
- * the land↔water transition is Civ4's painted coast tile, stamped on the water plot by coast.mjs, and
- * the water terrains carry the other blend table (rotated and multi-variant) besides. But if water
- * were simply skipped, an absent pixel would mean either "this is sea" or "this province has not
- * loaded yet", and those must be told apart: the first is a settled answer, the second is a stale
- * canvas waiting on a neighbour. Storing a null keeps `index.has(k)` meaning exactly "known".
+ * WATER COMPETES FOR CORNERS LIKE ANY OTHER TERRAIN, and it wins them: the eight water terrains carry
+ * LayerOrders 50–71 against land's 2–31, so a corner touching any water plot belongs to the water. It
+ * has no cell in the land blend sheet, so the effect is SUPPRESSION — no land cell is painted into a
+ * vertex the sea owns. That is the correct outcome twice over: it is what LayerOrder means, and the
+ * land↔water transition is already drawn there by Civ4's painted coast tile, which coast.mjs stamps
+ * on the water plot. Excluding water would paint a land neighbour's cell into that corner and then
+ * blend the coast over the same vertex from the other side.
  *
- * `isWater` is passed in rather than hardcoded so this module stays free of the water-terrain table,
- * for the same reason shore-index.mjs takes it.
+ * Because every plot is stored, `index.has(k)` means exactly "known" and an absent key means "not
+ * loaded yet" and nothing else — which is what `cornerResolved` needs to be trustworthy. This module
+ * therefore never has to be told which terrains are water; it only needs their LayerOrder, which is
+ * in the same `terrain-art.json` table as everything else's.
  *
  * Returns how many pixels were NEWLY indexed, so the caller can treat a re-fetch of an
  * already-indexed province as no new information rather than as a reason to invalidate canvases.
  */
-export function indexTerrain(index, plots, isWater) {
+export function indexTerrain(index, plots) {
   let n = 0;
   for (const q of plots) {
     const k = pkey(q.x, q.y);
     if (index.has(k)) continue;
-    index.set(k, isWater(q.terrain) ? null : q.terrain);
+    index.set(k, q.terrain);
     n++;
   }
   return n;
 }
 
 /**
- * The terrain owning corner (cx, cy): the highest-LayerOrder land terrain among the four plots
- * touching it, or null when none of them is known land (all water, or nothing loaded yet).
+ * The terrain owning corner (cx, cy): the highest-LayerOrder terrain among the four plots touching
+ * it, or null when none of them has loaded yet.
  *
  * TIES BREAK LEXICOGRAPHICALLY on the terrain key. The 16 land terrains all have DISTINCT LayerOrders
  * (measured off terrain-art.json: PERMAFROST 2 … DUNES 31), so a tie needs one of the nine synthetic
@@ -80,7 +83,7 @@ export function cornerOwner(index, cx, cy, LY) {
   let best = null, bestLy = -Infinity;
   for (const [dx, dy] of TOUCHING) {
     const t = index.get(pkey(cx + dx, cy + dy));
-    if (!t) continue;                       // undefined = not loaded, null = water; neither owns a corner
+    if (t === undefined) continue;          // not loaded — the one thing that cannot own a corner
     const ly = LY[t] || 0;
     if (ly > bestLy || (ly === bestLy && t < best)) { bestLy = ly; best = t; }
   }
@@ -106,6 +109,14 @@ export function cornerResolved(index, cx, cy) {
  *             record them with the baked canvas and re-bake only when one RESOLVES. Do not treat a
  *             non-empty `gaps` as "stale" on its own — a plot at the world edge has corners that will
  *             never resolve, and re-baking on that would thrash forever (docs/land-blend-plan.md §6).
+ *
+ * NOT EVERY OWNER IS DRAWABLE, AND THAT IS HOW SUPPRESSION WORKS. A corner won by water, or by one of
+ * the nine synthetic terrains, is reported here like any other, but neither has a column in the baked
+ * blend sheet (which carries the 16 land terrains only). The caller skips what it cannot draw, and
+ * the corner keeps the plot's own ground — which is the right picture: for water because coast.mjs
+ * already draws that vertex from the water side, for the synthetic terrains because they have no
+ * `CIV4ArtDefines_Terrain.xml` entry to draw from. Reporting them and letting the caller skip is what
+ * stops a LOWER land neighbour from claiming a corner it did not win.
  *
  * CONFIG 15 IS POSSIBLE AND IS NOT AN ERROR. A lone plot ringed by a higher-layer terrain has all
  * four corners taken, and the authored table's config 15 is the FLAT INTERIOR cell — that terrain's

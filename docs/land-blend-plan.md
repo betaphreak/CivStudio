@@ -196,32 +196,61 @@ Phases 1–2 are safe and self-contained; 3 is where the risk is.
 
 ### 5.1 What phase 2 settled, measured on real plots
 
-Validated over **5,534 real land plots** — the 2-ring province patch around 550, fetched from
-`dev.civstudio.com/api/plots`, since the local plot cache is empty. Phase 3 should re-run this rather
-than trust the synthetic fixtures.
+Validated against real plot grids fetched from `dev.civstudio.com/api/plots`, since the local plot
+cache is empty. **Two patches, and the second is the one that matters** — the first attempt used the
+2-ring patch around province 550 (the reference case in §1), which turned out to be entirely inland:
+all 5,534 of its plots are land, so it exercised none of the water behaviour. The coastal patch is
+the 2-ring around **1231 Grimmstig**, 26 provinces, **74,514 plots** (19,431 land). Phase 3 should
+re-run both rather than trust the synthetic fixtures.
 
-- **Order-independence holds on real data: 0 mismatches** in 5,534 plots between indexing the patch
-  forwards and backwards. This is the property §3 claims for the `LayerOrder` rule, now measured
-  rather than argued.
-- **The cost is far below what §6 feared.** 34.0% of land plots need any blend work at all, and a
-  blended plot averages **1.11 cells** — 2,095 cells across 5,534 plots, i.e. ~0.38 per plot, not
-  "fourteen cells per neighbour terrain per plot". One extra `drawImage` per three plots is the real
-  shape of the `PLOT_FRAME_BUDGET_MS` question.
-- **Configs 5 and 10 — the two authored DIAGONAL cells — never occur** (0 of 2,095). They require a
-  strict checkerboard: config 5 needs the owner present at the NW *and* SE diagonal and outranked at
-  all four orthogonals and both other diagonals, because every other plot touching the NW corner also
-  touches NE or SW. They are reachable, not dead, but do not tune anything around them.
-- **Config 15 also never occurs** here (a plot completely ringed by a higher layer), though it is
-  constructible and `blendConfigs` returns it, so phase 3 must still handle it — by drawing the
-  owner's ordinary ground tile, since the baked sheet carries 1–14 only.
-- Observed distribution: `1:213 2:182 3:213 4:214 6:193 7:92 8:178 9:240 11:123 12:231 13:94 14:122`.
-  Owning terrains: ROCKY 548, BARREN 470, LUSH 367, GRASSLAND 282, MUDDY 238, PLAINS 190.
+- **Order-independence holds on real data: 0 mismatches** across both patches, indexing forwards and
+  backwards. This is the property §3 claims for the `LayerOrder` rule, now measured rather than
+  argued.
+- **The cost is far below what §6 feared.** 24.4% of land plots have any corner owned by another
+  terrain, and such a plot averages **1.02 owners** — 4,824 entries across 19,431 land plots. Better
+  still, only ~1,800 of those are actually *drawable* (see suppression below), so the real load is
+  well under one extra `drawImage` per ten plots. That is the true shape of the
+  `PLOT_FRAME_BUDGET_MS` question, not "fourteen cells per neighbour terrain per plot".
+- **62.1% of all corner ownership on the coastal patch goes to WATER** (2,994 of 4,824). Nothing is
+  drawn for those — see §5.2 — but that is exactly the point: without water in the index every one of
+  them would have been claimed by a land neighbour and painted with a land cell over a vertex the sea
+  owns, while `coast.mjs` drew the same vertex from the water side.
+- **Config 15 occurs: 134 (2.78%)**, so phase 3 must handle it — by drawing the owner's ordinary
+  ground tile, since the baked sheet carries 1–14 only.
+- **Owners with no blend column occur: 21 (0.44%)**, all GLACIER, one of the nine synthetic terrains.
+  Phase 3 must skip them rather than assume every owner has a cell.
+- **Configs 5 and 10 — the two authored DIAGONAL cells — are real but very rare: 4 each of 4,824.**
+  They need a near-checkerboard, because every plot touching the NW corner other than the NW diagonal
+  also touches NE or SW. (The inland patch had zero, which is why an earlier note here wrongly called
+  them unreachable.) Do not tune anything around them, but do not drop them either.
+- Coastal distribution:
+  `1:348 2:337 3:561 4:313 5:4 6:400 7:402 8:291 9:434 10:4 11:412 12:468 13:346 14:370 15:134`.
+  Owning terrains: COAST_POLAR 2794, TUNDRA 1769, COAST 200, TAIGA 27, GLACIER 21, MARSH 13.
 
-**Two design points this plan did not anticipate:**
+### 5.2 Water is a full participant, and that is what suppression is
 
-- **Water is indexed as `null`, not skipped.** If water were simply absent, an unindexed pixel would
-  mean either "this is sea" or "this province has not loaded", and precise staleness needs those told
-  apart. `index.has(k)` now means exactly "known"; `null` means "known, and not a blend participant".
+Water plots are indexed and **compete for corners like any other terrain — and win**: the eight water
+terrains carry LayerOrders 50–71 against land's 2–31, so any corner touching water belongs to the
+water. This is what §3 says ("the highest-`LayerOrder` terrain among the plots touching it", with no
+land restriction); an earlier build of this module excluded water and was wrong.
+
+Nothing is drawn for a water-owned corner, because water has no column in the land blend sheet — so
+the effect is **suppression**, and that is correct twice over. It is what `LayerOrder` means, and the
+land↔water transition at that vertex is *already* drawn, by Civ4's painted coast tile which
+`coast.mjs` stamps on the water plot.
+
+**So water does not need a tile bake of its own — it already has one.** `bakeCoastTiles` ships the
+three climate atlases (4×8 of 128px cells, 15 configs, 105 variants, rotations and all), and all
+eight water keys resolve to one of those three bands through `water-terrain.shelf` (lakes borrow the
+temperate atlas, there being no painted lake art). Water's blend table is the *other* table of §2 —
+rotated and multi-variant — which is precisely why it is a separate bake and cannot be a column in
+the land sheet. Baking water into this sheet would draw the same vertex twice, from both sides.
+
+**Two further design points this plan did not anticipate:**
+
+- **Every terrain is indexed, so an absent key means "not loaded" and nothing else.** That is what
+  makes `cornerResolved` trustworthy. (The module needed a `null` sentinel for water back when water
+  was excluded; including it removed both the sentinel and the `isWater` parameter.)
 - **`gaps` is a list of corner keys, not a boolean.** A plot at the world edge has corners that can
   never resolve, so "has gaps ⇒ stale" would thrash forever — exactly the trap §6 records. The caller
   stores the keys and re-bakes only when one *resolves*, which is the `_tshoreGaps` contract.
