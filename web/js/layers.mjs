@@ -9,6 +9,7 @@
 // The draw fns live in the modules that own their state (main.mjs closes over the raster/camera and
 // the province-polygon helpers; the overlays own their own); this module only orders and gates them.
 import { isPolitical, activeZ, S } from "./core.mjs";
+import { ground3D } from "./bands.mjs";
 import { drawRaster, drawLakes, drawSeaCells, drawImpassable, drawSurfacePlots,
          drawProvinceBorders, drawUnderworldVeil, drawCavernFloors, drawCavernPlots, drawCavernRims,
          drawCaveEntrances, drawAdjacencies, drawRealmArrows, drawHoverHighlight, drawSelectedHighlight } from "./main.mjs";
@@ -55,7 +56,13 @@ export const LAYERS = [
   { id: "raster",         band: "all",                     draw: drawRaster },
   { id: "lakes",          band: "all",                     draw: drawLakes },
   { id: "seaCells",       band: "all",  gate: notPolitical, draw: drawSeaCells },
-  { id: "plots",          band: "≥REGION→, self-fade", gate: notPolitical, draw: drawSurfacePlots },
+  // PLOT DETAIL IS 3D-ONLY on the surface, so this layer's gate is the 3D ground itself. It is no
+  // longer a 2D drawer that 3D happens to reuse — it is the pass that maintains the per-province
+  // canvases terrain3d drapes, and outside 3D there is nobody to draw for. Gating it here rather
+  // than inside drawPlots is what makes the saving real: no viewport cull, no lazy /api/plots fetch
+  // and no offscreen bake at all while 2D owns the view. (The underworld's plots come through
+  // `cavernPlots` below, which still blits in 2D because z=−1 has no mesh to hand over to.)
+  { id: "plots",          band: "≥LOCALE (3D only), self-fade", gate: ground3D, draw: drawSurfacePlots },
   { id: "cost",           band: "≥REGION→, toggle",        draw: drawCostOverlay },
   { id: "impassable",     band: "all",  gate: notPolitical, draw: drawImpassable },
   { id: "political",      band: "self-fade", gate: isPolitical, draw: drawPolitical },

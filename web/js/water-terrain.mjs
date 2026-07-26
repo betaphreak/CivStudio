@@ -52,17 +52,11 @@ export function waterBand(terrain) {
 }
 
 /**
- * The Civ4 `TextureBlend` index for a water plot: the DIAGONAL CORNER nibble of our 8-bit sea mask,
- * used as-is. Our high nibble is `16=NW, 32=NE, 64=SE, 128=SW` (`docs/coastlines.md` §A), which lands
- * on Civ4's table bits `1/2/4/8` in that order — no permutation, no shift beyond `>> 4`.
+ * The Civ4 `TextureBlend` index for a water plot: which of its four CORNERS are water, where a corner
+ * is water only when EVERY plot touching it is — the diagonal AND the two orthogonals that flank it.
  *
- * WRITTEN DOWN BECAUSE IT WAS "FIXED" TO THE EDGE NIBBLE ONCE, ON A BAD MEASUREMENT. The argument for
- * edges was that the table looks edge-shaped — single bits take one cell at four rotations, pairs take
- * two other cells, 15 takes a flat interior tile — and that a cell's painted water "faces S", which
- * only agrees with our `4=S` edge bit. Both halves were wrong: the water direction was diagonal
- * (dx 16.5, dy 20.1) and got flattened to a compass point by an `abs(dx) > abs(dy)` test.
- *
- * The measurement that settles it is water coverage per QUADRANT, not a direction:
+ * WHICH NIBBLE, AND WHY IT IS NOT JUST A SHIFT. The table is corner-keyed; that half was settled by
+ * measuring water coverage per QUADRANT, and it stands:
  *
  * | config class  | cell | NW  | NE  | SW  | SE  |
  * |---------------|-----:|----:|----:|----:|----:|
@@ -73,14 +67,42 @@ export function waterBand(terrain) {
  * | all four      |   29 | 100 | 100 | 100 | 100 |
  *
  * A single-bit cell is an 8%-water CORNER WEDGE — an edge band would be a third of the tile and would
- * span two quadrants. The opposite pair sits on a DIAGONAL (NE+SW). And with cell 1's water in SE, the
- * table's own rotations line up one-for-one with our bits: cfg 04 rot 0 → SE, cfg 08 rot 90 → SW,
- * cfg 01 rot 180 → NW, cfg 02 rot 270 → NE.
+ * span two quadrants. The opposite pair sits on a DIAGONAL (NE+SW). Cell 1's water is in SE, and the
+ * table's rotations then line up one-for-one with our bits: cfg 04 rot 0 → SE, cfg 08 rot 90 → SW,
+ * cfg 01 rot 180 → NW, cfg 02 rot 270 → NE. Set bit = that corner is WATER, i.e. the cell paints
+ * water in that quadrant. (The edge nibble was tried as the index once, shipped and reverted — see
+ * `ae4f592`. It is still not the index; it is an INPUT to the index, which is the distinction this
+ * function turns on.)
  *
- * Set bit = that diagonal neighbour is WATER. Returns 0..15; 0 has no table entry (nothing is drawn).
+ * WHAT WAS WRONG WITH `>> 4` ALONE. It asked only "is the DIAGONAL plot water", and a corner is not
+ * its diagonal — it is the meeting point of four plots. Civ4 blends terrain on a mesh whose vertices
+ * are plot corners, so a corner belongs to land as soon as ANY plot touching it is land. Measured over
+ * 3,000 real shoreline plots from the v13 plot cache, against corner occupancy derived independently
+ * from the plots themselves:
+ *
+ * - the diagonal-only rule agreed with corner occupancy on 48.87% of them;
+ * - this rule agrees on 100.00% — the byte carries everything needed, so no corner lattice is
+ *   required to index the art (`docs/coast-corner-lattice-plan.md` §1 proposed one for this);
+ * - the 2.30% that took cell 29 (flat, no shoreline at all — land touching only orthogonally, so all
+ *   four diagonals were water) falls to 0.00%.
+ *
+ * The silent 2.3% was never the size of the fault. Roughly half of every shoreline took a real cell
+ * with its shore in the wrong corner: a cove with land on three sides drew as mostly WATER with a
+ * land wedge (cfg 14) where it should be mostly LAND with a water wedge in the SE (cfg 4).
+ *
+ * Returns 0..15. 0 — every corner touching land, i.e. a one-plot lake or a one-plot-wide channel —
+ * has no table entry and draws no tile, leaving the plain water beneath (2.6% of shoreline plots,
+ * up from 0.2%; see the plan doc §1).
  */
 export function coastConfig(coast) {
-  return ((coast || 0) >> 4) & 15;
+  const b = coast || 0;
+  const N = b & 8, S = b & 4, E = b & 1, W = b & 2;    // orthogonal edges: 1=E 2=W 4=S 8=N
+  let cfg = 0;                                          // Civ4 table bits: 1=NW 2=NE 4=SE 8=SW
+  if ((b & 16) && N && W) cfg |= 1;                     // 16=NW
+  if ((b & 32) && N && E) cfg |= 2;                     // 32=NE
+  if ((b & 64) && S && E) cfg |= 4;                     // 64=SE
+  if ((b & 128) && S && W) cfg |= 8;                    // 128=SW
+  return cfg;
 }
 
 /** Position along the shelf ramp: 0 on the ring that touches land, 1 at open-sea depth. */

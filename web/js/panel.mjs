@@ -9,6 +9,7 @@
 // advisor-detail.mjs already import them from here — the split cost no caller a change.
 import { P, VIEW, stage, px, provGeo, isPolitical, S, ACTIVE_REALM } from "./core.mjs";
 import { draw } from "./repaint.mjs";
+import { bindOverlaySetter } from "./bands.mjs";
 import { resize, focusProvinceFit, applyHash } from "./main.mjs";
 import { renderPolLegend, focusEntity, coverage, overlayEntity, ensurePolitical, politicalReady } from "./overlays/political.mjs";
 import { startLive, liveToBackground, liveColony } from "./overlays/live.mjs";
@@ -69,7 +70,13 @@ function setPlane(pl){
 }
 // the overlay (None / Nation / Culture / Faith / Caravans) — one at a time over the active plane.
 // "Caravans" is the live server view (S.overlay === "live"): the running colony + its caravans.
-function setOverlay(ov){
+//
+// `keepSelection` is for the one caller that is not a user choosing an overlay: the band spine
+// releasing political on the way into the 3D terrain (bands.syncOverlayToZoom). Clearing the
+// selection is right when someone PICKS a different overlay — each one has its own overview to start
+// from — but zooming in is not picking, and slamming the rail shut on the province you just zoomed
+// into is the opposite of what the zoom asked for.
+function setOverlay(ov, { keepSelection = false } = {}){
   const was = S.overlay;
   const live = ov === "live";
   S.overlay = ov;
@@ -85,8 +92,7 @@ function setOverlay(ov){
   // so the advisor roster stays live in every advisor; only a server switch / full reset stops it
   if (was === "live" && !live) liveToBackground();
   if (live) { resetSpeed(); startLive(draw, syncLiveTransport); }
-  S.selectedProv = null;                            // start each overlay on its own overview
-  showRail(false);
+  if (!keepSelection) { S.selectedProv = null; showRail(false); }   // start each overlay on its own overview
   updateSearchContext();                            // the search box searches provinces / nations / cultures / faiths
   if (pol) {
     if (!politicalReady()) showSpinner("Loading political data…");  // the lazy political.js fetch
@@ -215,6 +221,11 @@ document.querySelectorAll("#overlayToggle button").forEach(b =>
 export { resetView, toggleFullscreen, togglePlay, closePanel, setOverlay, setPlane, updateSearchContext };
 
 export function boot() {
+  // Hand the band spine the overlay setter, so zooming past band 5 can set the political overlay
+  // aside for the 3D terrain and put it back on the way out (bands.syncOverlayToZoom). Injected
+  // rather than imported: bands.mjs is a leaf that everything drawing depends on, and importing this
+  // module from it would close a cycle through main.mjs.
+  bindOverlaySetter(setOverlay);
   // Keep a selected province's inline live-colony block current: it reads the snapshot, so it has to
   // repaint when a new one lands or it freezes at whatever was true when you clicked. Only for the
   // colony's own province — every other selection renders no colony block, so re-rendering its rail

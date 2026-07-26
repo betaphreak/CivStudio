@@ -34,6 +34,32 @@ import sharp from 'sharp';
 const WEB = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(WEB, '..');
 
+// CIV4'S OWN GROUND COMPOSITE, and the two invented numbers it replaced.
+//
+// A TerrainArtInfo binds `<Path>` (a 4×8 sheet of 32 authored cells — the terrain's painted ground,
+// with the 16-way blend shapes in the low cells) and `<Detail>` (a big seamless grain sheet). Civ4
+// draws the cell MODULATED BY the detail at modulate2x, which is a multiply followed by a ×2 — the
+// ×2 is why the two near-neutral layers do not come out half-dark when combined.
+//
+// We used to do neither half. The ground tile was the DETAIL alone, box-downsampled and then
+// rescaled so its mean equalled a computed display colour; that display colour was the whole-atlas
+// base × detail mean × 2.35. Both were substitutes: the recolour discarded the authored base
+// entirely and pushed the grain to a hue no artist chose, and 2.35 was a hand-fitted stand-in for
+// the ×2 that Civ4 actually applies. Measured over the real atlases the difference is small in
+// luminance (grassland: authored 100 vs the lifted 117) and total in provenance.
+//
+// Dropping the ×2 as well is not an option worth having: base × detail / 255 is half the authored
+// value by construction (grassland lum 50), so a map built that way is dark for a reason that lives
+// in nobody's art. See docs/civ4-texture-inventory.md and the `use-authored-art-not-substitutes` rule.
+//
+// These two live up HERE, above the module-eval bakes (bakeTerrain, some 200 lines below), because
+// those call terrainRealColors during module evaluation — a const declared further down would still
+// be in its temporal dead zone. Same reason `_prLookup` is hoisted; the file notes it there too.
+const MODULATE2X = 2;
+
+/** Every TerrainArtInfo `<Path>` is a 4×8 sheet of 32 square cells (256×512 at 64px, measured). */
+const ATLAS_COLS = 4;
+
 // Baked art assets ship as WebP (see docs) rather than PNG: the ground-texture atlas alone drops
 // ~2.7 MB → ~0.37 MB, and the whole eager image payload roughly quarters, with no visible loss.
 // sharp's encoder is async, so bakes stay synchronous and just QUEUE their raw pixels here (the
@@ -361,10 +387,19 @@ const COAST_TILE_ATLASES = {
 // rather than the answer. See docs/civ4-texture-inventory.md §6.
 const SEA_FALLBACK = { trop: [38, 82, 108], temp: [30, 66, 96], polar: [36, 62, 82] };
 
-// The plot zoom is a detail dive, so the blend×detail averages — which are dark, because both layers
-// are — get lifted into a vibrant, map-like range. Shared by terrainDisplayColors and bakeSeaBands so
-// land and water cannot drift apart; it was a local in the former when the sea did not use the rule.
-const TERRAIN_LIFT = 2.35;
+/**
+ * The cells the authored blend table names for config 15 — all four corners this same terrain, i.e.
+ * the FLAT INTERIOR ground with no blend in it. That is the authored answer to "which pixels are
+ * this terrain", and it is per-terrain data rather than a guess: 17 variants for each of the 16 land
+ * terrains (cells 15,16,18..32), the single cell 29 for all eight water terrains.
+ *
+ * Empty for the nine synthetic terrains (cavern, mushroom forest, glacier, urban, …), which have no
+ * `CIV4ArtDefines_Terrain.xml` entry at all — see the fallback in bakeTerrainTiles.
+ */
+function interiorCells(e) {
+  return String((e.blend && e.blend['15']) || '')
+    .split(/\s+/).filter(Boolean).map(s => +s.split(',')[0]).filter(n => n > 0);
+}
 
 // Warm the C2C art cache in parallel so the synchronous resolveArt/loadGameFont bakes below hit the
 // disk cache instead of a per-file round trip (see civ4.mjs). Collect the terrain-art manifest's
@@ -780,15 +815,20 @@ function hueAtLuminance(base, real) {
 function terrainRealColors() {
   const arr = bundleResourceOpt('/map/terrain-art.json');
   if (!arr.length) { console.log('  terrain-art: absent from the world bundle — using hand-tuned tints'); return null; }
+  // The MEAN OF THE TILE THAT SHIPS, so a terrain's flat colour and its texture cannot drift apart:
+  // same authoredGroundTile, same interior cell, same modulate2x. It used to average the WHOLE base
+  // atlas — all 32 cells, blend shapes and shoreline wedges included — against the detail, and then
+  // lift the result by 2.35. Both halves were wrong about what a plot of this terrain looks like.
   const map = new Map();
   for (const e of arr) {
-    const base = avgDds(e.path), detail = avgDds(e.detail);
-    if (!base) continue;
-    const c = detail ? [0, 1, 2].map(k => Math.min(255, base[k] * detail[k] / 255) | 0) : base;
-    map.set(e.terrain, c);
+    const tile = authoredGroundTile(e, 32);
+    if (!tile) continue;                       // synthetic terrains keep their authored colour below
+    let r = 0, g = 0, b = 0; const n = 32 * 32;
+    for (let k = 0; k < n; k++) { r += tile[k * 3]; g += tile[k * 3 + 1]; b += tile[k * 3 + 2]; }
+    map.set(e.terrain, [r / n | 0, g / n | 0, b / n | 0]);
   }
   if (!map.size) { console.log('  terrain-art: no textures decoded (LFS not pulled?) — using hand-tuned tints'); return null; }
-  console.log(`  terrain-art: recoloured ${map.size} terrains from real Civ4 textures`);
+  console.log(`  terrain-art: ${map.size} terrain colours from the authored base×detail composite`);
   return map;
 }
 
@@ -897,28 +937,25 @@ function terrainDisplayColors(real, water) {
     'TERRAIN_COAST', 'TERRAIN_COAST_POLAR', 'TERRAIN_COAST_TROPICAL', 'TERRAIN_SEA',
     'TERRAIN_SEA_POLAR', 'TERRAIN_SEA_TROPICAL', 'TERRAIN_LAKE', 'TERRAIN_LAKE_SHORE'];
   const hex = c => '#' + [0, 1, 2].map(k => Math.max(0, Math.min(255, c[k] | 0)).toString(16).padStart(2, '0')).join('');
-  // the plot zoom is a detail dive, so lift the blend×detail averages into a vibrant,
-  // map-like range rather than the dark-theme tint the background bake uses (TERRAIN_LIFT,
-  // module-level now that bakeSeaBands applies the same rule to the water terrains)
-  const lift = c => [c[0] * TERRAIN_LIFT, c[1] * TERRAIN_LIFT, c[2] * TERRAIN_LIFT];
+  // No lift. A terrain's colour is the mean of the tile that ships for it (terrainRealColors),
+  // which is Civ4's own base×detail×modulate2x — so the flat fill and the texture are the same
+  // article seen at two resolutions, rather than two numbers that have to be kept in step.
   const out = {};
-  for (const k in fallback) out[k] = hex(fallback[k]);        // colourful default (already lifted)
-  if (real) for (const [k, v] of real) out[k] = hex(lift(v)); // real textures override
+  for (const k in fallback) out[k] = hex(fallback[k]);        // colourful default, when nothing decodes
+  if (real) for (const [k, v] of real) out[k] = hex(v);       // the authored composite overrides it
   for (const k of AUTHORED) out[k] = hex(fallback[k]);        // …but authored terrains keep their hue
   // …and the eight water terrains take their colour from the coast/sea art (waterColors), which is
-  // measured, so it outranks both. `real` would otherwise hand them their BLEND texture's mean —
-  // wrong twice over: a blend map is a sandy transition sheet with no usable water hue (the same trap
-  // bakeSeaBands documents for shoreblend), and the ×2.35 LIFT would then brighten it past the coast
-  // tile it has to sit under.
+  // measured from the painted tile they sit under, so it outranks both. `real` now hands them the
+  // mean of atlas cell 29 — the flat interior water — which is closer than the old whole-atlas
+  // average but still the wrong article: what has to agree is the shallow fill and the coast TILE.
   if (water) for (const k in water) out[k] = hex(water[k]);
   return out;
 }
 
-// Slice B — bake a real ground-texture atlas: for each curated terrain, take its Civ4
-// DETAIL texture (a large seamless tiling ground texture, unlike the blend maps which
-// are semi tile-sheets), downsample to a 48×48 tile and recolour it so its mean equals
-// the terrain's display colour — real texture in the right hue, cohesive with the flat
-// colours. Packed as one horizontal strip PNG the page draws per plot at deep zoom.
+// Slice B — bake the ground-texture atlas: for each curated terrain, Civ4's own composite of its
+// authored interior cell and its authored detail grain (authoredGroundTile). The nine synthetic
+// terrains, which have no Civ4 art define, keep the recolour that authors them.
+// Packed as one horizontal strip the page draws per plot at deep zoom.
 // Returns {src, tile, cols:{TERRAIN_*: column}}, or null if the manifest/textures are
 // absent (the page then keeps the flat-colour plot tiles).
 function bakeTerrainTiles(colorsHex) {
@@ -932,14 +969,18 @@ function bakeTerrainTiles(colorsHex) {
   const LODS = [128, 256];
   const cols = {};
   const lods = [];
-  let c2cCount = 0, anyDecoded = false;
+  let c2cCount = 0, anyDecoded = false, authored = 0;
   for (const T of LODS) {
     const W = manifest.length * T, H = T;
     const rgb = Buffer.alloc(W * H * 3);
     let idx = 0, decoded = 0;
     for (const e of manifest) {
-      const target = hexRgb(colorsHex[e.terrain] || '#465046');
-      const tile = detailTile(e.detail, target, T);
+      // Civ4's composite where the terrain has an authored table; the authored recolour where it has
+      // no art define at all. Nothing is recoloured to a display colour any more, so `colorsHex` is
+      // read only on the synthetic path.
+      let tile = authoredGroundTile(e, T);
+      if (tile && T === LODS[0]) authored++;
+      if (!tile) tile = detailTile(e.detail, hexRgb(colorsHex[e.terrain] || '#465046'), T);
       if (tile && T === LODS[0]) c2cCount++;
       if (tile) decoded++;
       const t = makeSeamless(tile || solidTile(target, T), T);   // wrap-feather so the repeat has no grid seam
@@ -956,32 +997,79 @@ function bakeTerrainTiles(colorsHex) {
     lods.push({ src, tile: T });
   }
   if (!anyDecoded) return null;   // no textures decoded → keep flat colours
-  console.log(`  terrain tiles: ${c2cCount} C2C ground sources; LoDs ${LODS.join('/')}px`);
+  console.log(`  terrain tiles: ${c2cCount} C2C ground sources (${authored} authored base×detail×2, `
+    + `${c2cCount - authored} recoloured synthetic); LoDs ${LODS.join('/')}px`);
   // src/tile default to the deep (largest) LoD so an un-migrated reader still works; `lods` is the tier list.
   const deep = lods[lods.length - 1];
   return { src: deep.src, tile: deep.tile, cols, lods };
 }
 // downsample a decoded image to a T×T RGB tile, then recolour so its mean = target.
 // Alpha is ignored — a C2C detail texture carries the terrain in RGB and uses alpha as a mask.
-function recolorTile(img, target, T) {
-  const bx = img.width / T, by = img.height / T;
-  const tmp = new Float64Array(T * T * 3);
-  let mr = 0, mg = 0, mb = 0;
+function boxSample(img, T, sx = 0, sy = 0, sw = img.width, sh = img.height) {
+  const bx = sw / T, by = sh / T;
+  const out = new Float64Array(T * T * 3);
   for (let j = 0; j < T; j++)
     for (let i = 0; i < T; i++) {
       let r = 0, g = 0, b = 0, n = 0;
-      // box-average the source region; clamp so an UPSCALE (source smaller than T
-      // Grass_Dark_B) still samples ≥1 pixel — else n=0 → NaN → a black tile (the box loop skips).
-      const y0 = Math.min(img.height - 1, Math.floor(j * by)), y1 = Math.max(y0 + 1, Math.floor((j + 1) * by));
-      const x0 = Math.min(img.width - 1, Math.floor(i * bx)), x1 = Math.max(x0 + 1, Math.floor((i + 1) * bx));
-      for (let y = y0; y < y1 && y < img.height; y++)
-        for (let x = x0; x < x1 && x < img.width; x++) {
+      // box-average the source region; clamp so an UPSCALE (source smaller than T — a 64px atlas
+      // cell, Grass_Dark_B) still samples ≥1 pixel, else n=0 → NaN → a black tile.
+      const y0 = Math.min(sy + sh - 1, sy + Math.floor(j * by)), y1 = Math.max(y0 + 1, sy + Math.floor((j + 1) * by));
+      const x0 = Math.min(sx + sw - 1, sx + Math.floor(i * bx)), x1 = Math.max(x0 + 1, sx + Math.floor((i + 1) * bx));
+      for (let y = y0; y < y1 && y < sy + sh && y < img.height; y++)
+        for (let x = x0; x < x1 && x < sx + sw && x < img.width; x++) {
           const o = (y * img.width + x) * 4; r += img.rgba[o]; g += img.rgba[o + 1]; b += img.rgba[o + 2]; n++;
         }
-      const o = (j * T + i) * 3; tmp[o] = r / n; tmp[o + 1] = g / n; tmp[o + 2] = b / n;
-      mr += tmp[o]; mg += tmp[o + 1]; mb += tmp[o + 2];
+      const o = (j * T + i) * 3; out[o] = r / n; out[o + 1] = g / n; out[o + 2] = b / n;
     }
+  return out;
+}
+
+/**
+ * The authored ground tile: this terrain's flat INTERIOR cell modulated by its DETAIL grain, at
+ * Civ4's modulate2x. Both layers come from the art define; nothing here is fitted or recoloured.
+ *
+ * The two sheets are sampled to the same T, so the detail repeats once per interior cell. Civ4
+ * samples the detail on its own UV scale — a higher frequency than the ground cell — but no scale
+ * factor is carried in `CIV4ArtDefines_Terrain.xml`, and inventing one is the thing this change
+ * exists to stop doing. 1:1 also keeps the grain at exactly the frequency the shipped tile already
+ * had, since that tile WAS the detail sheet sampled to T; only the recolour and the lift change.
+ *
+ * The first interior variant is taken. The other 16 exist so Civ4's per-plot ground does not repeat,
+ * which a single repeating pattern cannot express anyway — the pattern is anchored to the province
+ * canvas, not to the plot grid, so it already breaks the per-plot rhythm the variants guard against.
+ *
+ * Null when the terrain has no authored table (the synthetic terrains) or its art will not decode.
+ */
+function authoredGroundTile(e, T) {
+  const cells = interiorCells(e);
+  if (!cells.length) return null;
+  const baseFile = resolveArt(e.path), detFile = resolveArt(e.detail);
+  if (!baseFile || !detFile) return null;
+  const base = decodeCached(baseFile), det = decodeCached(detFile);
+  if (!base || !det) return null;
+  const C = base.width / ATLAS_COLS;                 // square cells, so the row pitch is the same
+  const c = cells[0];
+  const b = boxSample(base, T, ((c - 1) % ATLAS_COLS) * C, Math.floor((c - 1) / ATLAS_COLS) * C, C, C);
+  const d = boxSample(det, T);
+  const out = Buffer.alloc(T * T * 3);
+  for (let k = 0; k < T * T * 3; k++) out[k] = Math.min(255, b[k] * d[k] / 255 * MODULATE2X) | 0;
+  return out;
+}
+
+/**
+ * Sample a texture to T and rescale it so its mean equals `target`.
+ *
+ * ONLY the nine SYNTHETIC terrains use this now, and for them the recolour IS the authorship rather
+ * than a substitute for it: they have no Civ4 art define, so TerrainArtExporter points each at an
+ * existing ground texture (cavern and urban at rocky, the forest family at lush, glacier at ice) and
+ * the colour is what distinguishes them. Composite a cavern's borrowed rocky base against its rocky
+ * detail and you get rocky ground, not a dark warm cavern floor. See TerrainArtExporter §SYNTHETIC.
+ */
+function recolorTile(img, target, T) {
+  const tmp = boxSample(img, T);
   const N = T * T;
+  let mr = 0, mg = 0, mb = 0;
+  for (let k = 0; k < N; k++) { mr += tmp[k * 3]; mg += tmp[k * 3 + 1]; mb += tmp[k * 3 + 2]; }
   const sr = target[0] / Math.max(1, mr / N), sg = target[1] / Math.max(1, mg / N), sb = target[2] / Math.max(1, mb / N);
   const out = Buffer.alloc(N * 3);
   for (let k = 0; k < N; k++) {
@@ -1730,7 +1818,7 @@ function bakeSeaBands() {
     const c = avgDds(art);
     if (!c) return fallback;
     const layered = detail ? [0, 1, 2].map(k => Math.min(255, c[k] * detail[k] / 255)) : c;
-    return layered.map(v => Math.min(255, Math.round(v * TERRAIN_LIFT)));
+    return layered.map(v => Math.min(255, Math.round(v * MODULATE2X)));
   };
   return {
     trop:  band('Art/Terrain/textures/water/seatropblend.dds', SEA_FALLBACK.trop),

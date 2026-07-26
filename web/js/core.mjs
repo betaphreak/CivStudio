@@ -400,12 +400,15 @@ export const S = {
   pov: "god",            // camera POV: "god" (free look) | "timeline" (coming soon)
   // the map plane (exclusive base) and the overlay (one at a time), from the URL hash for deep links
   plane: /underworld/.test(location.hash) ? "underworld" : "overworld",
-  // default to the live Spectate view once loaded; a hash deep-link can still force another overlay
-  // (use #none for the plain physical map).
+  // DEFAULT TO POLITICAL, because 2D is now the political view and 3D is the terrain one. Out here
+  // the map answers "who holds this", and the ground answers it only from band 5 up, where the 3D
+  // terrain takes over and bands.releasePolitical drops this overlay. A hash deep-link still forces
+  // any other overlay (#none for the plain physical map, #live for the Spectate session view).
   overlay: /none|physical/.test(location.hash) ? "none"
     : /nation|political/.test(location.hash) ? "nation"
     : /culture/.test(location.hash) ? "culture"
-    : /faith|religion/.test(location.hash) ? "faith" : "live",
+    : /faith|religion/.test(location.hash) ? "faith"
+    : /live|spectate/.test(location.hash) ? "live" : "nation",
   polHi: null,           // a nation/culture/faith key to spotlight on the map (legend/search hover)
   hoverProv: null,
   dragging: false,       // mid-pan (drawPlots skips textures while panning)

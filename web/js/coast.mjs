@@ -20,6 +20,8 @@
 import { ICE_ART, COAST_TILES, SHORE } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 import { waterBand, coastConfig } from "./water-terrain.mjs";
+import { shoreTerrain } from "./shore-index.mjs";
+import { shoreIndex } from "./plotfetch.mjs";
 
 // the real Civ4 pack-ice tile (docs/coastlines.md Phase G), features/icepack; null → drawSeaIce
 // falls back to flat pale floes
@@ -71,15 +73,54 @@ const chash = (a, b) => ((Math.imul(a | 0, 2654435761) ^ Math.imul(b | 0, 40503)
  * precisely so a long coastline does not repeat one painted curve; picking the first would throw that
  * away and stamp a visible rhythm along every shore.
  */
-export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
-  if (!COAST_TILES) return;
+export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45, tileOf = null) {
+  if (!COAST_TILES) return [];
   const provBand = bandOf(lat);
   const C = COAST_TILES.cell, cols = COAST_TILES.cols, blend = COAST_TILES.blend;
+  const LAND = shoreIndex();
+  // Ring plots whose land neighbour had not loaded, as a flat [x,y,x,y,…]. Returned so the caller can
+  // re-bake this province EXACTLY when one of them resolves.
+  //
+  // The first cut of this used a global "land index version" counter and dropped every water canvas
+  // whenever any land province was indexed. That is correct and useless: panning streams land in
+  // continuously, so every sea in view was invalidated several times a second, none of them ever
+  // finished re-baking inside the 6 ms frame budget, and the sea fell back to the flat 3D plane for as
+  // long as the camera kept moving — the texture "covered by a solid fill". Precision matters here
+  // because the invalidation competes with a frame budget: a coast that is fully resolved returns an
+  // EMPTY list and is never invalidated again, which is the steady state for everything on screen.
+  const unresolved = [];
   o.save();
   o.imageSmoothingEnabled = true;
   const stamped = [];                                     // plot rects that took a cell (the detail pass below)
   for (const q of plots) {
     if (q.landDist !== 1) continue;                       // only the ring that touches land
+    // THE LAND UNDER THE BEACH, and without it the authored alpha has nothing to reveal.
+    //
+    // A coast cell is a transition: opaque surf on its water corners, alpha ~10..38 on its land ones
+    // (measured on coastblend.dds cell 3 — see js/shore-index.mjs). That low alpha means "show the
+    // terrain beneath", and on Civ4's mesh the terrain beneath a shore is the LAND. Ours was the
+    // interior water texture, a flat 21,45,82, so every shoreline drew a dark blue band between the
+    // sand and the grass — the art asking for ground and being handed ocean.
+    //
+    // So paint the neighbouring land terrain's own ground tile across the plot first, and let the cell
+    // composite over it exactly as authored: pure surf where alpha is high, beach where it is low, and
+    // the ~20% of land that shows through the surf is the transition the artist drew, not a leak.
+    //
+    // Skipped when the land next door has not loaded (shoreTerrain → null) or its tile is missing:
+    // the alternative is baking a guessed colour into a cached canvas. Those plots are returned as
+    // `unresolved`, and plots.mjs re-bakes the province once one of them can see land — so the beach
+    // fills itself in as soon as the coastline next door arrives.
+    if (tileOf) {
+      const lt = shoreTerrain(LAND, q.x, q.y);
+      const ltile = lt && tileOf(lt);
+      if (ltile) {
+        const lp = o.createPattern(ltile, "repeat");
+        if (lp) {
+          o.fillStyle = lp;
+          o.fillRect((q.x - x0) * tpp, (q.y - y0) * tpp, tpp, tpp);
+        }
+      } else if (!lt) unresolved.push(q.x, q.y);   // land not loaded yet — see the return value
+    }
     // The atlas is picked PER PLOT, from its own terrain key, falling back to the province latitude
     // for a plot whose key is missing. Latitude was the only input before, and on this map it is the
     // wrong one: the engine bands water by temperature precisely because the EU4 projection's
@@ -129,6 +170,7 @@ export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
     }
   }
   o.restore();
+  return unresolved;
 }
 
 // Polar sea ice on a water province's shelf (docs/coastlines.md Phase E/G). Coverage is per-cell

@@ -70,9 +70,55 @@ export const ground3D = () =>
   // meshes for z=-1, which is a second plane with its own veil and rims (docs/underworld.md). z-levels are
   // P2 territory; until then the plane toggle is also the 3D toggle.
   S.plane !== "underworld"
-  // POLITICAL overlays keep the 2D ground too, and for a sharper reason: the plot layer is gated
-  // `notPolitical`, so in nation/culture/faith mode no province ever builds a texture — the 3D ground would
-  // have nothing to drape and would render bare sea. Nor is anything lost: a political map is an opaque wash
-  // of ownership colour, with no relief to see underneath it.
-  && !isPolitical()
   && _has3D && (_force3D === "1" || atLeast(BAND.LOCALE));
+// POLITICAL NO LONGER BLOCKS THE 3D GROUND, and that inversion is the whole shape of the current
+// design. It used to: the plot layer was gated `notPolitical`, so in nation/culture/faith mode no
+// province built a texture and a 3D ground would have draped nothing. Now the two are the two ENDS
+// of one zoom — 2D out here is the political map, 3D up close is the terrain — so instead of
+// political suppressing 3D, crossing into 3D releases political (releasePoliticalForZoom below).
+
+// ---- political is the 2D affordance; the zoom, not a button, hands over to the terrain ----
+//
+// Crossing band 5 puts the ground in the hands of the 3D renderer, and an opaque ownership wash over
+// a terrain mesh is neither map: so the overlay is set aside on the way in and PUT BACK on the way
+// out. Restoring it is what makes zoom the single control rather than a one-way trapdoor — zoom in
+// to read the land, zoom out to read the borders, with nothing to click either way.
+//
+// The setter is INJECTED rather than imported: it is panel.setOverlay, which carries all the side
+// effects an overlay change owes (legend, rail, search context, the lazy political.js fetch), and
+// panel.mjs sits far above this module in the import graph. bands.mjs imports core and band-math and
+// nothing else, which is why every drawing module can import it.
+let _setOverlay = null;
+/** Register the overlay setter (panel.setOverlay). Called once, at boot. */
+export function bindOverlaySetter(fn) { _setOverlay = fn; }
+
+// The overlay the zoom took away, or null when it has taken nothing. Also the latch that stops this
+// from fighting the user: an overlay chosen WHILE deep (the hash deep-link, or the advisor buttons)
+// is not ours to restore, so we only ever put back what we ourselves removed.
+let _released = null;
+// Asymmetric thresholds, the same deadband idea as the regime latch: release at band 5, restore only
+// once back below 4.65. A camera resting exactly on the boundary would otherwise flap the overlay —
+// and each flap costs a legend rebuild and a rail render, so this is a visible flicker, not a
+// theoretical one.
+const RELEASE_AT = BAND.LOCALE, RESTORE_BELOW = BAND.LOCALE - 0.35;
+
+/**
+ * Reconcile the overlay with the zoom. Called once per frame, from the frame body — draw() is
+ * rAF-coalesced and idempotent, so the setOverlay inside simply schedules the next frame.
+ *
+ * The UNDERWORLD is exempt at every band: it has no 3D ground to hand over to, so its political
+ * overlay stays whatever the user chose.
+ */
+export function syncOverlayToZoom() {
+  if (!_setOverlay || S.plane === "underworld") return;
+  const b = band();
+  if (_released === null && b >= RELEASE_AT && isPolitical()) {
+    _released = S.overlay;
+    _setOverlay("none", { keepSelection: true });
+  } else if (_released !== null && b < RESTORE_BELOW) {
+    const back = _released;
+    _released = null;
+    // the user picked something else while deep — that choice is theirs, so leave it alone
+    if (S.overlay === "none") _setOverlay(back, { keepSelection: true });
+  }
+}

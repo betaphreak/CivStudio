@@ -82,43 +82,67 @@ test("a plot with no terrain key at all still paints, via the fallback", () => {
 });
 
 // ---- coastConfig: our sea mask -> Civ4's TextureBlend index -------------------------------------
-// The table is indexed by the DIAGONAL CORNERS, proven by per-quadrant water coverage (see the
-// function's own table): a single-bit cell is an 8% corner wedge, and the 'opposite pair' class sits
-// on a diagonal (NE+SW). Our high nibble already uses Civ4's order, so the mapping is identity.
-const NW = 16, NE = 32, SE = 64, SW = 128;            // ours (high nibble)
+// The table is indexed by the four CORNERS, proven by per-quadrant water coverage (see the function's
+// own table): a single-bit cell is an 8% corner wedge, and the 'opposite pair' class sits on a
+// diagonal (NE+SW). A corner is water only when every plot touching it is — the diagonal AND the two
+// orthogonals — which is what makes this more than a `>> 4`.
+const E = 1, W = 2, S = 4, N = 8;                     // ours, low nibble (orthogonal edges)
+const NW = 16, NE = 32, SE = 64, SW = 128;            // ours, high nibble (diagonals)
+const ALL = E | W | S | N | NW | NE | SE | SW;        // open water: every neighbour is water
 const cNW = 1, cNE = 2, cSE = 4, cSW = 8;             // Civ4's table bits
 
-test('coastConfig maps each diagonal to Civ4 bit for the SAME diagonal', () => {
-  assert.equal(coastConfig(NW), cNW);
-  assert.equal(coastConfig(NE), cNE);
-  assert.equal(coastConfig(SE), cSE);
-  assert.equal(coastConfig(SW), cSW);
+test('a corner is water only when the diagonal AND both flanking edges are', () => {
+  assert.equal(coastConfig(NW | N | W), cNW);
+  assert.equal(coastConfig(NE | N | E), cNE);
+  assert.equal(coastConfig(SE | S | E), cSE);
+  assert.equal(coastConfig(SW | S | W), cSW);
+  // the diagonal alone is NOT the corner — this is exactly what the old `>> 4` got wrong
+  for (const d of [NW, NE, SE, SW]) assert.equal(coastConfig(d), 0);
 });
 
-test('coastConfig reads the CORNER nibble and ignores the orthogonal edges', () => {
-  // 1=E, 2=W, 4=S, 8=N — the edge bits must not reach the table (this is the regression that
-  // shipped once: feeding the low nibble rotated every shoreline off its corner)
-  for (const edge of [1, 2, 4, 8, 15])
-    assert.equal(coastConfig(edge), 0);
-  assert.equal(coastConfig(NW | 4 | 8), cNW);         // edges set alongside a corner change nothing
+test('one orthogonal land neighbour dries BOTH corners on that edge', () => {
+  // THE BUG. Land to the north only: both diagonals are still water, so `>> 4` returned 15 — the flat
+  // interior cell — and no shoreline was drawn at all (2.3% of shoreline plots, measured).
+  const landN = ALL & ~N;
+  assert.notEqual(((landN >> 4) & 15), 0);            // the old rule saw four water diagonals…
+  assert.equal((landN >> 4) & 15, 15);                // …i.e. open sea
+  assert.equal(coastConfig(landN), cSE | cSW);        // …while the north corners are in fact land
+});
+
+test('a cove with land on three sides is mostly LAND, not mostly water', () => {
+  // the top measured divergence (cfg 14 -> 4, 126 plots): water open only to the SE
+  const cove = SE | S | E;                             // every other neighbour is land
+  assert.equal((cove >> 4) & 15, cSE);                 // (the old rule happened to agree here)
+  assert.equal(coastConfig(cove), cSE);
+  // …but add the diagonals back with the edges still land and the two rules part company
+  const wedge = ALL & ~N & ~W;                         // land N and W; all four diagonals water
+  assert.equal((wedge >> 4) & 15, 15);                 // old: open sea
+  assert.equal(coastConfig(wedge), cSE);               // new: a single water wedge in the SE
 });
 
 test('opposite corners stay opposite, adjacent corners stay adjacent', () => {
-  const OPPOSITE = [cNW | cSE, cNE | cSW];            // the table's strip cells (05/10)
-  assert.ok(OPPOSITE.includes(coastConfig(NW | SE)));
-  assert.ok(OPPOSITE.includes(coastConfig(NE | SW)));
-  for (const adj of [NW | NE, NE | SE, SE | SW, SW | NW])
-    assert.ok(!OPPOSITE.includes(coastConfig(adj)), adj + ' should not map to an opposite pair');
+  const OPPOSITE = [cNW | cSE, cNE | cSW];             // the table's strip cells (05/10)
+  assert.ok(OPPOSITE.includes(coastConfig(NW | SE | N | S | E | W)));
+  assert.ok(OPPOSITE.includes(coastConfig(NE | SW | N | S | E | W)));
+  for (const adj of [[NW, NE, N, W, E], [NE, SE, N, S, E], [SE, SW, S, E, W], [SW, NW, N, S, W]])
+    assert.ok(!OPPOSITE.includes(coastConfig(adj.reduce((a, b) => a | b))),
+      adj + ' should not map to an opposite pair');
 });
 
 test('three water corners leaves exactly one dry — cell 4 is 3-of-4 wet', () => {
-  const cfg = coastConfig(NW | NE | SE);
+  const cfg = coastConfig(ALL & ~SW);                  // only the SW diagonal is land
   assert.equal(cfg, cNW | cNE | cSE);
   assert.equal(4 - [1, 2, 4, 8].filter(b => cfg & b).length, 1);
 });
 
-test('fully enclosed and fully open are preserved', () => {
-  assert.equal(coastConfig(NW | NE | SE | SW), 15);   // all water → the flat interior cell 29
-  assert.equal(coastConfig(0), 0);                    // no water corner → no entry, nothing drawn
+test('fully open water still takes the flat interior cell', () => {
+  assert.equal(coastConfig(ALL), 15);                  // all water → cell 29
+});
+
+test('every corner touching land draws nothing, and that is a known small gap', () => {
+  // a one-plot-wide E-W channel: land N and S dries all four corners. No table entry for 0, so the
+  // plain water beneath shows through (2.6% of shoreline plots, up from 0.2% — see coastConfig).
+  assert.equal(coastConfig(ALL & ~N & ~S), 0);
+  assert.equal(coastConfig(0), 0);
   assert.equal(coastConfig(undefined), 0);
 });

@@ -19,6 +19,21 @@
 import { BUNDLE, apiUrl, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { renderRail } from "./rail.mjs";
+import { indexLand } from "./shore-index.mjs";
+import { shelf } from "./water-terrain.mjs";
+
+// ---- the shore index (js/shore-index.mjs) ----
+// Built HERE because this is the one place plots arrive, so it fills in load order rather than draw
+// order and no drawing module has to remember to feed it. It answers "which land terrain does this
+// water plot's beach stand on" across province boundaries, which is what stops the painted coast
+// tile's transparent landward half revealing blue water.
+// There is deliberately NO version counter here. One was tried, and dropping every water canvas
+// whenever any land province was indexed thrashed the sea for as long as the camera kept moving.
+// Staleness is tracked per province instead, against the specific pixels a bake could not resolve —
+// see plots.mjs `_tshoreGaps`.
+const LAND = new Map();
+/** The shore index: source pixel → land terrain key. Read-only to consumers. */
+export const shoreIndex = () => LAND;
 
 const PLOT_FETCH_TIMEOUT = 6000;    // ms — drop a plot fetch that takes longer than this
 const PLOT_RETRY_BACKOFF = 12000;   // ms — after a timeout, wait this long before retrying a province
@@ -44,6 +59,9 @@ export async function loadPlots(p) {
     // mark as loaded even when empty (deep ocean), so the draw loop and panel stop re-requesting
     p._plots = arr || [];
     p._retryAt = 0;
+    // Index this province's LAND before anything draws, so a water province baked in the same frame
+    // already sees it. `shelf(t)` is the water test — the eight water keys and nothing else.
+    if (p._plots.length) indexLand(LAND, p._plots, t => !!shelf(t));
     if (p._plots.length) draw();
     if (S.selectedProv === p) renderRail();
     // A province's plots just landed. Readouts derived from them (the top bar's Terrain/Locale/Plot

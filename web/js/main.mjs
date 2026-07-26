@@ -1,5 +1,5 @@
 import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm, pll, project, pllOn } from "./core.mjs";
-import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO, ground3D } from "./bands.mjs";
+import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO, ground3D, syncOverlayToZoom, BAND } from "./bands.mjs";
 import { renderTerrain3D } from "./terrain3d.mjs";   // the 3D ground, band 5 and deeper
 import { drawPlots } from "./plots.mjs";                       // still used directly by drawCavernPlots
 import { scheduleLegendRefresh } from "./overlays/political.mjs";
@@ -123,6 +123,10 @@ function updateRegimeSignal() {
 // which owns draw(); this is only the body it runs. The split is what lets the six modules that want
 // nothing but draw() stop importing this one — see repaint.mjs's header.
 setFrame(() => {
+  // BEFORE the paint, because it can change what the frame draws: past band 5 the 3D terrain takes
+  // the ground, and the political overlay steps aside (and comes back on the way out). See
+  // bands.syncOverlayToZoom — it calls draw(), which is rAF-coalesced, so this cannot recurse.
+  syncOverlayToZoom();
   paint();
   scheduleLegendRefresh();
   // The viewport-context readouts, recomputed once the camera settles: the band chip's caption
@@ -284,13 +288,22 @@ function drawProvinceBorders() {
 }
 // selection/hover stroke thins as you dive — a 2px slab reads heavy against a city block; full ≤ band 3
 const hlScale = () => 1 - Math.min(0.5, Math.max(0, (band() - 3) / 8));
+// …and the polygon WASH fades out entirely, gone by the band where the 3D terrain takes the ground.
+//
+// A 12% tint over a province-sized shape reads as a highlight. Over ONE province that fills the whole
+// viewport at plot zoom it reads as the map changing colour: measured at max zoom on province 542, the
+// mean frame RGB moved 80.5,91.8,58.5 → 83.9,95.2,63.6 the moment the pointer entered it, i.e. the
+// whole screen lightened. The OUTLINE is what identifies the shape at any zoom, and it stays; the fill
+// is only useful while a province is one shape among many.
+const hlWash = () => 1 - Math.min(1, Math.max(0, (band() - 3) / (BAND.LOCALE - 3)));
 // hovered province highlight (polygon if we have one, else a centroid ring for seas)
 function drawHoverHighlight() {
   if (!S.hoverProv) return;
   const s = hlScale();
   if (S.hoverProv.rings) {
     const hp = provPath(S.hoverProv);
-    ctx.fillStyle = "rgba(231,236,244,.12)"; ctx.fill(hp);
+    const w = hlWash();
+    if (w > 0) { ctx.fillStyle = `rgba(231,236,244,${0.12 * w})`; ctx.fill(hp); }
     ctx.strokeStyle = "#eef2f8"; ctx.lineWidth = 1.6 * s; ctx.stroke(hp);
   } else {
     ctx.beginPath(); { const [hx, hy] = pllOn(S.hoverProv.lon, S.hoverProv.lat); ctx.arc(hx, hy, 6, 0, 7); }
@@ -303,7 +316,8 @@ function drawSelectedHighlight() {
   const s = hlScale();
   if (S.selectedProv.rings) {
     const sp = provPath(S.selectedProv);
-    ctx.fillStyle = "rgba(232,183,106,.12)"; ctx.fill(sp);
+    const w = hlWash();                 // same reasoning as the hover wash — see hlWash
+    if (w > 0) { ctx.fillStyle = `rgba(232,183,106,${0.12 * w})`; ctx.fill(sp); }
     ctx.strokeStyle = cssVar("--accent") || "#e8b76a"; ctx.lineWidth = 2.2 * s; ctx.stroke(sp);
   } else {
     ctx.beginPath(); { const [sx, sy] = pllOn(S.selectedProv.lon, S.selectedProv.lat); ctx.arc(sx, sy, 7, 0, 7); }

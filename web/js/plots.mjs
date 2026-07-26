@@ -11,7 +11,8 @@ import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plo
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
 import { drawSeaIce, extendCoastIntoWater } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
-import { loadPlots } from "./plotfetch.mjs";
+import { loadPlots, shoreIndex } from "./plotfetch.mjs";
+import { shoreTerrain } from "./shore-index.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
 
 // the Civ4 ground-texture atlas (sliced per-terrain into repeating tiles by extractTiles); null →
@@ -155,13 +156,24 @@ function buildPlotCanvas(p, plots) {
 // (see main.drawUnderworld); called with no argument it draws the whole world.
 function drawPlots(only) {
   if (cam.k < K_PLOT) return;
-  // From band 5 the 3D ground drapes these very offscreens over its meshes (js/terrain3d.mjs §3), so the
-  // BLITS below are skipped — but everything else here still has to run, and that is the point: the
-  // viewport cull, the lazy loadPlots, the per-frame build budget and the bonus overlay
-  // are all machinery terrain3d would otherwise have to reimplement. It reads `p._tcanvas`/`_tbox`
-  // straight off what this pass maintains.
+  // WHO IS THIS PASS DRAWING FOR? Two callers, and only one of them puts pixels on the 2D canvas.
+  //
+  // The SURFACE is 3D-only now: layers.mjs gates `plots` on ground3D, so this runs only when the 3D
+  // ground exists to drape the offscreens over (js/terrain3d.mjs §3) and the blits below are dead
+  // for it. Everything else still has to run, and that is the point — the viewport cull, the lazy
+  // loadPlots, the per-frame build budget and the bonus overlay are all machinery terrain3d would
+  // otherwise have to reimplement; it reads `p._tcanvas`/`_tbox` straight off what this pass keeps.
+  //
+  // The UNDERWORLD is the one that still blits. z=−1 has no mesh (terrain3d builds none), so ground3D
+  // is false there at every band and the 2D ground below is the only Serpentspine there is.
   const blit = !ground3D();
-  const textured = atLeast(BAND.TERRAIN) && ttReady && !S.dragging;   // real textures from band 4 (16×); flat tiles while panning
+  // Real textures from band 4 (16×). Flat tiles while panning — but ONLY in 2D, where the flat
+  // 1px/plot offscreen is a real stand-in that keeps a pan cheap. Under the 3D ground there is no
+  // stand-in: an unbuilt province is an untextured mesh, which for a sea province is the bare sea
+  // plane, i.e. the texture visibly replaced by a solid fill for as long as the drag lasts. Measured
+  // mid-pan: 5 of 8 sea provinces in view had their plots and no canvas. The 6 ms build budget below
+  // is what keeps the pan smooth; suppressing the builds outright on top of it just empties the map.
+  const textured = atLeast(BAND.TERRAIN) && ttReady && (!S.dragging || ground3D());
   const a = bandAlpha(kBand([K_PLOT, 6.5]));   // fade in over the plots band
   const smooth = ctx.imageSmoothingEnabled;
   ctx.globalAlpha = a;
@@ -184,10 +196,31 @@ function drawPlots(only) {
       // below rebuild it. Lazy by construction: a province off screen is never touched, and rebuilds the first
       // time it is drawn.
       if (p._tcanvas && p._tfoliage !== !props3D()) p._tcanvas = null;
-      if (!p._tcanvas) {
-        if (performance.now() >= buildDeadline) {   // out of frame budget — flat placeholder now, texture next frame
+      // A WATER province's beaches stand on the LAND next door (coast.mjs), and land arrives on its
+      // own schedule — so a sea baked before its coastline landed has ring plots that fell back to
+      // bare water. Re-bake it when one of THOSE plots can now see land, and only then: the bake
+      // hands back exactly the pixels it could not resolve, an already-complete coast hands back an
+      // empty list, and a province in the steady state is therefore never invalidated at all. (A
+      // global "land changed" counter was tried here and thrashed every sea in view while panning.)
+      //
+      // STALE, NOT DROPPED. Nulling the canvas here would be the obvious way to force the re-bake,
+      // and it is wrong: the rebuild has to win a slice of the 6 ms budget below, and until it does
+      // the province has no texture at all — under the 3D ground that is the bare sea plane. So the
+      // old canvas keeps being used (it is merely missing a beach) and buildPlotTexCanvas swaps the
+      // new one in atomically when its turn comes.
+      let staleShore = false;
+      const gaps = p._tshoreGaps;
+      if (p._tcanvas && gaps && gaps.length) {
+        for (let i = 0; i < gaps.length; i += 2)
+          if (shoreTerrain(shoreIndex(), gaps[i], gaps[i + 1])) { staleShore = true; break; }
+      }
+      if (!p._tcanvas || staleShore) {
+        if (performance.now() >= buildDeadline) {   // out of frame budget — keep what we have, rebuild next frame
           deferred = true;
-          if (blit && p._pcanvas) { ctx.imageSmoothingEnabled = isWater(p); blitProvinceCanvas(p._pcanvas, p._pbox); }
+          // Prefer the stale TEXTURED canvas over the flat one: it is the right picture a beach late,
+          // where the flat offscreen is a visible drop in fidelity.
+          if (blit && p._tcanvas) { ctx.imageSmoothingEnabled = true; blitProvinceCanvas(p._tcanvas, p._tbox); }
+          else if (blit && p._pcanvas) { ctx.imageSmoothingEnabled = isWater(p); blitProvinceCanvas(p._pcanvas, p._pbox); }
           continue;
         }
         buildPlotTexCanvas(p);                       // textured offscreen, built once
@@ -484,8 +517,14 @@ function buildPlotTexCanvas(p) {
   // The coast reaches OUT into the shallow water tiles along Civ4's blend curve (coast.mjs). On the
   // WATER province, never the land one: painting the mask on a land plot puts sea inside it, which is
   // backwards and visibly wrong on a tile whose only water contact is a diagonal corner.
-  if (water) extendCoastIntoWater(o, p._plots, x0, y0, tpp,
-    provSrcBox(p) ? latAtSourceY((provSrcBox(p).y0 + provSrcBox(p).y1) / 2) : 45);
+  // `tileOf` lets the coast lay the neighbouring LAND terrain's ground under the painted cell, so the
+  // cell's transparent landward half reveals beach instead of the blue water beneath (see coast.mjs).
+  // The resolver is passed in rather than imported there because ttTiles is this module's state.
+  // …and the ring plots whose land neighbour had not loaded when this baked, so drawPlots can re-bake
+  // the province the moment one of them resolves (and never otherwise — see coast.mjs).
+  if (water) p._tshoreGaps = extendCoastIntoWater(o, p._plots, x0, y0, tpp,
+    provSrcBox(p) ? latAtSourceY((provSrcBox(p).y0 + provSrcBox(p).y1) / 2) : 45,
+    t => ttTiles && ttTiles[t]);
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
   // (No shelf-edge fade any more. From MAP_VERSION 13 a sea province draws EVERY water cell it owns,
   // so there is no shelf boundary left to dissolve. fadeShelfEdge existed to feather an edge that no
