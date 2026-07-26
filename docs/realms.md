@@ -746,6 +746,21 @@ shareable URL. Each switch is a history entry; that is intended.
 **An omitted realm defaults to Halcann** (decided). So every legacy `?p=` link keeps working with no
 migration, and a bare URL opens where it always did.
 
+**A deep link skips the lobby** (built). `?p=` or `?realm=` names where you want to be, and the
+Spectator Lobby exists to ask exactly that — so auto-opening it over a deep link strands you on a
+modal covering the map you asked for. `index.html openLobbyDuringLoad` returns early when either
+param is present, the same early return a realm switch already used. `?lobby=1` forces it back (for
+picking a session from a deep link); `?lobby=0` still suppresses it unconditionally, for the
+cross-origin embedded case.
+
+The loading splash is NOT skipped and cannot be: it covers the bundle download, and there is nothing
+to draw until that lands. It already clears on first paint (`main.mjs hideLoading`), so with the
+lobby gone a deep link goes splash → map with nothing in between. Verified on the local stack:
+`realm=aelantir&p=1186&z=60` lands on Idsetdain with `splashGone` true and no lobby; a bare URL still
+gets the lobby; `p=4&lobby=1` still gets it. (Note `p=<id>` for a province in a NON-default realm
+auto-switches the realm, which reloads once with `cs.realmSwitch` set — that path suppressed the
+lobby before this change and still does, so `lobby=1` cannot force it there.)
+
 ## Cost
 
 **No plot rebake for Realms itself.** `MAP_VERSION` (`ProvincePlotStore.java:62`, currently 9) keys the

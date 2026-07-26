@@ -691,7 +691,13 @@
       // modal in someone else's panel. A URL opt-out, not sessionStorage, because the embedder is
       // cross-origin and cannot reach into this origin's storage.
       try {
-        if (/^(0|no|false)$/i.test(new URL(location.href).searchParams.get("lobby") || "")) return;
+        var q = new URL(location.href).searchParams;
+        if (/^(0|no|false)$/i.test(q.get("lobby") || "")) return;
+        // A DEEP LINK IS ALREADY A CHOICE. ?p=<province> and ?realm=<key> name where you want to be,
+        // and the lobby exists to ask that question — so asking it again strands you on a modal over
+        // the map you asked for. Skip it, exactly as a realm switch does below. ?lobby=1 forces it
+        // back for the case where you do want to pick a session from a deep link.
+        if ((q.get("p") || q.get("realm")) && !/^(1|yes|true)$/i.test(q.get("lobby") || "")) return;
       } catch (e) {}
       // a realm switch (switchRealm) navigates straight to the map — skip the auto-open lobby that one
       // time so the new realm is what you land on, not the lobby over it.
