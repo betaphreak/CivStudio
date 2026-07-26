@@ -293,8 +293,36 @@ LayerOrder 30 in the contest would let it suppress a lower neighbour's blend whi
 draw — strictly worse than the present behaviour. `terrainLayer` therefore carries `PEAK: 100` and no
 `HILL` key at all.
 
-What HILL should get instead is its authored wash as a **ground overlay**, replacing the invented
-`×1.14 + 8` brightening — see §8.
+What HILL gets instead is its authored wash as a **ground overlay** — §5.4.
+
+### 5.4 The hill wash — SHIPPED
+
+`bakeHillWash` composites `HillBlend.dds`'s interior cells (config 15 names cells **15 and 16**,
+measuring alpha 101.5 and 96.7 of 255) against `HillDetail.dds` on the ground's own rule
+(base × detail × ×2), keeping the authored alpha. **Both variants ship**, and unlike the ground
+pattern that matters here: the ground tile is a repeating pattern anchored to the province canvas, so
+it never lines up with the plot grid, but the wash is stamped ONE PER PLOT — a single cell would tile
+a visible repeat across a range of hills. `plots.mjs` picks per plot by position hash, the same
+reasoning `bakeCoastTiles` records for its 105 variants.
+
+It is drawn in a new **stage 1b**, between the ground and the edge blend. That position is the
+argument of §5.3 in code: a hill is not a blend *layer*, so the plot's terrain is unchanged and a
+higher-layer neighbour's cell must still feather over the top.
+
+**Two invented numbers retired.** `plots.mjs` shaded a hill with `r*1.14 + 8` — a hand-rolled
+brightening of exactly the kind `use-authored-art-not-substitutes` forbids. The authored wash measures
+**rgb 107,94,80 at alpha 0.389**, i.e. a *desaturating warm grey*, not a lift: over GRASSLAND
+(81,91,33) it gives (91,92,51) where the invented rule gave (100,112,46). Hills will read rockier and
+less vivid than before, and that is the art rather than a tuning choice.
+
+The 1px/plot **overview** keeps a colour shift, because at one pixel per plot a texture is meaningless
+and a colour is the only honest representation — but the shift is now *derived*: `hillWash.tint` is
+the alpha-weighted mean of the very cells the textured canvas stamps, so the two zoom levels agree by
+construction instead of by two independently-tuned constants. (Alpha-weighted, not flat: compositing
+gives `g·(1−ā) + w̄·ā`, so `w̄` has to be the colour the alpha actually delivers.)
+
+PEAK's own invented recolour in the overview — averaging toward 150,152,158 — is **not** retired here;
+it goes when phase 3 draws the PEAK blend layer.
 
 ## 6. Traps
 
@@ -334,14 +362,6 @@ What HILL should get instead is its authored wash as a **ground overlay**, repla
 
 ## 8. Loose ends from the same session
 
-- **The HILL wash is authored art we are not using.** `Land/HillBlend.dds` interior cell (alpha ~102)
-  × `Land/HillDetail.dds` is Civ4's real hill treatment: a translucent overlay composited over the
-  plot's own ground. Today `plots.mjs` fakes it with `r*1.14 + 8`, an invented brightening — exactly
-  what `use-authored-art-not-substitutes` forbids. Baking the interior cell as an RGBA wash tile and
-  compositing it over a HILL plot's ground at its authored alpha would retire that. Note it is a
-  GROUND overlay, not a blend row (§5.3), and that 3D already has the other half of Civ4's hill —
-  `heightfield.mjs` raises the mesh. PEAK's own invented recolour (averaging toward 150,152,158) is
-  retired by §5.3 instead.
 - `PEAK_GROUP.baseFade` is 0.18. It removed the hard bottom edge on the mountain billboards, but a
   faint boundary is still visible on the largest masses — 0.24 is worth trying. **Re-open this after
   phase 3:** with PEAK baked as a blend layer (§5.3) the billboard will stand on real peak ground

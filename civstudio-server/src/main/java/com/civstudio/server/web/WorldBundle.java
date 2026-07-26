@@ -261,7 +261,12 @@ public final class WorldBundle {
 		// billboard path underneath them, and Civ4 has no fog-of-war texture at all (it fogs in the
 		// engine), so there was nothing to port and nothing rendered them. districtTiles ships as null
 		// for the same reason — districts are a Civ6 concept with no Civ4 art.
-		for (String k : List.of("map", "realms", "terrainColors", "terrainLayer", "terrainTiles", "river",
+		// NOTE this list is a WHITELIST, not a passthrough: a new asset descriptor in
+		// web-asset-manifest.json is invisible to the client until its key is named here, and the
+		// symptom is silent (the renderer simply keeps its fallback). landBlend/hillWash are Civ4's
+		// authored land-transition cells and hill overlay — docs/land-blend-plan.md.
+		for (String k : List.of("map", "realms", "terrainColors", "terrainLayer", "terrainTiles",
+				"landBlend", "hillWash", "river",
 				"sea", "shore", "ice", "bonusIcons", "trees", "routes", "improvementOverlays",
 				"districtTiles", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading"))
 			root.set(k, manifest.get(k));

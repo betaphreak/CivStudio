@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, HILL_WASH, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { shelfColor } from "./water-terrain.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
@@ -19,6 +19,21 @@ import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "
 // drawPlots stays on the flat 1px/plot colour offscreen
 let ttReady = false, ttTiles = null;
 const ttImg = loadArt(TT, () => { extractTiles(); ttReady = true; });
+// Civ4's HILL overlay — a translucent wash over the plot's own ground, in TWO authored variants so a
+// range of hills does not stamp one cell repeatedly (build.mjs bakeHillWash). A hill is not a blend
+// layer: its interior cell measures alpha ~0.39, i.e. the art is authored to let the terrain beneath
+// show through. Null → buildPlotTexCanvas stamps nothing and the ground is bare, as it was before.
+let hwReady = false, hwCells = null;
+const hwImg = loadArt(HILL_WASH, () => {
+  hwCells = [];
+  for (let i = 0; i < HILL_WASH.variants; i++) {
+    const c = document.createElement("canvas"); c.width = c.height = HILL_WASH.cell;
+    c.getContext("2d").drawImage(hwImg, i * HILL_WASH.cell, 0, HILL_WASH.cell, HILL_WASH.cell, 0, 0, HILL_WASH.cell, HILL_WASH.cell);
+    hwCells.push(c);
+  }
+  hwReady = true;
+  for (const p of P) p._tcanvas = null;   // canvases baked before the wash arrived have bare hills
+});
 // the baked water tile for the river ribbon (docs/river-rendering.md §2); null → drawRivers falls back to flat blue
 let rvReady = false;
 const rvImg = loadArt(RIVER, () => { rvReady = true; });
@@ -130,7 +145,14 @@ function buildPlotCanvas(p, plots) {
         if (/FOREST|JUNGLE|WOOD/.test(f)) { r = r * 0.7 | 0; g = g * 0.82 + 16 | 0; b = b * 0.6 | 0; }
         else if (/SWAMP|MARSH|BOG/.test(f)) { r = r * 0.82 | 0; g = g * 0.86 | 0; b = b * 0.82 | 0; }
       }
-      if (q.plotType === "HILL") { r = Math.min(255, r * 1.14 + 8) | 0; g = Math.min(255, g * 1.14 + 8) | 0; b = Math.min(255, b * 1.14 + 8) | 0; }
+      // A hill at 1px/plot is a colour shift — there is no room for a texture — but the shift itself
+      // comes from the art: HILL_WASH.tint is the alpha-weighted mean of Civ4's own hill overlay, so
+      // this composites exactly what the textured canvas stamps, at one pixel. It replaces an
+      // invented `r*1.14 + 8` brightening; the authored wash is a desaturating warm grey, not a lift.
+      if (q.plotType === "HILL" && HILL_WASH) {
+        const [wr, wg, wb] = HILL_WASH.tint.rgb, a = HILL_WASH.tint.a;
+        r = r * (1 - a) + wr * a | 0; g = g * (1 - a) + wg * a | 0; b = b * (1 - a) + wb * a | 0;
+      } else if (q.plotType === "HILL") { r = Math.min(255, r * 1.14 + 8) | 0; g = Math.min(255, g * 1.14 + 8) | 0; b = Math.min(255, b * 1.14 + 8) | 0; }
       else if (q.plotType === "PEAK") { r = (r + 150) / 2 | 0; g = (g + 152) / 2 | 0; b = (b + 158) / 2 | 0; }
       // A ribbon is meaningless at 1px/plot, so a river reads here as a TINT toward a muted
       // blue-grey (not vivid cyan). Its strength rides the width class, so the Ostmark trunk still
@@ -370,6 +392,16 @@ function buildPlotTexCanvas(p) {
     if (pp === undefined) { const tc = ttTiles && ttTiles[q.terrain]; pp = pat[q.terrain] = tc ? o.createPattern(tc, "repeat") : null; }
     if (pp) { o.fillStyle = pp; o.fillRect(cx, cy, tpp, tpp); }
     else { const g = terrainRgb(q.terrain); o.fillStyle = `rgb(${g[0]},${g[1]},${g[2]})`; o.fillRect(cx, cy, tpp, tpp); }
+  }
+  // 1b) the HILL WASH — Civ4's hill overlay stamped over the ground it shades, at its own authored
+  // alpha (~0.39). It sits here, between the ground and the edge blend, because a hill is not a blend
+  // LAYER: the plot's terrain is unchanged and the wash only shades it, so a higher-layer neighbour's
+  // blend must still feather over the top. One of two authored variants per plot, picked by a
+  // position hash so a range of hills does not stamp the same cell across every plot.
+  if (!water && hwReady) for (const q of p._plots) {
+    if (q.plotType !== "HILL") continue;
+    const v = hwCells[(((q.x * 73856093) ^ (q.y * 19349663)) >>> 0) % hwCells.length];
+    o.drawImage(v, 0, 0, HILL_WASH.cell, HILL_WASH.cell, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, tpp);
   }
   // 2) edge blend — LAND ONLY. This is THE coastline staircase, and it hid behind every other
   // suspect: it feathers a neighbour's terrain colour across each shared edge by drawing per-plot

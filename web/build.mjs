@@ -65,6 +65,8 @@ const LAND_BLEND_CFGS = 14;
 
 /** The relief layer Civ4 authors as a blending terrain, keyed by what `Plot.plotType` carries. See reliefArtEntries. */
 const RELIEF_ART = { PEAK: 'ART_DEF_TERRAIN_PEAK' };
+/** The other relief layer, which is a translucent wash rather than a blend layer. See bakeHillWash. */
+const HILL_ART = 'ART_DEF_TERRAIN_HILL';
 
 // Baked art assets ship as WebP (see docs) rather than PNG: the ground-texture atlas alone drops
 // ~2.7 MB → ~0.37 MB, and the whole eager image payload roughly quarters, with no visible loss.
@@ -442,6 +444,7 @@ const terrainColors = terrainDisplayColors(terrainRealColors(), waterColors(seaB
 const terrainLayer = terrainLayerOrders();   // TERRAIN_* -> Civ4 LayerOrder (drives edge blending)
 const terrainTiles = bakeTerrainTiles(terrainColors);
 const landBlend = bakeLandBlendCells();      // Civ4's authored land transition cells, or null (renderer keeps its feather)
+const hillWash = bakeHillWash();             // Civ4's translucent hill overlay, or null (renderer keeps its invented brightening)
 const river = bakeRiverTile();               // {src, tile} water tile, or null (flat-fill fallback)
 const sea = bakeSeaTile();                   // {src, tile} greyscale ripple tile, or null (gradient-only fallback)
 const shore = bakeShoreTile();               // {src, tile} greyscale shore-wave tile for the shallows, or null
@@ -576,7 +579,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, landBlend, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
+  map, realms, terrainColors, terrainLayer, terrainTiles, landBlend, hillWash, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -1109,6 +1112,95 @@ function landBlendTable(e) {
 }
 
 /**
+ * Composite one atlas cell the way the GROUND is composited — base × detail × modulate2x — keeping
+ * the cell's own authored ALPHA as its mask. `d` is the detail sheet already sampled to T, so a
+ * caller compositing many cells of one terrain samples it once.
+ *
+ * ALPHA BLEED, the trap bakeCoastTiles documents at length: lossy WebP does not preserve colour under
+ * alpha 0, and the cell is downscaled on screen, so whatever sits in the transparent pixels is
+ * dragged back into the visible ones. Fill them with the cell's own opaque mean — or leave them be
+ * when the cell has no opaque pixels to average, which is the case for a translucent wash.
+ *
+ * Returns {rgba, alpha} — the alpha is handed back separately so a caller can measure the mask
+ * (the blend bake's corner check) without re-deriving it from the interleaved buffer.
+ */
+function authoredCellRGBA(base, d, cell, C, T) {
+  const sx = ((cell - 1) % ATLAS_COLS) * C, sy = Math.floor((cell - 1) / ATLAS_COLS) * C;
+  const b = boxSample(base, T, sx, sy, C, C);
+  const alpha = boxSampleAlpha(base, T, sx, sy, C, C);
+  const N = T * T;
+  const rgba = Buffer.alloc(N * 4);
+  let br = 0, bg = 0, bb = 0, bn = 0;
+  for (let k = 0; k < N; k++) {
+    if (alpha[k] < 200) continue;
+    br += b[k * 3]; bg += b[k * 3 + 1]; bb += b[k * 3 + 2]; bn++;
+  }
+  for (let k = 0; k < N; k++) {
+    const al = Math.round(alpha[k]);
+    for (let ch = 0; ch < 3; ch++) {
+      const src = al || !bn ? b[k * 3 + ch] : [br, bg, bb][ch] / bn;
+      rgba[k * 4 + ch] = Math.min(255, src * d[k * 3 + ch] / 255 * MODULATE2X) | 0;
+    }
+    rgba[k * 4 + 3] = al;
+  }
+  return { rgba, alpha };
+}
+
+/**
+ * THE HILL WASH — Civ4's real treatment of a hill, which is NOT a blend layer (see reliefArtEntries
+ * for the measurement that settles that) but a translucent overlay laid over whatever terrain the
+ * plot already has. A grassland hill is still grassland; the wash only shades it.
+ *
+ * `Land/HillBlend.dds` config 15 — all four corners hill, i.e. the flat interior — names cells 15 and
+ * 16, and they measure alpha 101.5 and 96.7 of 255 (≈0.39). That fractional alpha IS the authorship:
+ * it is what makes the hill a wash rather than a ground. Both variants ship, because unlike the
+ * ground pattern (anchored to the province canvas, so it never lines up with the plot grid) this is
+ * stamped ONE PER PLOT, so a single cell would tile a visible repeat across a range of hills — the
+ * same reason bakeCoastTiles keeps its variants.
+ *
+ * This replaces an invented number: the 2D bake shades a hill with `r*1.14 + 8`, a hand-rolled
+ * brightening of exactly the kind `use-authored-art-not-substitutes` forbids. `tint` carries the
+ * wash's own alpha-weighted mean back to the caller so even the 1px/plot OVERVIEW — where a texture
+ * is meaningless and a colour shift is the only honest representation — derives its shift from the
+ * art instead of from a guess.
+ *
+ * Returns {src, cell, variants, tint:{rgb, a}} or null when the art is absent.
+ */
+function bakeHillWash() {
+  const e = terrainArtDefine(HILL_ART);
+  if (!e) return null;
+  const cells = interiorCells(e);
+  if (!cells.length) return null;
+  const baseFile = resolveArt(e.path), detFile = resolveArt(e.detail);
+  if (!baseFile || !detFile) return null;
+  const base = decodeCached(baseFile), det = decodeCached(detFile);
+  if (!base || !det) return null;
+  const CELL = 64, C = base.width / ATLAS_COLS;
+  const d = boxSample(det, CELL);
+  const strip = Buffer.alloc(cells.length * CELL * CELL * 4);
+  const W = cells.length * CELL;
+  // the alpha-WEIGHTED mean is what the overview needs: compositing this wash over ground g gives
+  // g·(1−ā) + w̄·ā, so w̄ has to be the colour the alpha actually delivers, not the flat mean
+  let wr = 0, wg = 0, wb = 0, wa = 0, n = 0;
+  cells.forEach((c, i) => {
+    const { rgba, alpha } = authoredCellRGBA(base, d, c, C, CELL);
+    for (let y = 0; y < CELL; y++) {
+      const dst = (y * W + i * CELL) * 4;
+      rgba.copy(strip, dst, y * CELL * 4, (y + 1) * CELL * 4);
+    }
+    for (let k = 0; k < CELL * CELL; k++) {
+      wr += rgba[k * 4] * alpha[k]; wg += rgba[k * 4 + 1] * alpha[k]; wb += rgba[k * 4 + 2] * alpha[k];
+      wa += alpha[k]; n++;
+    }
+  });
+  const tint = { rgb: [wr / wa | 0, wg / wa | 0, wb / wa | 0], a: +(wa / n / 255).toFixed(4) };
+  const src = queueWebpRGBA('terrain/hill-wash', W, CELL, strip, { quality: 92 });
+  console.log(`  hill wash: ${cells.length} authored variants @${CELL}px (${W}×${CELL}), `
+    + `tint rgb ${tint.rgb.join(',')} × alpha ${tint.a} (replaces the invented r*1.14+8)`);
+  return { src, cell: CELL, variants: cells.length, tint };
+}
+
+/**
  * RELIEF AS ONE MORE BLEND LAYER — `ART_DEF_TERRAIN_PEAK`, read straight out of
  * `CIV4ArtDefines_Terrain.xml` and handed back shaped like a `terrain-art.json` row so the blend bake
  * treats it as one more terrain.
@@ -1143,26 +1235,34 @@ function landBlendTable(e) {
  * PEAK's 256px cells sample down to the sheet's 64 and lose nothing visible: the blend pass draws at
  * 12–32 px/plot, so even 64 is oversampled 2–5×.
  */
-function reliefArtEntries() {
+/**
+ * One `<TerrainArtInfo>` off `CIV4ArtDefines_Terrain.xml`, shaped like a `terrain-art.json` row
+ * ({terrain, path, detail, layerOrder, blend}) so the bakes can consume either interchangeably.
+ * Null when the XML or that Type is absent.
+ */
+function terrainArtDefine(type) {
   let xml;
-  try { xml = fs.readFileSync(civ4Get('CIV4ArtDefines_Terrain.xml'), 'utf8'); } catch { return []; }
-  const out = [];
+  try { xml = fs.readFileSync(civ4Get('CIV4ArtDefines_Terrain.xml'), 'utf8'); } catch { return null; }
   for (const m of xml.matchAll(/<TerrainArtInfo>([\s\S]*?)<\/TerrainArtInfo>/g)) {
-    const type = /<Type>(.*?)<\/Type>/.exec(m[1]);
-    const key = type && Object.keys(RELIEF_ART).find(k => RELIEF_ART[k] === type[1]);
-    if (!key) continue;
+    if (/<Type>(.*?)<\/Type>/.exec(m[1])?.[1] !== type) continue;
     const blend = {};
     for (const b of m[1].matchAll(/<TextureBlend(\d+)>([\s\S]*?)<\/TextureBlend\d+>/g))
       blend[String(+b[1]).padStart(2, '0')] = b[2].trim().replace(/\s+/g, ' ');
-    out.push({
-      terrain: key,
+    return {
+      terrain: type,
       path: /<Path>(.*?)<\/Path>/.exec(m[1])?.[1],
       detail: /<Detail>(.*?)<\/Detail>/.exec(m[1])?.[1],
       layerOrder: +(/<LayerOrder>(.*?)<\/LayerOrder>/.exec(m[1])?.[1] || 0),
       blend,
-    });
+    };
   }
-  return out;
+  return null;
+}
+
+function reliefArtEntries() {
+  return Object.entries(RELIEF_ART)
+    .map(([key, type]) => { const e = terrainArtDefine(type); return e && { ...e, terrain: key }; })
+    .filter(Boolean);
 }
 
 /**
@@ -1211,30 +1311,7 @@ function bakeLandBlendCells() {
     const d = boxSample(det, CELL);                 // the grain, once per cell — authoredGroundTile's 1:1 rule
     const cells = [];
     for (let cfg = 1; cfg <= COLS; cfg++) {
-      const c = table[cfg];
-      const sx = ((c - 1) % ATLAS_COLS) * C, sy = Math.floor((c - 1) / ATLAS_COLS) * C;
-      const b = boxSample(base, CELL, sx, sy, C, C);
-      const a = boxSampleAlpha(base, CELL, sx, sy, C, C);
-      const N = CELL * CELL;
-      const rgba = Buffer.alloc(N * 4);
-      // ALPHA BLEED, the same trap bakeCoastTiles documents: lossy WebP does not preserve colour
-      // under alpha 0 and the cell is downscaled on screen, so whatever sits in the transparent
-      // pixels is dragged back into the visible ones. Fill them with the cell's own opaque mean.
-      let br = 0, bg = 0, bb = 0, bn = 0;
-      for (let k = 0; k < N; k++) {
-        if (a[k] < 200) continue;
-        br += b[k * 3]; bg += b[k * 3 + 1]; bb += b[k * 3 + 2]; bn++;
-      }
-      for (let k = 0; k < N; k++) {
-        const al = Math.round(a[k]);
-        for (let ch = 0; ch < 3; ch++) {
-          const v = al || !bn
-            ? Math.min(255, b[k * 3 + ch] * d[k * 3 + ch] / 255 * MODULATE2X)
-            : [br, bg, bb][ch] / bn * d[k * 3 + ch] / 255 * MODULATE2X;
-          rgba[k * 4 + ch] = Math.min(255, v) | 0;
-        }
-        rgba[k * 4 + 3] = al;
-      }
+      const { rgba, alpha: a } = authoredCellRGBA(base, d, table[cfg], C, CELL);
       // MEASURE the corner binding: mean alpha over the outer eighth of each corner must be set for
       // exactly the corners this config names, in the 1=NW 2=NE 4=SE 8=SW order water-terrain.mjs
       // proved for the coast. Measured over all 9 atlases this separates 240 (set) from 11 (clear),
