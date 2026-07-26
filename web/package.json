@@ -6,7 +6,7 @@
   "description": "Build tooling for the CivStudio web (build.mjs). The site itself is dependency-free; this holds only the build-time image encoder.",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test js/*.test.mjs"
+    "test": "node --test *.test.mjs js/*.test.mjs"
   },
   "dependencies": {
     "sharp": "^0.33.5"

@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -70,7 +70,28 @@ const RIVER_TINT = [93, 133, 169];
 /** Sea/lake province — its plots are all water, which changes how they are sampled and coloured. */
 const isWater = p => p.type === "SEA" || p.type === "LAKE";
 
-// THERE IS NO WATER FILL COLOUR, and that is deliberate. Water plots used to be painted from
+// The shallow-water fill, taken from the ART. Removing the invented TERRAIN_COAST blue was right —
+// it swamped the painted coast tiles — but removing it outright left the shelf showing the open-sea
+// gradient, which near a coast is nearly black: measured, near-black pixels went 293k → 1,043k the
+// moment the fill went, and that is the "black squares" along every shoreline.
+//
+// So the fill is back, but nothing about it is chosen: COAST_TILES[band].water is the mean of the
+// painted coast atlas's own cold pixels (43,71,101 temperate). The tile and the water it sits on come
+// from the same Civ4 art, which is why they agree; the old #5c9cb2 came from nowhere.
+const WATER_DEPTH = 10;
+const bandOf = lat => { const a = Math.abs(lat); return a <= 23 ? "trop" : a >= 60 ? "polar" : "temp"; };
+function shallowOf(p) {
+  const box = provSrcBox(p);
+  const band = bandOf(box ? latAtSourceY((box.y0 + box.y1) / 2) : 45);
+  return (COAST_TILES && COAST_TILES[band] && COAST_TILES[band].water) || null;
+}
+function shelfRgb(q, shallow) {
+  const deep = (SEA_BANDS && SEA_BANDS.temp) || [38, 62, 91];
+  const t = Math.min(1, Math.max(0, (q.landDist - 1) / WATER_DEPTH));   // 0 at the coast → 1 outward
+  return [0, 1, 2].map(i => Math.round(shallow[i] + (deep[i] - shallow[i]) * t));
+}
+
+// (kept for the record) Water plots used to be painted from
 // `terrainColors.TERRAIN_COAST` / `TERRAIN_SEA` — #5c9cb2 and friends, display colours invented for a
 // flat map that had no shore art. Once Civ4's painted coast tiles were stamped on top, that bright
 // blue read as an overlay swamping them (measured on screen at 88,144,160 against the atlas's own
@@ -88,7 +109,13 @@ function buildPlotCanvas(p, plots) {
   // terrain key); the land-only relief/feature/river tints below are skipped for them
   const water = p.type === "SEA" || p.type === "LAKE";
   const { canvas, box } = buildPixelCanvas(plots, (q, d, o) => {
-    if (water) return;   // transparent: the sea gradient behind IS the water (see the note above)
+    if (water) {
+      const sh = q.landDist && shallowOf(p);
+      if (!sh) return;                     // no art → transparent, the sea gradient shows
+      const g = shelfRgb(q, sh);
+      d[o] = g[0]; d[o + 1] = g[1]; d[o + 2] = g[2]; d[o + 3] = 255;
+      return;
+    }
     const c = terrainRgb(q.terrain); let r = c[0], g = c[1], b = c[2];
     if (!water) {
       const f = q.feature;
@@ -248,9 +275,25 @@ function buildPlotTexCanvas(p) {
   const water = p.type === "SEA" || p.type === "LAKE";
   // 1) base terrain as continuous repeating patterns (no per-plot tile seam)
   //
-  // 1) base terrain as continuous repeating patterns (no per-plot tile seam). LAND ONLY — a water
-  // province paints no ground at all (see the note at the head of this file: the sea gradient behind
-  // is the water, and the painted coast tile is the shore).
+  // 1) base terrain. Water is rasterised at 1px/plot and blitted upscaled with smoothing so the
+  // shallow→deep ramp is continuous rather than per-plot squares; land keeps its per-plot tiling,
+  // which has real texture that smoothing would blur.
+  if (water) {
+    const sh = shallowOf(p);
+    if (sh) {
+      const wc = document.createElement("canvas"); wc.width = w; wc.height = h;
+      const wx = wc.getContext("2d"), im = wx.createImageData(w, h);
+      for (const q of p._plots) {
+        if (!q.landDist) continue;
+        const g = shelfRgb(q, sh);
+        const k = ((q.y - y0) * w + (q.x - x0)) * 4;
+        im.data[k] = g[0]; im.data[k + 1] = g[1]; im.data[k + 2] = g[2]; im.data[k + 3] = 255;
+      }
+      wx.putImageData(im, 0, 0);
+      o.imageSmoothingEnabled = true;
+      o.drawImage(wc, 0, 0, w, h, 0, 0, w * tpp, h * tpp);
+    }
+  }
   const pat = {};
   if (!water) for (const q of p._plots) {
     const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;

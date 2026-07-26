@@ -9,6 +9,7 @@
 // The draw fns live in the modules that own their state (main.mjs closes over the raster/camera and
 // the province-polygon helpers; the overlays own their own); this module only orders and gates them.
 import { isPolitical, activeZ, S } from "./core.mjs";
+const NO_LAYERS = new Set((new URLSearchParams(location.search).get("nolayers") || "").split(",").filter(Boolean));   // TEMP bisect
 import { drawRaster, drawLakes, drawSeaCells, drawImpassable, drawSurfacePlots,
          drawProvinceBorders, drawUnderworldVeil, drawCavernFloors, drawCavernPlots, drawCavernRims,
          drawCaveEntrances, drawAdjacencies, drawRealmArrows, drawHoverHighlight, drawSelectedHighlight } from "./main.mjs";
@@ -42,6 +43,7 @@ export const SCREEN_LAYERS = [
 export function renderScreenLayers() {
   for (const L of SCREEN_LAYERS) {
     if (L.gate && !L.gate()) continue;
+    if (NO_LAYERS.has(L.id)) continue;   // TEMP bisect
     L.draw();
   }
 }
@@ -86,6 +88,7 @@ export function renderLayers() {
   for (const L of LAYERS) {
     if (L.z && !L.z.includes(z)) continue;
     if (L.gate && !L.gate()) continue;
+    if (NO_LAYERS.has(L.id)) continue;   // TEMP bisect
     L.draw();
   }
 }

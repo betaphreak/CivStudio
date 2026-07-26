@@ -606,12 +606,16 @@ function bakeTerrain(provs, name = 'terrain/terrain', realmKey = null) {
   const dw = Math.min(cropW, 2816);
   const scale = cropW / dw;
   const dh = Math.round(cropH / scale);
-  // ocean / inland_ocean pixels are baked TRANSPARENT so the animated water layer shows
-  // through them (main.mjs draws it under this raster); land stays opaque. Coast (35) is
-  // kept opaque so its shore tint survives at world zoom. Colour averages LAND sub-pixels
-  // only (sea tint never dilutes the land), and alpha is the land fraction — so a downsampled
-  // coast pixel is a soft, partly-transparent land edge over the water rather than a hard line.
-  const WATER = new Set([15, 17]);
+  // EVERY water index is baked TRANSPARENT — ocean, inland_ocean AND coast — so the sea layer shows
+  // through and land stays opaque. Coast (35) used to be kept opaque "so its shore tint survives at
+  // world zoom", painted SHALLOW [27,45,68] at full alpha. That was invisible only because the plot
+  // layer covered it with a bright invented water colour; once that fill was removed the raster's own
+  // dark shore band was exposed and every coastline read as BLACK SQUARES on prod. It is water, so it
+  // belongs here: the shore comes from Civ4's painted coast tiles, not from a tint in the raster.
+  //
+  // Colour averages LAND sub-pixels only (sea tint never dilutes the land) and alpha is the land
+  // fraction, so a downsampled coastal pixel is a soft, partly-transparent land edge over the water.
+  const WATER = new Set([15, 17, 35]);
   const rgb = Buffer.alloc(dw * dh * 3);
   const alpha = Buffer.alloc(dw * dh);
   const sea = new Uint8Array(dw * dh);      // 1 = a pure-ocean pixel (no land sub-pixel) — depth pass fills it
@@ -718,6 +722,8 @@ function terrainTint(real) {
   const t = new Array(256).fill(LAND);
   const set = (c, ...ix) => ix.forEach(i => t[i] = c);
   set(SEA, 15, 17);                       // ocean / inland_ocean
+  // (35 = coastline is in the WATER set above, so this colour is never painted into the raster; kept
+  //  because terrainDisplayColors still reports a shallow tint for other consumers.)
   set(SHALLOW, 35);                       // coastline
   set(GRASS, 0, 5, 10, 11, 12, 14, 255);  // grasslands / farmlands / forest / woods
   set(HILL, 1, 8, 23, 24);                // hills / highlands / dry_highlands
@@ -1126,14 +1132,43 @@ function bakeCoastTiles() {
     // as a dark SQUARE — tried, measured, reverted. The alpha is weighted by warmth (r-b) so the
     // painted shore band survives and the painted water does not: real art on the real sea, with no
     // invented fill colour anywhere in between.
-    const rgba = Buffer.alloc(img.width * img.height * 4);
-    for (let i = 0; i < img.width * img.height; i++) {
+    const n = img.width * img.height;
+    const rgba = Buffer.alloc(n * 4);
+    // Pass 1: alpha = warmth, and accumulate the mean SAND colour while we are here.
+    let sr = 0, sg = 0, sb = 0, sn = 0;
+    const a8 = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
       const r = img.rgba[i * 4], g = img.rgba[i * 4 + 1], b = img.rgba[i * 4 + 2];
       const warm = Math.max(0, Math.min(1, (r - b) / 40));   // 0 once it is water, 1 on sand
-      rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b;
-      rgba[i * 4 + 3] = Math.round(img.rgba[i * 4 + 3] * warm);
+      a8[i] = Math.round(img.rgba[i * 4 + 3] * warm);
+      if (a8[i] > 128) { sr += r; sg += g; sb += b; sn++; }
     }
-    out[band] = { src: queueWebpRGBA(`water/coast-${band}`, img.width, img.height, rgba, { quality: 90 }) };
+    const sand = sn ? [sr / sn | 0, sg / sn | 0, sb / sn | 0] : [200, 185, 140];
+    // the atlas's own painted WATER — the mean of its cold opaque pixels. Shipped so the water plots
+    // can be filled with Civ4's shallow-water colour instead of an invented one: it is measured from
+    // coast*blend.dds, not chosen.
+    let wr = 0, wg = 0, wb = 0, wn = 0;
+    for (let i = 0; i < n; i++) {
+      if (img.rgba[i * 4 + 3] < 200 || img.rgba[i * 4] >= img.rgba[i * 4 + 2]) continue;
+      wr += img.rgba[i * 4]; wg += img.rgba[i * 4 + 1]; wb += img.rgba[i * 4 + 2]; wn++;
+    }
+    // Pass 2: ALPHA BLEED. Transparent pixels take the sand colour rather than keeping the atlas's
+    // painted dark water. Zeroed alpha does not zero RGB, and both stages downstream average RGB
+    // across it: lossy WebP does not preserve colour under alpha 0, and drawImage downscales a 128px
+    // cell to ~32px on screen. Leaving the dark water there dragged it back into every sand pixel and
+    // painted a BLACK band along every coastline — bisected to this, after the raster and the sea
+    // layer were each cleared by measurement.
+    for (let i = 0; i < n; i++) {
+      const keep = a8[i] > 0;
+      rgba[i * 4]     = keep ? img.rgba[i * 4]     : sand[0];
+      rgba[i * 4 + 1] = keep ? img.rgba[i * 4 + 1] : sand[1];
+      rgba[i * 4 + 2] = keep ? img.rgba[i * 4 + 2] : sand[2];
+      rgba[i * 4 + 3] = a8[i];
+    }
+    out[band] = {
+      src: queueWebpRGBA(`water/coast-${band}`, img.width, img.height, rgba, { quality: 90 }),
+      water: wn ? [wr / wn | 0, wg / wn | 0, wb / wn | 0] : null,
+    };
     if (out.blend) continue;
     // parse the table off the TEMPERATE define; every coast variant carries the same 15-entry table
     const block = new RegExp(`<TerrainArtInfo>\\s*<Type>${artDef}</Type>[\\s\\S]*?</TerrainArtInfo>`).exec(xml);
