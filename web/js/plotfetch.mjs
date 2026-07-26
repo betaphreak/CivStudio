@@ -20,6 +20,7 @@ import { BUNDLE, apiUrl, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { renderRail } from "./rail.mjs";
 import { indexLand } from "./shore-index.mjs";
+import { indexTerrain } from "./terrain-corners.mjs";
 import { shelf } from "./water-terrain.mjs";
 
 // ---- the shore index (js/shore-index.mjs) ----
@@ -34,6 +35,22 @@ import { shelf } from "./water-terrain.mjs";
 const LAND = new Map();
 /** The shore index: source pixel → land terrain key. Read-only to consumers. */
 export const shoreIndex = () => LAND;
+
+// The TERRAIN index — source pixel → the plot's effective blend layer, for corner ownership
+// (js/terrain-corners.mjs, docs/land-blend-plan.md). Separate from LAND above because it answers a
+// different question and keeps every terrain, water included; the same "no version counter" argument
+// applies, and staleness is tracked per province against `_tblendGaps`.
+const TERRAIN = new Map();
+/** The corner-ownership index: source pixel → effective layer key. Read-only to consumers. */
+export const terrainIndex = () => TERRAIN;
+/**
+ * A plot's EFFECTIVE blend layer. Normally its terrain — but a PEAK plot is Civ4's top layer
+ * (LayerOrder 100, above even water), and its authored art REPLACES the ground rather than tinting
+ * it, so a peak contributes `PEAK` and not the terrain underneath. HILL does not appear here: its
+ * art is a translucent wash over whatever terrain the plot already has, so a hill still contributes
+ * its terrain (docs/land-blend-plan.md §5.3).
+ */
+const layerOf = q => (q.plotType === "PEAK" ? "PEAK" : q.terrain);
 
 const PLOT_FETCH_TIMEOUT = 6000;    // ms — drop a plot fetch that takes longer than this
 const PLOT_RETRY_BACKOFF = 12000;   // ms — after a timeout, wait this long before retrying a province
@@ -62,6 +79,7 @@ export async function loadPlots(p) {
     // Index this province's LAND before anything draws, so a water province baked in the same frame
     // already sees it. `shelf(t)` is the water test — the eight water keys and nothing else.
     if (p._plots.length) indexLand(LAND, p._plots, t => !!shelf(t));
+    if (p._plots.length) indexTerrain(TERRAIN, p._plots.map(q => ({ x: q.x, y: q.y, terrain: layerOf(q) })));
     if (p._plots.length) draw();
     if (S.selectedProv === p) renderRail();
     // A province's plots just landed. Readouts derived from them (the top bar's Terrain/Locale/Plot

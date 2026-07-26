@@ -1295,7 +1295,12 @@ function bakeLandBlendCells() {
   if (!manifest.length) return null;
   const entries = [...manifest, ...reliefArtEntries()].map(e => [e, landBlendTable(e)]).filter(([, t]) => t);
   if (!entries.length) return null;
-  const CELL = 64, COLS = LAND_BLEND_CFGS;
+  // 15 columns, not 14: config 15 (all four corners this terrain) is the FLAT INTERIOR, and the
+  // renderer needs it for two cases the blend cells cannot cover — a plot completely ringed by a
+  // higher layer (2.78% of owners on a coastal patch), and a PEAK plot's own ground, which is what
+  // puts real mountain rock under the billboard. It is the same authored cell authoredGroundTile
+  // takes for the ground atlas, so the two agree by construction.
+  const CELL = 64, COLS = LAND_BLEND_CFGS + 1;
   // every land terrain names the same cell per config; ship one map, but verify rather than assume
   const table = entries[0][1];
   const shared = entries.every(([, t]) => Object.keys(table).every(k => t[k] === table[k]));
@@ -1309,9 +1314,11 @@ function bakeLandBlendCells() {
     if (!base || !det) continue;
     const C = base.width / ATLAS_COLS;              // square cells, so the row pitch is the same
     const d = boxSample(det, CELL);                 // the grain, once per cell — authoredGroundTile's 1:1 rule
+    const interior = interiorCells(e)[0];
+    if (!interior) continue;
     const cells = [];
     for (let cfg = 1; cfg <= COLS; cfg++) {
-      const { rgba, alpha: a } = authoredCellRGBA(base, d, table[cfg], C, CELL);
+      const { rgba, alpha: a } = authoredCellRGBA(base, d, cfg > LAND_BLEND_CFGS ? interior : table[cfg], C, CELL);
       // MEASURE the corner binding: mean alpha over the outer eighth of each corner must be set for
       // exactly the corners this config names, in the 1=NW 2=NE 4=SE 8=SW order water-terrain.mjs
       // proved for the coast. Measured over all 9 atlases this separates 240 (set) from 11 (clear),

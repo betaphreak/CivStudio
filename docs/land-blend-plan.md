@@ -188,11 +188,29 @@ this vertex". Both are corner-keyed; only the tie-break differs.
    `blendConfigs(index, x, y, LY)` → `{configs: [[terrain, cfg], …], gaps}`. Zero-import, 15 unit
    tests (`node --test web/js/terrain-corners.test.mjs`), nothing renders from it. Measurements and
    the two design points that were not in this plan are in §5.1 below.
-3. **Replace stage 2.** Draw the authored cells instead of `BLEND_NOISE`. **This is the biggest visual
-   change in the project** — every land boundary on the map. Capture before/after at several zooms
-   (bands 4, 5, 6.5, max) and compare deliberately rather than eyeballing one frame.
-4. **Retire what it supersedes** — `BLEND_NOISE`, the 2b radial corner pass, and the `LY`-driven
-   0.95/0.7/0.55 strength ladder, which the authored alpha replaces.
+3. ~~**Replace stage 2.**~~ **SHIPPED.** `plots.mjs` stage 2 is now: for each plot, `blendConfigs` →
+   stamp each owner's cell. No ramp, no noise, no strength ladder — the falloff is painted into the
+   art. A new **stage 2a** draws PEAK's own interior cell (config 15) on a PEAK plot, since at
+   LayerOrder 100 it wins its own corners and no neighbour ever paints over it; that is the rock the
+   mountain billboard stands on. `_tblendGaps` carries the unresolved corners for precise staleness,
+   re-baking only when one *resolves* (§6's rule). The old `tpp >= 12` gate is gone with the feather:
+   a mask works at any size, where a tile feather needed the texture to read.
+4. ~~**Retire what it supersedes.**~~ **SHIPPED** in the same change — `BLEND_NOISE`, its per-plot
+   sampling offset, the 2b radial corner pass, and the `LY`-driven 0.95/0.7/0.55 ladder are all gone.
+
+### 5.5 What phase 3 was verified against — and what could NOT be
+
+Local stack, province 4 Moonmount, deep-linked (`?p=` now skips the lobby by itself — `docs/realms.md`
+§Deep links): 65–72 provinces textured at 32 px/plot, **no console errors**, 17 blend rows × 15
+configs served. **12.5% of pixels change** against the immediately-preceding build at z=60.
+
+**The 3D tilt-0 seam gate could not be re-measured, and that is a pre-existing failure rather than a
+phase-3 regression.** `tools/webverify/terrain3d-verify.mjs` reports `within 16` of **5.6%** with this
+change — but **6.8% with the change stashed**, against a documented 85.9%. Its own output explains
+both numbers: *"the two modes settled on different province counts (0 vs 40)"* — the 2D reference
+frame has **no textured provinces at all** at its z=32 sample, so the diff is against an essentially
+empty picture and means nothing in either direction. Fixing that gate is its own task; until it is
+fixed it cannot gate this or anything else. Do not read the 85.9% in §6 as still holding.
 
 Phases 1–2 are safe and self-contained; 3 is where the risk is.
 

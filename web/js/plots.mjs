@@ -3,7 +3,8 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, HILL_WASH, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, HILL_WASH, LAND_BLEND, LY, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { blendConfigs, cornerResolved } from "./terrain-corners.mjs";
 import { shelfColor } from "./water-terrain.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
@@ -11,7 +12,7 @@ import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plo
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
 import { drawSeaIce, extendCoastIntoWater } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
-import { loadPlots, shoreIndex } from "./plotfetch.mjs";
+import { loadPlots, shoreIndex, terrainIndex } from "./plotfetch.mjs";
 import { shoreTerrain } from "./shore-index.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
 
@@ -34,6 +35,25 @@ const hwImg = loadArt(HILL_WASH, () => {
   hwReady = true;
   for (const p of P) p._tcanvas = null;   // canvases baked before the wash arrived have bare hills
 });
+// Civ4's authored land-transition cells: one row per blend layer, 15 columns (configs 1–14 plus the
+// flat interior at 15). Drawn straight out of the sheet with a source rect — 255 cells would be 255
+// canvases to slice, and drawImage takes the sub-rect just as happily.
+let lbReady = false;
+const lbImg = loadArt(LAND_BLEND, () => { lbReady = true; for (const p of P) p._tcanvas = null; });
+/**
+ * Stamp one authored blend cell over a plot.
+ *
+ * A layer with no row is SKIPPED, and that skip is load-bearing rather than a guard: water and the
+ * nine synthetic terrains legitimately own corners but have nothing authored to draw there (water's
+ * transition is the painted coast tile on the water plot; the synthetic terrains have no Civ4 art
+ * define at all). Skipping is what stops a LOWER land neighbour from claiming a corner it did not
+ * win — the corner simply keeps this plot's own ground.
+ */
+function drawBlendCell(o, layer, cfg, cx, cy, tpp, C) {
+  const row = LAND_BLEND.index[layer];
+  if (row === undefined) return;
+  o.drawImage(lbImg, (cfg - 1) * C, row * C, C, C, cx, cy, tpp, tpp);
+}
 // the baked water tile for the river ribbon (docs/river-rendering.md §2); null → drawRivers falls back to flat blue
 let rvReady = false;
 const rvImg = loadArt(RIVER, () => { rvReady = true; });
@@ -236,6 +256,13 @@ function drawPlots(only) {
         for (let i = 0; i < gaps.length; i += 2)
           if (shoreTerrain(shoreIndex(), gaps[i], gaps[i + 1])) { staleShore = true; break; }
       }
+      // …and the same rule for the terrain blend: a LAND province baked before its neighbour loaded
+      // has corners resolved from a partial picture. Re-bake only when one of the recorded corners
+      // becomes fully known — a corner at the world edge never will, so this cannot thrash.
+      if (!staleShore && p._tcanvas && p._tblendGaps) {
+        for (const k of p._tblendGaps)
+          if (cornerResolved(terrainIndex(), Math.floor(k / 1e5), k % 1e5)) { staleShore = true; break; }
+      }
       if (!p._tcanvas || staleShore) {
         if (performance.now() >= buildDeadline) {   // out of frame budget — keep what we have, rebuild next frame
           deferred = true;
@@ -274,34 +301,10 @@ function drawPlots(only) {
   drawBonusOverlay(vis);   // resource icons: screen-space overlay over the in-view provinces only
   if (deferred) draw();    // keep each paint under budget — finish the remaining builds over the next frames
 }
-// A smooth grayscale noise tile (deterministic, built once): black RGB with a soft-blob ALPHA
-// channel in ~[0.25,1]. Used to make the terrain edge/corner blend IRREGULAR instead of a clean
-// linear ramp — multiplied into the blend mask so boundaries interleave organically, which is what
-// kills the square-tile look at deep zoom (Civ4's alpha blend masks do the same). Low-res hash noise
-// upscaled with smoothing → cloudy blobs; each plot samples a different sub-region so neighbours differ.
-const BLEND_NOISE = (() => {
-  const LO = 32, HI = 128;
-  const lo = document.createElement("canvas"); lo.width = lo.height = LO;
-  const lx = lo.getContext("2d"), im = lx.createImageData(LO, LO), d = im.data;
-  for (let y = 0; y < LO; y++) for (let x = 0; x < LO; x++) {
-    const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453, v = s - Math.floor(s);   // deterministic hash [0,1)
-    const i = (y * LO + x) * 4;
-    // alpha kept in a HIGH band [0.55,1]: the noise only nibbles the feather edge irregular, it must
-    // not gut the neighbour's coverage (a low floor made lone tiles read MORE square, not less)
-    d[i] = d[i + 1] = d[i + 2] = 0; d[i + 3] = Math.round((0.55 + 0.45 * v) * 255);
-  }
-  lx.putImageData(im, 0, 0);
-  const hi = document.createElement("canvas"); hi.width = hi.height = HI;
-  const hx = hi.getContext("2d"); hx.imageSmoothingEnabled = true;
-  hx.drawImage(lo, 0, 0, LO, LO, 0, 0, HI, HI);   // upscale → smooth blobs
-  return hi;
-})();
-const NOISE_SUB = 40, NOISE_RANGE = 128 - NOISE_SUB;   // per-plot sample window into BLEND_NOISE
-// a per-plot/edge offset into the noise so adjacent blends don't share the same irregular edge
-const noiseOff = (qx, qy, d) => {
-  const h = ((qx * 73856093) ^ (qy * 19349663) ^ ((d[0] + 2) * 10007) ^ ((d[1] + 2) * 20011)) >>> 0;
-  return [h % NOISE_RANGE, (h >> 8) % NOISE_RANGE];
-};
+// (BLEND_NOISE and its per-plot sampling offset lived here: a hash-noise alpha tile multiplied into
+// the old procedural feather to roughen its edge. Both are gone with the feather itself — the
+// authored blend cells carry their own painted falloff, so there is no clean ramp left to disguise.
+// See buildPlotTexCanvas stage 2 and docs/land-blend-plan.md.)
 
 // rasterise a province's plots to a textured offscreen — each plot drawn as its Civ4
 // ground-texture tile (from the atlas) at TPP px, plus relief/river overlays — built
@@ -416,89 +419,47 @@ function buildPlotTexCanvas(p) {
   // strongly; EQUAL-order neighbours bleed mutually at half strength (each side blends the other) so
   // same-layer terrain boundaries — grass/plains/tundra etc. — soften instead of meeting at a hard
   // seam; a LOWER neighbour is skipped here and handled when ITS cell bleeds this one back.
-  const f = tpp * 0.85;
-  if (!water) {
-  // When a plot is big enough to read its texture (deep/city zoom), feather the neighbour's REAL
-  // terrain tile across the edge instead of a flat colour: draw the tile into a per-plot temp,
-  // mask it to a soft edge ramp with `destination-in`, and composite it over this plot's base. That
-  // dissolves grass/plains/tundra boundaries the way Civ4's blend tiles do. At small tpp (a huge
-  // province zoomed out) the seam is sub-pixel, so keep the cheap flat-colour feather there.
-  const textured = tpp >= 12 && ttTiles;
-  let eb = null, ebx = null;
-  if (textured) { eb = document.createElement("canvas"); eb.width = tpp; eb.height = tpp; ebx = eb.getContext("2d"); }
-  for (const q of p._plots) {
-    const ql = LY[q.terrain] || 0, cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
-    for (const d of NB4) {
-      const n = grid.get((q.x + d[0]) * 1e5 + (q.y + d[1]));
-      if (!n || n.terrain === q.terrain) continue;
-      const nl = LY[n.terrain] || 0;
-      // blend BOTH sides of every boundary so neither edge stays a hard line (Civ4 mutual blend):
-      // a higher-layer neighbour bleeds strongly onto this lower plot, a lower one bleeds back strongly
-      // enough to actually soften this higher plot's edge, equal layers meet in the middle.
-      const a = nl > ql ? 0.95 : nl < ql ? 0.55 : 0.7;
-      const tile = textured ? ttTiles[n.terrain] : null;
-      if (tile) {
-        // paint the neighbour's tile, mask it to a feather along the shared edge, blit over the plot
-        ebx.globalCompositeOperation = "source-over"; ebx.clearRect(0, 0, tpp, tpp);
-        ebx.drawImage(tile, 0, 0, tile.width, tile.height, 0, 0, tpp, tpp);
-        let gm;
-        if (d[0] === 1)       gm = ebx.createLinearGradient(tpp, 0, tpp - f, 0);
-        else if (d[0] === -1) gm = ebx.createLinearGradient(0, 0, f, 0);
-        else if (d[1] === 1)  gm = ebx.createLinearGradient(0, tpp, 0, tpp - f);
-        else                  gm = ebx.createLinearGradient(0, 0, 0, f);
-        gm.addColorStop(0, `rgba(0,0,0,${a})`); gm.addColorStop(1, "rgba(0,0,0,0)");
-        ebx.globalCompositeOperation = "destination-in";
-        ebx.fillStyle = gm; ebx.fillRect(0, 0, tpp, tpp);
-        const [nx, ny] = noiseOff(q.x, q.y, d);      // multiply by smooth noise → irregular, non-square edge
-        ebx.drawImage(BLEND_NOISE, nx, ny, NOISE_SUB, NOISE_SUB, 0, 0, tpp, tpp);
-        o.drawImage(eb, cx, cy);
-        continue;
-      }
-      const g = terrainRgb(n.terrain);            // fallback: flat-colour feather (small tpp / missing tile)
-      const c0 = `rgba(${g[0]},${g[1]},${g[2]},${a})`, c1 = `rgba(${g[0]},${g[1]},${g[2]},0)`;
-      let gr, rx, ry, rw, rh;
-      if (d[0] === 1) { gr = o.createLinearGradient(cx + tpp, 0, cx + tpp - f, 0); rx = cx + tpp - f; ry = cy; rw = f; rh = tpp; }
-      else if (d[0] === -1) { gr = o.createLinearGradient(cx, 0, cx + f, 0); rx = cx; ry = cy; rw = f; rh = tpp; }
-      else if (d[1] === 1) { gr = o.createLinearGradient(0, cy + tpp, 0, cy + tpp - f); rx = cx; ry = cy + tpp - f; rw = tpp; rh = f; }
-      else { gr = o.createLinearGradient(0, cy, 0, cy + f); rx = cx; ry = cy; rw = tpp; rh = f; }
-      gr.addColorStop(0, c0); gr.addColorStop(1, c1);
-      o.fillStyle = gr; o.fillRect(rx, ry, rw, rh);
-    }
-  }
-  // 2b) corner blend: the 4-edge pass leaves the diagonal gaps — where a plot's DIAGONAL neighbour
-  // differs but both flanking orthogonal neighbours match, that corner stays a hard square notch.
-  // Feather the diagonal neighbour's tile into the corner with a radial mask. Skipped when a flanking
-  // orthogonal neighbour already shares that terrain (its edge blend covers the corner), and only when
-  // the texture is big enough to read (same tpp gate + temp canvas as the edge pass).
-  if (textured) {
-    const NB4D = [[1, -1], [-1, -1], [1, 1], [-1, 1]];   // NE, NW, SE, SW
-    const fc = tpp * 0.6;
+  // 2) TERRAIN BLEND — Civ4's own painted transition cells, stamped per corner configuration
+  // (docs/land-blend-plan.md). LAND ONLY: a water province's 1px/plot rasterisation IS its blend,
+  // interpolated by the bilinear upscale, and the land↔water edge is the painted coast tile that
+  // coast.mjs stamps on the water plot.
+  //
+  // WHAT THIS REPLACED, AND WHY IT LOOKED WRONG. Until now this was a procedural feather: each
+  // neighbour's ground tile drawn inward from the shared EDGE under a linear ramp (0.95/0.7/0.55 by
+  // LayerOrder), plus a radial pass for the diagonal corners, both roughened by a noise mask. The
+  // unit of that operation is the plot SQUARE, so the output was a soft-edged square, and a region of
+  // alternating terrain read as a checkerboard of them. No amount of tuning the ramp could fix it:
+  // the shape was wrong, not the strength.
+  //
+  // Civ4 answers the question differently, and the art is authored for its answer. Terrain blends on
+  // a mesh whose vertices are plot CORNERS, and each `TextureBlend<n>` cell's alpha is a mask for
+  // exactly the corners `n` names — measured, all 255 baked cells bind to their config's corners. So
+  // the operation is: for every terrain that owns a corner of this plot, stamp its cell for the
+  // corners it owns. No ramp, no noise, no strength ladder; the falloff is painted into the art.
+  //
+  // Ownership is `js/terrain-corners.mjs` (highest LayerOrder among the four plots meeting at the
+  // vertex, so it is order-independent), read off the GLOBAL index — a plot's neighbours can be in
+  // another province, and provinces arrive asynchronously.
+  if (!water && lbReady) {
+    const idx = terrainIndex(), C = LAND_BLEND.cell, gaps = [];
     for (const q of p._plots) {
-      const ql = LY[q.terrain] || 0, cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
-      for (const d of NB4D) {
-        const n = grid.get((q.x + d[0]) * 1e5 + (q.y + d[1]));
-        if (!n || n.terrain === q.terrain) continue;
-        const nl = LY[n.terrain] || 0;
-        const e1 = grid.get((q.x + d[0]) * 1e5 + q.y);   // the two orthogonal neighbours flanking this corner
-        const e2 = grid.get(q.x * 1e5 + (q.y + d[1]));
-        if ((e1 && e1.terrain === n.terrain) || (e2 && e2.terrain === n.terrain)) continue;   // edge blend already covers it
-        const tile = ttTiles[n.terrain];
-        if (!tile) continue;
-        const a = nl > ql ? 0.95 : nl < ql ? 0.55 : 0.7;   // mutual: soften both sides of the corner
-        ebx.globalCompositeOperation = "source-over"; ebx.clearRect(0, 0, tpp, tpp);
-        ebx.drawImage(tile, 0, 0, tile.width, tile.height, 0, 0, tpp, tpp);
-        const vx = d[0] === 1 ? tpp : 0, vy = d[1] === 1 ? tpp : 0;
-        const gm = ebx.createRadialGradient(vx, vy, 0, vx, vy, fc);
-        gm.addColorStop(0, `rgba(0,0,0,${a})`); gm.addColorStop(1, "rgba(0,0,0,0)");
-        ebx.globalCompositeOperation = "destination-in";
-        ebx.fillStyle = gm; ebx.fillRect(0, 0, tpp, tpp);
-        const [nx, ny] = noiseOff(q.x, q.y, d);      // irregular corner, same noise mask as the edges
-        ebx.drawImage(BLEND_NOISE, nx, ny, NOISE_SUB, NOISE_SUB, 0, 0, tpp, tpp);
-        o.drawImage(eb, cx, cy);
-      }
+      const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
+      // 2a) a PEAK stands on its own rock. PEAK is LayerOrder 100 — above every terrain in the game —
+      // so it wins all four of its own corners and no neighbour ever paints over it, which means the
+      // self-owned interior cell is the only way its ground gets drawn. This is what the mountain
+      // billboard stands on (docs/land-blend-plan.md §5.3).
+      if (q.plotType === "PEAK") drawBlendCell(o, "PEAK", 15, cx, cy, tpp, C);
+      const { configs, gaps: g } = blendConfigs(idx, q.x, q.y, LY);
+      if (g.length) gaps.push(...g);
+      // configs arrive lowest-LayerOrder first, so drawing in order paints the highest layer last
+      for (const [terr, cfg] of configs) drawBlendCell(o, terr, cfg, cx, cy, tpp, C);
     }
+    // PRECISE staleness, the `_tshoreGaps` contract: the corners this bake could not resolve because
+    // a neighbouring province had not loaded. drawPlots re-bakes only when one of them RESOLVES —
+    // never on a global counter, and never merely because the list is non-empty, since a plot at the
+    // world edge has corners that will never resolve and would thrash forever.
+    p._tblendGaps = gaps.length ? gaps : null;
   }
-  }   // end land-only edge/corner blend
   if (!water) {
   // 3) snow on the highest ground. (The elevation-normal hillshade that used to sit here was
   // removed: with EXAG amplifying the gentle continental heightmap, near-flat provinces — most of
