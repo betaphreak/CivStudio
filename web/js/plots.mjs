@@ -8,7 +8,7 @@ import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
-import { paintCoast, drawSeaIce } from "./coast.mjs";
+import { paintCoast, drawSeaIce, blendCoastEdges } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
 import { loadPlots } from "./plotfetch.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
@@ -388,6 +388,13 @@ function buildPlotTexCanvas(p) {
   // (city cores are re-terrained to their countryside in markUrbanPlots; a subtle screen-space
   // marker in city.mjs keeps them locatable — the old Civ4 city sprite was pulled, see there.)
   } // end land-only ground stages
+  // SOFTEN THE COASTLINE. Every plot above was painted as a SQUARE, so a coastline running at an
+  // angle to the grid reads as a staircase. Civ4's authored 16-way blend masks
+  // (heightmap/coastblendmasks, indexed by ProvinceRaster.seaMask's diagonal nibble — global, so no
+  // province seam) bleed the shore colour into each coastal plot along their own curve. Done LAST, so
+  // it sits over the ground, the beach and the foliage alike. See coast.mjs for what these masks
+  // are, and what they are NOT — reading them as land occupancy deletes half a coastal plot.
+  if (!water) blendCoastEdges(o, p._plots, x0, y0, tpp);
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
   p._tcanvas = oc; p._tbox = { x0, y0, w, h }; p._grid = grid;   // grid: q.x*1e5+q.y → plot, for the resource tooltip
   p._tfoliage = bakeFoliage;   // which way this canvas was baked — drawPlots invalidates it when that flips

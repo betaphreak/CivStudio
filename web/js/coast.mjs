@@ -10,7 +10,7 @@
 // coast is a smooth wavy line across cells, not a grid staircase; (2) the real Civ4 shoredetail ripple
 // clipped to that shallow shape. (Earlier per-cell rectangular bites read as blue blotches on the land,
 // and the wave-crest foam lapped onto land — both dropped for this continuous shallows.)
-import { SHORE, ICE_ART, SEA_BANDS, BEACH, FOAM } from "./core.mjs";
+import { SHORE, ICE_ART, SEA_BANDS, BEACH, FOAM, COAST_MASK } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
 // the baked greyscale shore-wave tile for the coast shallows (docs/coastlines.md Phase D); null →
@@ -25,6 +25,51 @@ const iceImg = loadArt(ICE_ART, () => { iceReady = true; });
 // keeps its procedural white feather
 let foamReady = false;
 const foamImg = loadArt(FOAM, () => { foamReady = true; });
+// Civ4's 16-way shoreline stencil (§4 P3); null → coastal plots stay square
+let cmReady = false;
+const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
+
+/**
+ * Soften every coastal plot's seaward side, so a coastline running at an angle to the plot grid
+ * stops reading as a staircase of squares.
+ *
+ * WHAT THESE MASKS ARE, which cost a wrong first attempt: they are BLEND-WEIGHT fields, not occupancy.
+ * Mask 3 (sea to NW and NE) is a white *half*, not a rounded corner — Civ4 uses it as the alpha for
+ * compositing the coast texture across the whole tile. Treating it as land occupancy and erasing by
+ * it with `destination-out` deletes half a coastal plot and punches holes straight through to the
+ * background, which is exactly what it looked like.
+ *
+ * So it is used the way it was authored: the shore colour is painted OVER the coastal plot through
+ * the mask, letting water bleed into the plot along the authored curve instead of stopping at the
+ * square edge. Nothing is destroyed, and the boundary picks up Civ4's shape.
+ *
+ * The index is `q.coast >> 4` — ProvinceRaster.seaMask's diagonal nibble is NW/NE/SE/SW = the mask's
+ * TL/TR/BR/BL, computed over the whole world raster, so this carries no province seam. Configurations
+ * 0 and 15 are solid white in the source (Civ4's "uniform tile, nothing to blend" at both extremes)
+ * and are skipped.
+ */
+export function blendCoastEdges(o, plots, x0, y0, tpp, lat = 45) {
+  if (!cmReady) return;
+  const C = COAST_MASK.cell;
+  // a scratch the mask is tinted through: drawImage cannot colourise, so paint the shore hue and
+  // clip it to the mask's alpha once, then stamp that per plot
+  const tc = document.createElement("canvas"); tc.width = COAST_MASK.n * C; tc.height = C;
+  const t = tc.getContext("2d");
+  t.drawImage(cmImg, 0, 0);
+  t.globalCompositeOperation = "source-in";
+  t.fillStyle = `rgb(${SHORE_COL})`;
+  t.fillRect(0, 0, tc.width, tc.height);
+  o.save();
+  o.globalAlpha = 0.55;
+  o.imageSmoothingEnabled = true;
+  for (const q of plots) {
+    if (!q.coast) continue;
+    const i = (q.coast >> 4) & 15;
+    if (i === 0 || i === 15) continue;                 // uniform masks — nothing to blend
+    o.drawImage(tc, i * C, 0, C, C, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, tpp);
+  }
+  o.restore();
+}
 // the shallows tint — the Civ4 shoreblend hue baked into the bundle, or the old teal fallback
 const SHORE_COL = (SEA_BANDS && SEA_BANDS.shore) ? SEA_BANDS.shore.join(",") : "116,178,196";
 // beach sand — the hand-picked pair this used before the real art arrived. Still the fallback when

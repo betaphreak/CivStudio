@@ -20,6 +20,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { decodeDds } from './dds.mjs';
+import { decodeTga } from './tga.mjs';
 import { loadGameFont, resourceCellRGBA, CELL as GF_CELL } from './gamefont.mjs';
 import { get as civ4Get, resolveArt as civ4ResolveArt, prefetch as civ4Prefetch } from './civ4.mjs';
 import * as civ6 from './civ6.mjs';
@@ -329,6 +330,8 @@ await (async () => {
     // grain (bakeShoreTile), and the surf strip (bakeFoamStrip)
     'Art/Terrain/textures/coastblend.dds', 'Art/Terrain/textures/coasttropblend.dds',
     'Art/Terrain/textures/coastpolarblend.dds', 'Art/Terrain/textures/coastdetail.dds',
+    ...Array.from({ length: 16 }, (_, i) =>                 // the 16-way shoreline stencil (bakeCoastMasks)
+      `Art/Terrain/heightmap/coastblendmasks/coastscalemask${String(i).padStart(2, '0')}.tga`),
     'Art/Terrain/features/icepack/icepack_1024.dds', 'Art/Terrain/features/treeleafy/trees_1024.dds',
     'Art/Terrain/features/savanna/palms_1024.dds', 'Art/Terrain/features/swamp/trees1.dds');
   arts.push(...routeArtPaths());   // the road/rail segment nifs + their textures (bakeRoutes)
@@ -355,6 +358,7 @@ const fow = bakeFowTiles();                   // {HATCH_*|PARCHMENT: {src,tile}}
 const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} climate sea + shore colours
 const beach = bakeBeachRamps();              // {trop, temp, polar} real Civ4 sand ramps, or null (hand-picked sand)
 const foam = bakeFoamStrip();                // {src, w, h} real Civ4 wave-crest strip, or null (procedural feather)
+const coastMask = bakeCoastMasks();          // {src, cell, n} Civ4 16-way shoreline stencil, or null (square plots)
 const plotProvinceCount = computeWaterBboxes(provinces);
 
 // encode every queued art asset to WebP (one async pass now the bakes have run); imgSizes feeds the
@@ -475,7 +479,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach, foam,
+  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach, foam, coastMask,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -498,6 +502,7 @@ console.log(`  river tile: ${river ? river.src : 'skipped (no allriverssmall.dds
 console.log(`  sea tile: ${sea ? sea.src : 'skipped (no seadetail.dds / LFS)'} · bands trop/temp/polar ${JSON.stringify([seaBands.trop, seaBands.temp, seaBands.polar])}`);
 console.log(`  beach ramps: ${beach ? `real Civ4 sand, temp ${beach.temp[0].join(',')} → ${beach.temp[beach.temp.length - 1].join(',')}` : 'skipped (no coastblend.dds) — renderer keeps its hand-picked sand'}`);
 console.log(`  foam strip: ${foam ? `${foam.src} (${foam.w}×${foam.h})` : 'skipped (no wave_crest.dds) — renderer keeps its procedural feather'}`);
+console.log(`  coast masks: ${coastMask ? `${coastMask.src} (${coastMask.n}×${coastMask.cell}²)` : 'skipped (no coastblendmasks) — renderer keeps square coastal plots'}`);
 console.log(`  ice tile: ${ice ? ice.src : 'skipped (no icepack_1024.dds / LFS)'}`);
 console.log(`  improvement overlays: ${improvementOverlays ? Object.keys(improvementOverlays).length + ' Civ6 SV (placement deferred)' : 'skipped (no Civ6 depot)'}`);
 
@@ -1049,6 +1054,43 @@ function bakeFoamStrip() {
     }
   console.log(`  foam strip: C2C wave_crest ${W}×${H}`);
   return { src: queueWebpRGBA('water/foam', W, H, out, { quality: 88 }), w: W, h: H };
+}
+
+// The COAST BLEND MASKS — Civ4's authored 16-way shoreline falloff (docs/civ4-texture-inventory.md
+// §4 P3). `heightmap/coastblendmasks/coastscalemask00..15.tga` are sixteen 16×16 greyscale masks, one
+// per 4-bit diagonal-sea configuration, and `ProvinceRaster.seaMask` was written to index them: its
+// high nibble is NW/NE/SE/SW = the mask's TL/TR/BR/BL, so the tile index is `(plot.coast >> 4)`.
+//
+// POLARITY, established by measurement rather than by reading the format: white = LAND. Stitching the
+// masks over a real province's plots reproduces that province's land footprint; the inverse gives its
+// complement. So the emitted strip's ALPHA is the WATER coverage (255 − grey) and its RGB is black —
+// the renderer uses it as a `destination-out` stencil to erase each coastal cell's sea corners.
+//
+// Indices 0 and 15 are both solid white in the source (Civ4's "uniform tile, nothing to blend" at
+// both extremes), so both erase nothing. That is right for 0 (no diagonal sea) and wrong for 15 (all
+// four diagonals sea) — but 15 is 0.9% of coastal plots and erasing it would eat a one-tile island,
+// so leaving it square is the safe reading.
+//
+// These are palettised TGA, which web/tga.mjs only learned to read for this (see its header).
+// Returns {src, cell, n} or null when the art is absent — the renderer then keeps square plots.
+function bakeCoastMasks() {
+  const N = 16, C = 16;                                  // 16 masks, 16×16 each
+  const strip = Buffer.alloc(N * C * C * 4);
+  for (let i = 0; i < N; i++) {
+    const file = resolveArt(`Art/Terrain/heightmap/coastblendmasks/coastscalemask${String(i).padStart(2, '0')}.tga`);
+    if (!file) return null;
+    let m;
+    try { m = decodeTga(fs.readFileSync(file)); } catch { return null; }
+    if (m.width !== C || m.height !== C) return null;
+    for (let y = 0; y < C; y++)
+      for (let x = 0; x < C; x++) {
+        const d = ((y * N * C) + i * C + x) * 4;         // one horizontal strip of 16 cells
+        strip[d] = strip[d + 1] = strip[d + 2] = 0;
+        strip[d + 3] = 255 - m.rgba[((y * C + x) << 2)]; // white = land → alpha = water coverage
+      }
+  }
+  console.log(`  coast masks: C2C coastblendmasks ${N}×${C}²`);
+  return { src: queueWebpRGBA('water/coastmask', N * C, C, strip, { quality: 100 }), cell: C, n: N };
 }
 
 // Bake a seamless COLOUR ice tile for the polar sea-ice floes (drawSeaIce). Civ6-first
