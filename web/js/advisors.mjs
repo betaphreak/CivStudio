@@ -136,10 +136,18 @@ function openLobby() {
   if (window.__lobby && window.__lobby.open) window.__lobby.open();
   else if (window.__picker && window.__picker.open) window.__picker.open();
 }
+// The globe segment opens the FULL realm selector (index.html `window.__realms`) rather than the
+// little masthead dropdown it used to. One chooser, the same rows and province counts, whether it is
+// the first-run question or a deliberate switch — a realm is a world, and a 3-item text menu tucked
+// under the top bar undersold the choice. The dropdown remains as the fallback for a page whose
+// bootstrap predates the selector (`realmMenu`, below), and keeps the Lobby entry either way: the
+// selector is realms only, so Lobby moves back to the brand, which has always opened it.
 function wireGlobeDropdown(btn) {
-  btn.insertAdjacentHTML("beforeend", '<span class="adv-caret">▾</span>');   // signal it opens a menu
+  btn.insertAdjacentHTML("beforeend", '<span class="adv-caret">▾</span>');   // signal it opens a chooser
   btn.addEventListener("click", e => {
     e.stopPropagation();
+    setAdvisor("globe");   // still reveal the plane sub-bar (Halcann)
+    if (window.__realms && window.__realms.open) { window.__realms.open(); return; }
     const menu = realmMenu(), open = menu.hidden;
     menu.hidden = true;   // (re)position then reveal, so it tracks the button
     if (open) {
@@ -148,7 +156,6 @@ function wireGlobeDropdown(btn) {
       menu.style.top = Math.round(r.bottom + 4) + "px";
       menu.hidden = false;
     }
-    setAdvisor("globe");   // still reveal the plane sub-bar (Halcann)
   });
   document.addEventListener("click", () => { if (_realmMenu) _realmMenu.hidden = true; });
 }

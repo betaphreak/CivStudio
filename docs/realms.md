@@ -746,6 +746,33 @@ shareable URL. Each switch is a history entry; that is intended.
 **An omitted realm defaults to Halcann** (decided). So every legacy `?p=` link keeps working with no
 migration, and a bare URL opens where it always did.
 
+**Realm selection replaced server selection as the first-run question** (built). The site used to open
+on "Choose a server" — dev or local — which is not a question a visitor can answer: it is a deployment
+detail, and someone arriving at the bare site has no basis to pick. The server now settles itself
+(`?server=` → `?live=` → remembered → default), and the loading screen asks **which realm** instead,
+listing each with a one-line blurb and its province count (Halcann 3,609 · Aelantir 1,555 ·
+Hinuilands 2), largest first.
+
+It runs *after* the bundle rather than in the server picker's slot, because the realm list and those
+counts come from the bundle — so the order is forced: connect, fetch, then ask. The pick is written
+with `replaceState` and the pending `app.js` import then continues, so there is **no second page
+load**; `core.mjs` reads `?realm=` at import time and has not run yet.
+
+The server picker is demoted, not deleted: it still opens on a failed auto-connect, on a lost live
+connection, and from the title bar as a deliberate switch — the cases where the question is real.
+
+**The masthead globe segment opens the same selector** (built), rather than the small `realm-menu`
+dropdown it used to. One chooser either way; a realm is a world, and a three-item text menu under the
+top bar undersold it. Over a running map the current realm is marked "here ·" and a pick navigates
+through the same URL shape `switchRealm` uses (`cs.realmSwitch` included, so the fresh load crops to
+the new realm and does not reopen the lobby over it). `window.__realms` is the seam, mirroring
+`window.__picker`; the old dropdown survives as the fallback when the bootstrap predates the
+selector. Lobby moves back to the brand, which has always opened it.
+
+Verified on the local stack: a bare URL shows the picker and no server picker; picking Aelantir lands
+on 1,555 provinces with `?realm=aelantir` in the URL and no reload; `?realm=` and `?p=` both skip it;
+the globe segment opens it over the map and Esc closes it.
+
 **A deep link skips the lobby** (built). `?p=` or `?realm=` names where you want to be, and the
 Spectator Lobby exists to ask exactly that — so auto-opening it over a deep link strands you on a
 modal covering the map you asked for. `index.html openLobbyDuringLoad` returns early when either

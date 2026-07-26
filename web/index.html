@@ -238,6 +238,16 @@
         <div class="ld-servers" id="ldServers" role="listbox" aria-label="Servers"></div>
         <div class="ld-hint">Press <kbd>Esc</kbd> or click outside to dismiss</div>
       </div>
+      <!-- REALM picker: the question a visitor can actually answer. "Choose a server" was the old
+           first-run gate, and it asked the wrong thing — dev-vs-local is a developer's concern, not
+           a choice about the world you want to look at. The server now auto-connects and this asks
+           which realm instead (docs/realms.md §UI). Filled by the bootstrap once the bundle lands,
+           because the realm list and their sizes come from it. -->
+      <div class="ld-picker" id="ldRealmPick" hidden>
+        <div class="ld-title">CivStudio</div>
+        <div class="ld-sub">Choose a realm</div>
+        <div class="ld-servers" id="ldRealms" role="listbox" aria-label="Realms"></div>
+      </div>
       <!-- a "Did you know?" tip from the docs, revealed during the post-connect hold (js/main.mjs) -->
       <div class="ld-trivia" aria-live="polite"><span class="ld-trivia-label">Did you know?</span><span class="ld-trivia-body"></span></div>
     </div>
@@ -707,6 +717,149 @@
         .catch(function (e) { if (window.console) console.warn("lobby unavailable:", e); });
     }
 
+    // ---- the REALM picker (docs/realms.md §UI) --------------------------------------------------
+    // The first-run question used to be "choose a server", which is the wrong question to put to a
+    // visitor: dev-vs-local is a deployment detail, and someone arriving at the site has no basis to
+    // answer it. The server is now settled automatically (see the auto-connect rules at the foot of
+    // this script) and this asks the question a visitor CAN answer — which of the three realms to
+    // look at.
+    //
+    // WHY IT RUNS AFTER THE BUNDLE, NOT BEFORE. The realm list, and the province counts that make the
+    // rows meaningful, live in the bundle — which is fetched from the server. So the order is forced:
+    // connect, fetch, then ask. That is also why this cannot simply replace the server picker in
+    // place; it is a later step, not a substitute in the same slot.
+    var REALM_BLURB = {
+      halcann: "The Old World, and the Serpentspine beneath it",
+      aelantir: "The New World, across the ocean",
+      hinuilands: "A far scattering — viewable only",
+    };
+    /**
+     * Does a realm still have to be chosen?
+     *
+     * No, if the URL already answers — either by naming the realm outright, or by naming a PLACE
+     * (?p= / ?z=). A shared link means "look at this", and the place implies its realm: core.mjs
+     * defaults to Halcann and the app crosses to another realm by itself when the province lives
+     * there. Asking anyway is the same friction the lobby used to add to a deep link, and worse,
+     * because it stops the map from loading at all until someone answers.
+     *
+     * The HASH is deliberately NOT part of this, unlike the server auto-connect's `deepLink` test:
+     * the hash selects an OVERLAY MODE (`#none`, `#political`, …), not a location, so counting it
+     * would suppress the realm question for every URL that names a mode.
+     */
+    function needsRealm() {
+      return !params.get("realm") && !params.has("p") && !params.has("z");
+    }
+    /**
+     * Resolve once a realm is settled. Immediate when the URL already names one, or when the bundle
+     * carries no realms (an older server) — in both cases there is nothing to ask.
+     *
+     * The pick is written to the URL with replaceState rather than a reload: core.mjs reads ?realm=
+     * at import time and app.js has not been imported yet, so setting it here is enough, and the
+     * visitor is spared a second page load. It also leaves a shareable URL behind.
+     */
+    function chooseRealm(base) {
+      var realms = (window.BUNDLE && window.BUNDLE.realms) || null;
+      if (!needsRealm() || !realms || Object.keys(realms).length < 2) {
+        if (needsRealm()) openLobbyDuringLoad(base);
+        return Promise.resolve();
+      }
+      return showRealms(base, false);
+    }
+
+    /**
+     * Render the realm card. `over` distinguishes the two lives of this panel:
+     *
+     *   boot  — the first-run question, held in front of the splash. Picking writes ?realm= and lets
+     *           the pending app import continue, so there is no second page load.
+     *   over  — reopened from the masthead over a RUNNING map (window.__realms.open). There the app
+     *           has already read ?realm= at import time, so a pick has to navigate; it goes through
+     *           the same URL shape switchRealm uses, `cs.realmSwitch` included, so the fresh load
+     *           crops to the new realm and does not reopen the lobby over it.
+     */
+    function showRealms(base, over) {
+      var realms = (window.BUNDLE && window.BUNDLE.realms) || null;
+      if (!realms) return Promise.resolve();
+      // order by size — the province count is the honest measure of what you are choosing between,
+      // and it keeps the 2-province Hinuilands from sitting above the Old World
+      var counts = {};
+      (window.BUNDLE.provinces || []).forEach(function (p) { if (p.realm) counts[p.realm] = (counts[p.realm] || 0) + 1; });
+      var keys = Object.keys(realms).sort(function (a, b) { return (counts[b] || 0) - (counts[a] || 0); });
+      var pick = document.getElementById("ldRealmPick");
+      var list = document.getElementById("ldRealms");
+      if (!pick || !list) return Promise.resolve();
+      if (bar) bar.hidden = true;
+      list.innerHTML = "";
+      var activeRealm = params.get("realm")
+        || (window.BUNDLE && window.BUNDLE.realms && window.BUNDLE.realms.halcann ? "halcann" : null);
+      return new Promise(function (resolve) {
+        keys.forEach(function (k, i) {
+          var b = document.createElement("button");
+          b.type = "button";
+          var current = over && k === activeRealm;
+          b.className = "ld-srv" + (!over && i === 0 ? " is-default" : "") + (current ? " is-current" : "");
+          b.setAttribute("role", "option");
+          var n = counts[k] || 0;
+          b.innerHTML = '<span class="ld-srv-label">' + k.charAt(0).toUpperCase() + k.slice(1) + "</span>"
+            + '<span class="ld-srv-host">' + (REALM_BLURB[k] || "") + "</span>"
+            + '<span class="ld-srv-ver">' + (current ? "here · " : "") + n.toLocaleString("en-US") + " provinces</span>";
+          b.addEventListener("click", function () {
+            pick.hidden = true;
+            if (over) {
+              closeRealms();
+              if (k === activeRealm) return;              // already here — just dismiss
+              try {
+                var nu = new URL(location.href);
+                nu.searchParams.set("realm", k);
+                nu.searchParams.delete("p"); nu.searchParams.delete("z");
+                try { sessionStorage.setItem("cs.realmSwitch", "1"); } catch (e2) {}
+                location.assign(nu.toString());
+              } catch (e3) { location.reload(); }
+              return;
+            }
+            if (bar) bar.hidden = false;
+            try {
+              var u = new URL(location.href);
+              u.searchParams.set("realm", k);
+              history.replaceState(null, "", u.toString());
+            } catch (e) { /* file:// or a locked-down browser — core.mjs then defaults to halcann */ }
+            openLobbyDuringLoad(base);
+            resolve();
+          });
+          list.appendChild(b);
+        });
+        pick.hidden = false;
+        if (over) resolve();
+      });
+    }
+
+    // ---- the realm selector over a RUNNING map -----------------------------------------------
+    // The masthead's globe segment ("Halcann v13") opens THIS rather than its own little dropdown —
+    // one realm chooser, the same rows and the same province counts, whether it is the first-run
+    // question or a deliberate switch. js/advisors.mjs calls in through window.__realms.
+    function realmsOpen() { var p = document.getElementById("ldRealmPick"); return !!p && !p.hidden; }
+    function closeRealms() {
+      var p = document.getElementById("ldRealmPick");
+      if (p) p.hidden = true;
+      loading.classList.remove("switch");
+      loading.classList.add("gone");
+    }
+    function openRealms() {
+      if (realmsOpen()) return;
+      loading.classList.remove("gone");
+      loading.classList.add("switch");     // transparent modal over the map (styles.css)
+      loading.hidden = false;
+      if (bar) bar.hidden = true;
+      showRealms(currentBase(), true);
+    }
+    window.__realms = { open: openRealms, close: closeRealms, isOpen: realmsOpen };
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && realmsOpen()) { e.preventDefault(); closeRealms(); }
+    });
+    loading.addEventListener("click", function (e) {
+      var p = document.getElementById("ldRealmPick");
+      if (realmsOpen() && p && !p.contains(e.target)) closeRealms();
+    });
+
     function connect(s) {
       connecting = true; render();
       if (bar) bar.hidden = false;
@@ -717,9 +870,12 @@
           if (!r.ok) throw new Error("HTTP " + r.status);
           return r.json().then(function (h) { if (!h || h.status !== "UP") throw new Error("status " + (h && h.status)); });
         })
-        .then(function () { openLobbyDuringLoad(s.base); return fetch(s.base + "/api/bundle", { credentials: "omit" }); })
+        // the lobby waits when a realm still has to be chosen — two modals over one splash is not a
+        // choice, it is a pile. It opens below, once the realm question is answered.
+        .then(function () { if (!needsRealm()) openLobbyDuringLoad(s.base); return fetch(s.base + "/api/bundle", { credentials: "omit" }); })
         .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
         .then(function (b) { b.live = { base: s.base }; window.BUNDLE = b; preloadRealmBackgrounds(b); remember(s); return prefetch(s.base); })
+        .then(function () { return chooseRealm(s.base); })
         .then(function () { return import("./app.js"); })
         .catch(function (e) {
           connecting = false; s.status = "down";
@@ -770,8 +926,16 @@
       if (mode === "switch" && !picker.hidden && !picker.contains(e.target)) closePicker();
     });
 
-    // Who still has to answer "choose a server"? Only a first-time visitor arriving at the bare
-    // site. Everyone else has already told us, one way or another:
+    // NOBODY is asked to choose a server any more. That question was the first thing the site put to
+    // a visitor, and it is not a question they can answer — "dev" and "local" are deployment details,
+    // and someone arriving at the bare site has no basis to pick between them. The realm picker above
+    // now holds that slot with a question about the WORLD instead, and the server settles itself.
+    //
+    // The picker is not gone, it is demoted: it still opens on a failed auto-connect (connect()'s
+    // catch), on a lost live connection (lostPicker), and from the title bar as a deliberate "switch
+    // server". Those are the cases where the question is real.
+    //
+    // The rules below still decide WHICH server, in preference order:
     //   ?server=<id>   an explicit pick (this is how the switch flow reloads)
     //   ?live=<url>    an explicit ad-hoc server (the point-at-a-server testing shortcut)
     //   remembered     they picked one last time; asking again every visit is just noise
@@ -782,15 +946,9 @@
     // THE MAP, not WHICH SERVER — someone who works against `local` should not be bounced to `dev`
     // by opening a shared link. Any auto-connect that fails still falls back to the picker (see
     // connect()'s catch), so this can only ever save a click, never strand anyone.
-    var deepLink = params.has("p") || params.has("z") || (location.hash && location.hash.length > 1);
-    var auto = params.get("server") || (custom ? "custom" : null) || remembered()
-      || (deepLink ? defaultId : null);
-    var target = auto && servers.filter(function (s) { return s.id === auto; })[0];
-    if (target) {
-      connect(target);
-    } else {
-      startPicker();
-    }
+    var auto = params.get("server") || (custom ? "custom" : null) || remembered() || defaultId;
+    var target = servers.filter(function (s) { return s.id === auto; })[0] || servers[0];
+    connect(target);
   })();
   </script>
 
