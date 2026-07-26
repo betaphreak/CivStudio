@@ -82,43 +82,43 @@ test("a plot with no terrain key at all still paints, via the fallback", () => {
 });
 
 // ---- coastConfig: our sea mask -> Civ4's TextureBlend index -------------------------------------
-// Our bits (docs/coastlines.md §A): 1=E, 2=W, 4=S, 8=N, set = that neighbour is water.
-// Civ4's (recovered from the blend table's own rotations):  1=N, 2=E, 4=S, 8=W.
-const E = 1, W = 2, S = 4, N = 8;                     // ours
-const cN = 1, cE = 2, cS = 4, cW = 8;                 // Civ4's
+// The table is indexed by the DIAGONAL CORNERS, proven by per-quadrant water coverage (see the
+// function's own table): a single-bit cell is an 8% corner wedge, and the 'opposite pair' class sits
+// on a diagonal (NE+SW). Our high nibble already uses Civ4's order, so the mapping is identity.
+const NW = 16, NE = 32, SE = 64, SW = 128;            // ours (high nibble)
+const cNW = 1, cNE = 2, cSE = 4, cSW = 8;             // Civ4's table bits
 
-test("coastConfig maps each single direction to Civ4's bit for the SAME direction", () => {
-  assert.equal(coastConfig(N), cN);
-  assert.equal(coastConfig(E), cE);
-  assert.equal(coastConfig(S), cS);
-  assert.equal(coastConfig(W), cW);
+test('coastConfig maps each diagonal to Civ4 bit for the SAME diagonal', () => {
+  assert.equal(coastConfig(NW), cNW);
+  assert.equal(coastConfig(NE), cNE);
+  assert.equal(coastConfig(SE), cSE);
+  assert.equal(coastConfig(SW), cSW);
 });
 
-test("coastConfig reads the EDGE nibble and ignores the diagonal corners", () => {
-  // 16=NW, 32=NE, 64=SE, 128=SW — none of these may reach the table
-  for (const corner of [16, 32, 64, 128, 16 | 32 | 64 | 128])
-    assert.equal(coastConfig(corner), 0);
-  assert.equal(coastConfig(N | 32 | 128), cN);        // corners set alongside an edge change nothing
+test('coastConfig reads the CORNER nibble and ignores the orthogonal edges', () => {
+  // 1=E, 2=W, 4=S, 8=N — the edge bits must not reach the table (this is the regression that
+  // shipped once: feeding the low nibble rotated every shoreline off its corner)
+  for (const edge of [1, 2, 4, 8, 15])
+    assert.equal(coastConfig(edge), 0);
+  assert.equal(coastConfig(NW | 4 | 8), cNW);         // edges set alongside a corner change nothing
 });
 
-test("opposite pairs stay opposite, adjacent pairs stay adjacent", () => {
-  // this is the property the old corner-nibble read broke: the table gives 05/10 the STRIP cells and
-  // 03/06/12/09 the CORNER cells, so a pair that is opposite for us must be opposite for Civ4 too
-  const OPPOSITE = [cN | cS, cE | cW];
-  assert.ok(OPPOSITE.includes(coastConfig(N | S)));
-  assert.ok(OPPOSITE.includes(coastConfig(E | W)));
-  for (const adj of [N | E, E | S, S | W, W | N])
-    assert.ok(!OPPOSITE.includes(coastConfig(adj)), `${adj} should not map to an opposite pair`);
+test('opposite corners stay opposite, adjacent corners stay adjacent', () => {
+  const OPPOSITE = [cNW | cSE, cNE | cSW];            // the table's strip cells (05/10)
+  assert.ok(OPPOSITE.includes(coastConfig(NW | SE)));
+  assert.ok(OPPOSITE.includes(coastConfig(NE | SW)));
+  for (const adj of [NW | NE, NE | SE, SE | SW, SW | NW])
+    assert.ok(!OPPOSITE.includes(coastConfig(adj)), adj + ' should not map to an opposite pair');
 });
 
-test("three land neighbours leaves exactly one water bit — the shore faces the water", () => {
-  // a plot wedged in a bay: only its northern neighbour is water
-  assert.equal(coastConfig(N), cN);
-  assert.equal(Number.isInteger(Math.log2(coastConfig(N))), true);   // exactly one bit
+test('three water corners leaves exactly one dry — cell 4 is 3-of-4 wet', () => {
+  const cfg = coastConfig(NW | NE | SE);
+  assert.equal(cfg, cNW | cNE | cSE);
+  assert.equal(4 - [1, 2, 4, 8].filter(b => cfg & b).length, 1);
 });
 
-test("fully enclosed and fully open are preserved", () => {
-  assert.equal(coastConfig(N | E | S | W), 15);       // all water → the flat interior cell 29
-  assert.equal(coastConfig(0), 0);                    // no water neighbour → no entry, nothing drawn
+test('fully enclosed and fully open are preserved', () => {
+  assert.equal(coastConfig(NW | NE | SE | SW), 15);   // all water → the flat interior cell 29
+  assert.equal(coastConfig(0), 0);                    // no water corner → no entry, nothing drawn
   assert.equal(coastConfig(undefined), 0);
 });

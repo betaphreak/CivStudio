@@ -52,32 +52,35 @@ export function waterBand(terrain) {
 }
 
 /**
- * The Civ4 `TextureBlend` index for a water plot, from our 8-bit sea mask.
+ * The Civ4 `TextureBlend` index for a water plot: the DIAGONAL CORNER nibble of our 8-bit sea mask,
+ * used as-is. Our high nibble is `16=NW, 32=NE, 64=SE, 128=SW` (`docs/coastlines.md` §A), which lands
+ * on Civ4's table bits `1/2/4/8` in that order — no permutation, no shift beyond `>> 4`.
  *
- * TWO conversions, and both were being skipped.
+ * WRITTEN DOWN BECAUSE IT WAS "FIXED" TO THE EDGE NIBBLE ONCE, ON A BAD MEASUREMENT. The argument for
+ * edges was that the table looks edge-shaped — single bits take one cell at four rotations, pairs take
+ * two other cells, 15 takes a flat interior tile — and that a cell's painted water "faces S", which
+ * only agrees with our `4=S` edge bit. Both halves were wrong: the water direction was diagonal
+ * (dx 16.5, dy 20.1) and got flattened to a compass point by an `abs(dx) > abs(dy)` test.
  *
- * **1. The EDGE nibble, not the corner one.** `docs/coastlines.md` §A: the low nibble is the
- * orthogonal edges, the high nibble the diagonal corners. The renderer fed the table `coast >> 4` —
- * the corners — but the table is edge-shaped, which its own contents prove: bits 1/2/4/8 select one
- * cell at four rotations, adjacent pairs (03/06/12/09) a corner cell, OPPOSITE pairs (05/10) a strip
- * cell, three-set (07/14/13/11) a nearly-enclosed cell, and 15 the flat interior tile 29. Read as
- * corners, `05` and `10` are adjacent pairs being handed a strip.
+ * The measurement that settles it is water coverage per QUADRANT, not a direction:
  *
- * **2. The bit ORDER differs.** Ours is `1=E, 2=W, 4=S, 8=N`; Civ4's is `1=N, 2=E, 4=S, 8=W`,
- * recovered from the table's own rotations — cell 1's painted water faces S unrotated, and the table
- * gives cfg 04 rotation 0, cfg 08 rotation 90 (→W), cfg 01 rotation 180 (→N), cfg 02 rotation 270
- * (→E). Only `S` happens to coincide, so three of the four single-bit configurations were rotating
- * the shoreline to the wrong side of the plot.
+ * | config class  | cell | NW  | NE  | SW  | SE  |
+ * |---------------|-----:|----:|----:|----:|----:|
+ * | single bit    |    1 |   0 |   0 |   0 |  30 |
+ * | adjacent pair |    3 |  49 |  53 |   0 |   0 |
+ * | opposite pair |    2 |   0 |  28 |  40 |   0 |
+ * | three bits    |    4 |  91 | 100 |   3 |  84 |
+ * | all four      |   29 | 100 | 100 | 100 | 100 |
  *
- * Set bit = that neighbour is WATER, in both conventions — that part agrees, so only the permutation
- * is needed. Returns 0..15; 0 means no neighbour is water (the table has no entry, nothing is drawn).
+ * A single-bit cell is an 8%-water CORNER WEDGE — an edge band would be a third of the tile and would
+ * span two quadrants. The opposite pair sits on a DIAGONAL (NE+SW). And with cell 1's water in SE, the
+ * table's own rotations line up one-for-one with our bits: cfg 04 rot 0 → SE, cfg 08 rot 90 → SW,
+ * cfg 01 rot 180 → NW, cfg 02 rot 270 → NE.
+ *
+ * Set bit = that diagonal neighbour is WATER. Returns 0..15; 0 has no table entry (nothing is drawn).
  */
 export function coastConfig(coast) {
-  const e = (coast || 0) & 15;
-  return ((e & 1) ? 2 : 0)    // our E → Civ4 E
-       | ((e & 2) ? 8 : 0)    // our W → Civ4 W
-       | ((e & 4) ? 4 : 0)    // our S → Civ4 S
-       | ((e & 8) ? 1 : 0);   // our N → Civ4 N
+  return ((coast || 0) >> 4) & 15;
 }
 
 /** Position along the shelf ramp: 0 on the ring that touches land, 1 at open-sea depth. */

@@ -75,10 +75,9 @@ export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
     const band = waterBand(q.terrain) || provBand;
     const A = ctImg[band];
     if (!A || !ctReady[band]) continue;
-    // The plot's EDGE adjacency, permuted into Civ4's bit order (js/water-terrain.mjs coastConfig).
-    // This used to be `(q.coast >> 4) & 15` — the diagonal CORNER nibble, in our own bit order — so
-    // the table was indexed by the wrong four neighbours and three of the four single-bit
-    // configurations came out rotated to the wrong side of the plot.
+    // The plot's DIAGONAL-CORNER adjacency — our high nibble, which is already Civ4's bit order
+    // (js/water-terrain.mjs coastConfig, where the quadrant measurement that proves it is recorded).
+    // This was briefly "fixed" to the edge nibble, which rotated every shoreline off its corner.
     const cfg = coastConfig(q.coast);
     const variants = blend[cfg];
     if (!variants || !variants.length) continue;          // config 0 has no entry — nothing to blend
