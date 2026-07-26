@@ -476,8 +476,15 @@ public final class ProvinceRaster {
 		return d;
 	}
 
-	/** rivers.bmp's "no river here" colour — any other colour is painted water. Mirrors ProvinceExporter. */
+	/** rivers.bmp's LAND marker (white). Grey #7a7a7a (index 254) is its water mask; 0–6 are rivers. */
 	private static final int RIVER_NONE = 0xFFFFFF;
+
+	/**
+	 * terrain.bmp's ocean indices — EU4's {@code ocean} (15) and {@code inland_ocean} (17). Measured:
+	 * a known sea province (1298, the Gulf of Ouord) is 1,670 pixels of index 17, while a known land
+	 * province (512 Fatherwell) carries none of either.
+	 */
+	private static final Set<Integer> OCEAN_TERRAIN = Set.of(15, 17);
 
 	// the pixel colours of water provinces, from default.map's sea_starts + lakes id blocks
 	// (the raw source ProvinceExporter reads), mapped through idToColor, PLUS the flooded
@@ -531,22 +538,36 @@ public final class ProvinceRaster {
 	 *
 	 * <p>Restricted to colours that are actually provinces ({@code idToColor}), so a fully-painted
 	 * patch of map background can never be promoted to water.
+	 *
+	 * <p><b>BOTH RASTERS MUST AGREE.</b> {@code rivers.bmp} is not a river map — index 254 (grey) is
+	 * EU4's water MASK and 255 (white) its land marker, so "every pixel is non-white" says only that
+	 * the water mask covers the province. That is true of small ISLANDS too, and measuring
+	 * {@code terrain.bmp} separates them cleanly: 6762 Humacs Island is 31 of 43 pixels at terrain
+	 * index 0, the same land index that dominates a known land province, while the sea around it
+	 * (1298) is index 17. Trusting the mask alone turned that island into a lake that then rendered
+	 * as a hole. So a province is only flooded when the TERRAIN raster calls it ocean as well.
 	 */
 	private void addFloodedProvinces(Set<Integer> colors) {
+		if (terrainIdx == null)
+			return;   // no terrain raster to corroborate with — do not guess from the mask alone
 		Set<Integer> known = new HashSet<>(idToColor.values());
-		Map<Integer, int[]> tally = new HashMap<>();   // colour → {pixels, painted}
+		Map<Integer, int[]> tally = new HashMap<>();   // colour → {pixels, painted, dryTerrain}
 		for (int i = 0; i < pixels.length; i++) {
 			int rgb = pixels[i] & 0xFFFFFF;
 			if (!known.contains(rgb))
 				continue;
-			int[] t = tally.computeIfAbsent(rgb, k -> new int[2]);
+			int[] t = tally.computeIfAbsent(rgb, k -> new int[3]);
 			t[0]++;
 			if ((river[i] & 0xFFFFFF) != RIVER_NONE)
 				t[1]++;
+			if (!OCEAN_TERRAIN.contains(terrainIdx[i]))
+				t[2]++;
 		}
-		for (Map.Entry<Integer, int[]> e : tally.entrySet())
-			if (e.getValue()[0] - e.getValue()[1] < 1)   // entirely painted — the exporter's own test
+		for (Map.Entry<Integer, int[]> e : tally.entrySet()) {
+			int[] t = e.getValue();
+			if (t[0] - t[1] < 1 && t[2] * 2 < t[0])   // fully masked AND majority ocean terrain
 				colors.add(e.getKey());
+		}
 	}
 
 	// read an 8-bit indexed BMP's raw palette indices (not RGB) into a row-major

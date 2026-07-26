@@ -18,6 +18,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -255,6 +256,9 @@ public final class ProvinceExporter {
 		img = null; // release before the second large array
 		int[] river = rImg.getRGB(0, 0, w, h, null, 0, w);
 		rImg = null;
+		// terrain.bmp's palette INDICES, to corroborate the flooding auto-correct (see classify).
+		// Optional: absent → the auto-correct is disabled rather than run on the river mask alone.
+		int[] terrain = loadTerrainIndices(w, h);
 
 		Map<Integer, Acc> acc = new HashMap<>();
 		Map<Integer, Set<Integer>> colorAdj = new HashMap<>();
@@ -270,6 +274,8 @@ public final class ProvinceExporter {
 				a.pixels++;
 				if ((river[i] & 0xFFFFFF) != RIVER_NONE)
 					a.water++;
+				if (terrain != null && !OCEAN_TERRAIN.contains(terrain[i]))
+					a.dryTerrain++;
 				if (x < a.minX)
 					a.minX = x;
 				if (x > a.maxX)
@@ -350,17 +356,52 @@ public final class ProvinceExporter {
 	 * Classify a province as {@code SEA}/{@code LAKE} (from {@code default.map}) or
 	 * {@code LAND}, with the flooding auto-correct: a nominally-LAND province that
 	 * is entirely water pixels is reclassified to {@code LAKE} (a map-source bug).
+	 *
+	 * <p><b>BOTH RASTERS HAVE TO AGREE.</b> The auto-correct used to read {@code rivers.bmp} alone,
+	 * and that raster is not a river map: index 254 (grey) is EU4's water MASK and 255 (white) its
+	 * land marker, so "no dry pixels" means only that the mask covers the province — which it also
+	 * does over small ISLANDS. Measured, that misfired badly: 6762 Humacs Island in the Gulf of Ouord
+	 * is fully masked, but {@code terrain.bmp} puts 31 of its 43 pixels at index 0, the same land
+	 * index that dominates a known land province, against index 17 for the sea all around it. It was
+	 * reclassified LAKE, and a lake that is really an island renders as a hole in the map.
+	 *
+	 * <p>So the correction now also requires the TERRAIN raster to call the province ocean. Absent
+	 * {@code terrain.bmp} the auto-correct is disabled outright rather than run on the mask alone —
+	 * a province that {@code default.map} does not list is LAND by EU4's own rule, and overriding
+	 * that needs corroboration, not a single ambiguous signal.
 	 */
 	private static ProvinceType classify(int id, Acc a, Set<Integer> seaIds, Set<Integer> lakeIds) {
 		if (seaIds.contains(id))
 			return ProvinceType.SEA;
 		if (lakeIds.contains(id))
 			return ProvinceType.LAKE;
-		if (a.pixels - a.water < 1) {
+		if (a.pixels - a.water < 1 && a.dryTerrain * 2 < a.pixels) {
 			System.out.println("flooding auto-correct: province " + id + " -> LAKE");
 			return ProvinceType.LAKE;
 		}
 		return ProvinceType.LAND;
+	}
+
+	/** terrain.bmp's ocean indices — EU4 {@code ocean} (15) and {@code inland_ocean} (17). */
+	private static final Set<Integer> OCEAN_TERRAIN = Set.of(15, 17);
+
+	/**
+	 * terrain.bmp's raw palette indices (not RGB), or null when the file is absent or its dimensions
+	 * do not match the province raster — in which case the flooding auto-correct simply does not run.
+	 */
+	private static int[] loadTerrainIndices(int w, int h) throws Exception {
+		Optional<java.nio.file.Path> f = AnbennarFiles.getOptional("map/terrain.bmp");
+		if (f.isEmpty())
+			return null;
+		BufferedImage img = ImageIO.read(f.get().toFile());
+		if (img == null || img.getWidth() != w || img.getHeight() != h)
+			return null;
+		int[] out = new int[w * h];
+		java.awt.image.Raster r = img.getRaster();
+		for (int y = 0; y < h; y++)
+			for (int x = 0; x < w; x++)
+				out[y * w + x] = r.getSample(x, y, 0);
+		return out;
 	}
 
 	private static void registerAdjacency(Map<Integer, Set<Integer>> adj, int a, int b) {
@@ -385,6 +426,7 @@ public final class ProvinceExporter {
 	private static final class Acc {
 		int pixels;
 		int water;
+		int dryTerrain;   // pixels terrain.bmp does NOT call ocean — see classify
 		int minX = Integer.MAX_VALUE;
 		int minY = Integer.MAX_VALUE;
 		int maxX = Integer.MIN_VALUE;
