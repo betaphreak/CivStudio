@@ -155,6 +155,56 @@ public final class RealmExporter {
 			throw new IllegalStateException(conflicts + " water provinces touch more than one realm"
 					+ " — the partition is not clean (docs/realms.md §The ocean splits cleanly)");
 
+		// pass 3 — LAKES that rule 3 could not place, by NEAREST LAND.
+		//
+		// Rule 4 sends water touching no land to NONE, and for open ocean that is the whole point.
+		// For a LAKE it is simply wrong: a lake is enclosed by land by definition, so it is never
+		// "deep ocean", and a realm-less province is dropped from every realm view — no polygon, no
+		// plots, an invisible hole in the map. Eight lakes were in that state, and the failure is
+		// silent, which is how one of them (6762 Humacs Island, in the Gulf of Ouord) survived
+		// unnoticed until someone looked hard at that coastline.
+		//
+		// They fail rule 3 for two different reasons, and neither is recoverable from adjacency:
+		// three (1884 Taspasu, 6068 Elsine, 6087 Isles of Dha) have an EMPTY neighbour list, and the
+		// rest touch exactly one SEA and no land at all — two of those a deep-ocean sea that is
+		// itself NONE. So this falls back to geometry, which is always available: the nearest land
+		// province by great-circle-ish lat/lon distance. For a lake that is the land enclosing it.
+		//
+		// LAKES ONLY, deliberately. Applying the same fallback to SEA would give every deep-ocean
+		// province a realm and pull ~2.7M plots into views that currently skip them — rule 4 exists
+		// to prevent exactly that.
+		for (Map<String, Object> row : rows) {
+			int id = id(row);
+			if (!"LAKE".equals(row.get("type")) || realm.get(id) != Realm.NONE || QUIRKS.contains(id))
+				continue;
+			int best = -1;
+			double bestD = Double.MAX_VALUE;
+			for (Map<String, Object> cand : rows) {
+				if (isWater(cand))
+					continue;
+				Realm r = realm.get(id(cand));
+				if (r == null || r == Realm.NONE)
+					continue;
+				double d = dist2(row, cand);
+				// ties break on the lower id, so the stamp is stable across runs
+				if (d < bestD || (d == bestD && id(cand) < best)) {
+					bestD = d;
+					best = id(cand);
+				}
+			}
+			if (best < 0)
+				throw new IllegalStateException("lake " + id + " " + row.get("name")
+						+ " has no land province to inherit a realm from");
+			realm.put(id, realm.get(best));
+			System.out.printf("  LAKE %d %s → %s (nearest land %d %s, %.2f°)%n", id, row.get("name"),
+					realm.get(best), best, byId.get(best).get("name"), Math.sqrt(bestD));
+		}
+		// every lake now belongs somewhere — the invariant this pass exists to establish
+		for (Map<String, Object> row : rows)
+			if ("LAKE".equals(row.get("type")) && realm.get(id(row)) == Realm.NONE)
+				throw new IllegalStateException("lake " + id(row) + " " + row.get("name")
+						+ " is still realm-less — it would be invisible in every realm view");
+
 		// assertion — portal waypoints resolve to Halcann and agree with their endpoints
 		for (int id : PORTAL_WAYPOINTS) {
 			Map<String, Object> row = byId.get(id);
@@ -189,6 +239,24 @@ public final class RealmExporter {
 
 	private static int id(Map<String, Object> row) {
 		return ((Number) row.get("id")).intValue();
+	}
+
+	/**
+	 * Squared angular distance between two provinces' centres, with the longitude difference taken
+	 * the short way round. Squared because only the ORDER matters here, and no realm boundary is
+	 * anywhere near tight enough for the flat-earth approximation to pick the wrong continent.
+	 */
+	private static double dist2(Map<String, Object> a, Map<String, Object> b) {
+		double dLat = num(a, "lat") - num(b, "lat");
+		double dLon = Math.abs(num(a, "lon") - num(b, "lon"));
+		if (dLon > 180)
+			dLon = 360 - dLon;
+		return dLat * dLat + dLon * dLon;
+	}
+
+	private static double num(Map<String, Object> row, String key) {
+		Object v = row.get(key);
+		return v instanceof Number n ? n.doubleValue() : 0;
 	}
 
 	private static boolean isWater(Map<String, Object> row) {
