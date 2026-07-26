@@ -23,6 +23,7 @@ import { drawLive } from "./overlays/live.mjs";
 import { drawLabels } from "./labels.mjs";
 import { drawCity } from "./city.mjs";
 import { drawDistricts } from "./districts.mjs";
+import { drawDebugHoles, DEBUG_HOLES } from "./debug-holes.mjs";
 
 const notPolitical = () => !isPolitical();
 
@@ -76,6 +77,9 @@ export const LAYERS = [
   { id: "caveEntrances",  z: [0],  band: "all",            draw: drawCaveEntrances },
   { id: "adjacencies",    band: "≥3.3 (10×)",              draw: drawAdjacencies },
   { id: "realmArrows",    z: [0],  band: "all",            draw: drawRealmArrows },   // cross-realm teleporter → "to <Realm>" arrow (self-gates on ?realm=)
+  // DEBUG ONLY (?debug=holes): fuchsia over provinces that silently fail to render. Late in the
+  // stack so nothing paints over it — the whole point is that it cannot be missed.
+  { id: "debugHoles",     band: "all",  gate: () => DEBUG_HOLES, draw: drawDebugHoles },
   { id: "hover",          band: "all",                     draw: drawHoverHighlight },
   { id: "selected",       band: "all",                     draw: drawSelectedHighlight },
   { id: "live",           band: "all",  gate: () => S.overlay === "live", draw: drawLive },

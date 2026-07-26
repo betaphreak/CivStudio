@@ -773,6 +773,43 @@ Verified on the local stack: a bare URL shows the picker and no server picker; p
 on 1,555 provinces with `?realm=aelantir` in the URL and no reload; `?realm=` and `?p=` both skip it;
 the globe segment opens it over the map and Esc closes it.
 
+### Realm-less provinces are invisible — `?debug=holes`
+
+`core.mjs` builds `P` as `provinces.filter(p => p.realm === ACTIVE_REALM)`, so a province with no realm
+is dropped from **every** realm view: no polygon, no plots, nothing. The failure mode is silence —
+what you see is open water or blurred raster, which is indistinguishable from "there is nothing here".
+
+Measured on prod: **102 of 5,268 provinces have no realm**. 91 are deep-ocean `SEA`, which is
+deliberate (`Realm.NONE`) and carries ~2.7M plots nobody wants drawn. The other **11 are bugs**:
+
+| id | type | plots | lat | name |
+|---|---|---|---|---|
+| 1808 | IMPASSABLE | 27,782 | −65.9 | Ekyunimoy |
+| 6237 | LAND | 212 | −3.5 | South Toreiel |
+| 6238 | LAND | 216 | 17.6 | North Toreiel |
+| 1884, 6068, 6087, 6511, 6512, 6559, 6592, 6762 | LAKE | 13–739 | — | incl. *Humacs Island* |
+
+A **second, independent** defect overlaps them: 7 of those 8 lakes (all but 1884) declare plots and the
+server serves **0**, while realm-bearing lakes serve fine. It tracks the high id range, not the missing
+realm. 6762 "Humacs Island" beside the Gulf of Ouord (1298) has *both*, which is why it vanished
+completely — and it was found by eye, not by any check.
+
+So `js/debug-holes.mjs` makes them loud: **`?debug=holes`** paints every silently-unrendered province
+in the magenta/black missing-texture checkerboard, labelled with its id and reason, and logs the list
+once. It reads `BUNDLE.provinces` rather than `P`, so it can see what the realm filter already
+dropped **without changing what `P` contains** — nothing else in the app behaves differently when it
+is on. The checkerboard is generated, not vendored: a two-colour checker is six lines of canvas, and
+fetching a game's asset for a debug marker would be both a licensing question and a new dependency
+that breaks the fully-offline `tools/dev-local.ps1` loop. It is screen-anchored at 8px so it reads the
+same at world zoom and plot zoom.
+
+Deep-ocean `SEA` is excluded from the flag deliberately — realm-less is correct there.
+
+**Not fixed yet.** The proper fix is `RealmExporter` resolving a lake or island enclosed by Halcann to
+Halcann, plus whatever makes those high-id lakes serve no plots. A cheaper client-side mitigation —
+include a realm-less province when its bbox intersects the active realm's crop — would close the
+visible holes without a re-export, but must not drag in the 91 deep-ocean seas.
+
 **A deep link skips the lobby** (built). `?p=` or `?realm=` names where you want to be, and the
 Spectator Lobby exists to ask exactly that — so auto-opening it over a deep link strands you on a
 modal covering the map you asked for. `index.html openLobbyDuringLoad` returns early when either
