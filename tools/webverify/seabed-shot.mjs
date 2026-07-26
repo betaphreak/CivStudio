@@ -19,8 +19,18 @@ page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
 page.on('pageerror', e => errors.push('PAGEERROR: ' + e.message));
 await page.goto(url, { waitUntil: 'load' });
 await page.getByRole('button', { name: /got it/i }).click({ timeout: 1500 }).catch(() => {});
+// WAIT FOR A REAL SIGNAL, not a timeout. Against prod the assets are cold and a fixed wait lands on
+// the loading splash — which looks like a screenshot of nothing and has already been mistaken for a
+// verified frame once. `#loading` takes the `gone` class when the map is actually up.
+await page.waitForFunction(
+  () => { const l = document.getElementById('loading'); return !l || l.classList.contains('gone'); },
+  { timeout: 120000 });
+// Esc TWICE, and the second is the one that matters: the lobby opens DURING load, so an Esc sent
+// before it is up dismisses nothing. Press again once the map has settled, just before the shot.
 await page.keyboard.press('Escape').catch(() => {});
 await page.waitForTimeout(+waitMs);
+await page.keyboard.press('Escape').catch(() => {});
+await page.waitForTimeout(1500);
 await page.screenshot({ path: out });
 console.log('shot:', out, '| url:', url, '| errors:', errors.length ? errors : 'none');
 await browser.close();
