@@ -19,7 +19,7 @@
 // ~12 fps) and it did not earn that: it read as a grey tiling expanse over the empty polar seas.
 // Deleted rather than optimised. The per-plot coastal shelf floes (plots.drawSeaIce) are unaffected —
 // those are driven by real FEATURE_ICE terrain data at deep zoom and are baked into the plot canvas.
-import { VIEW, cam, MAP, SEA, SEA_BANDS, ctx, latAtScreenY, K_PLOT, K_TEX } from "./core.mjs";
+import { VIEW, cam, MAP, SEA, SEA_BANDS, ctx, latAtScreenY, K_PLOT, K_TEX, isPolitical } from "./core.mjs";
 import { bandAlpha, kBand, ground3D } from "./bands.mjs";
 
 // A redraw request, injected by main (initSea) so this module never imports main.mjs back — the
@@ -69,7 +69,13 @@ export function drawSeaBase() {
   // ripples (soft-light so grey=128 keeps the gradient colour). The pattern is ANCHORED to the
   // map — it pans and scales with the world instead of being a fixed screen grid — and fades out
   // by deep zoom, where the upscaled tile would blur and open water is calm anyway.
-  if (seaPat) {
+  // NO RIPPLE IN POLITICAL VIEW. A political map is a diagram — flat ownership polygons over a plain
+  // sea — and the ripple is the one part of this fill that is ANCHORED TO THE MAP rather than to the
+  // screen, so it scales with the camera and softens as it goes. Against the clean-edged political
+  // fills it read as blotchy noise across the whole ocean rather than as water. The latitude gradient
+  // stays: it is screen-space, costs nothing to scale, and is what keeps the sea a sea rather than a
+  // hole. (Physical view is unchanged — there the ripple sits under real terrain art and belongs.)
+  if (seaPat && !isPolitical()) {
     const fade = 1 - bandAlpha(kBand([K_PLOT, K_TEX]));   // 1 ≤K_PLOT → 0 ≥K_TEX (fade out over the plot band)
     // confine the ripple to the mapped-latitude band (the raster's on-screen Y extent). Beyond it —
     // the empty polar seas between the map's top/bottom edge and the ±89° scene clip — the tile would
