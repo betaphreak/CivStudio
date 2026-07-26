@@ -181,9 +181,11 @@ this vertex". Both are corner-keyed; only the tie-break differs.
    variant each, all rotation 0), so the water and synthetic terrains fall out without being named.
    Verified by re-decoding the shipped `.webp`: corner check **224/224**, and **0** cells with dark
    RGB under alpha 0. No renderer change — nothing reads `landBlend` yet.
-2. **Corner ownership, pure and tested.** A `terrain-corners.mjs` beside `shore-index.mjs`:
-   `cornerOwner(index, x, y, LY)` → the winning terrain per corner, and `blendConfigs(plot, …)` → the
-   `[terrain, cfg]` list for a plot. Zero-import, unit-tested, nothing renders from it.
+2. ~~**Corner ownership, pure and tested.**~~ **SHIPPED.** `js/terrain-corners.mjs` beside
+   `shore-index.mjs`: `indexTerrain` / `cornerOwner(index, cx, cy, LY)` / `cornerResolved` /
+   `blendConfigs(index, x, y, LY)` → `{configs: [[terrain, cfg], …], gaps}`. Zero-import, 15 unit
+   tests (`node --test web/js/terrain-corners.test.mjs`), nothing renders from it. Measurements and
+   the two design points that were not in this plan are in §5.1 below.
 3. **Replace stage 2.** Draw the authored cells instead of `BLEND_NOISE`. **This is the biggest visual
    change in the project** — every land boundary on the map. Capture before/after at several zooms
    (bands 4, 5, 6.5, max) and compare deliberately rather than eyeballing one frame.
@@ -191,6 +193,38 @@ this vertex". Both are corner-keyed; only the tie-break differs.
    0.95/0.7/0.55 strength ladder, which the authored alpha replaces.
 
 Phases 1–2 are safe and self-contained; 3 is where the risk is.
+
+### 5.1 What phase 2 settled, measured on real plots
+
+Validated over **5,534 real land plots** — the 2-ring province patch around 550, fetched from
+`dev.civstudio.com/api/plots`, since the local plot cache is empty. Phase 3 should re-run this rather
+than trust the synthetic fixtures.
+
+- **Order-independence holds on real data: 0 mismatches** in 5,534 plots between indexing the patch
+  forwards and backwards. This is the property §3 claims for the `LayerOrder` rule, now measured
+  rather than argued.
+- **The cost is far below what §6 feared.** 34.0% of land plots need any blend work at all, and a
+  blended plot averages **1.11 cells** — 2,095 cells across 5,534 plots, i.e. ~0.38 per plot, not
+  "fourteen cells per neighbour terrain per plot". One extra `drawImage` per three plots is the real
+  shape of the `PLOT_FRAME_BUDGET_MS` question.
+- **Configs 5 and 10 — the two authored DIAGONAL cells — never occur** (0 of 2,095). They require a
+  strict checkerboard: config 5 needs the owner present at the NW *and* SE diagonal and outranked at
+  all four orthogonals and both other diagonals, because every other plot touching the NW corner also
+  touches NE or SW. They are reachable, not dead, but do not tune anything around them.
+- **Config 15 also never occurs** here (a plot completely ringed by a higher layer), though it is
+  constructible and `blendConfigs` returns it, so phase 3 must still handle it — by drawing the
+  owner's ordinary ground tile, since the baked sheet carries 1–14 only.
+- Observed distribution: `1:213 2:182 3:213 4:214 6:193 7:92 8:178 9:240 11:123 12:231 13:94 14:122`.
+  Owning terrains: ROCKY 548, BARREN 470, LUSH 367, GRASSLAND 282, MUDDY 238, PLAINS 190.
+
+**Two design points this plan did not anticipate:**
+
+- **Water is indexed as `null`, not skipped.** If water were simply absent, an unindexed pixel would
+  mean either "this is sea" or "this province has not loaded", and precise staleness needs those told
+  apart. `index.has(k)` now means exactly "known"; `null` means "known, and not a blend participant".
+- **`gaps` is a list of corner keys, not a boolean.** A plot at the world edge has corners that can
+  never resolve, so "has gaps ⇒ stale" would thrash forever — exactly the trap §6 records. The caller
+  stores the keys and re-bakes only when one *resolves*, which is the `_tshoreGaps` contract.
 
 ## 6. Traps
 
