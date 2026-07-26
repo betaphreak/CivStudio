@@ -8,7 +8,7 @@ import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
-import { paintCoast, drawSeaIce, blendCoastEdges } from "./coast.mjs";
+import { paintCoast, drawSeaIce, extendCoastIntoWater } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
 import { loadPlots } from "./plotfetch.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
@@ -465,13 +465,11 @@ function buildPlotTexCanvas(p) {
   // (city cores are re-terrained to their countryside in markUrbanPlots; a subtle screen-space
   // marker in city.mjs keeps them locatable — the old Civ4 city sprite was pulled, see there.)
   } // end land-only ground stages
-  // SOFTEN THE COASTLINE. Every plot above was painted as a SQUARE, so a coastline running at an
-  // angle to the grid reads as a staircase. Civ4's authored 16-way blend masks
-  // (heightmap/coastblendmasks, indexed by ProvinceRaster.seaMask's diagonal nibble — global, so no
-  // province seam) bleed the shore colour into each coastal plot along their own curve. Done LAST, so
-  // it sits over the ground, the beach and the foliage alike. See coast.mjs for what these masks
-  // are, and what they are NOT — reading them as land occupancy deletes half a coastal plot.
-  if (!water) blendCoastEdges(o, p._plots, x0, y0, tpp);
+  // The coast reaches OUT into the shallow water tiles along Civ4's blend curve (coast.mjs). On the
+  // WATER province, never the land one: painting the mask on a land plot puts sea inside it, which is
+  // backwards and visibly wrong on a tile whose only water contact is a diagonal corner.
+  if (water) extendCoastIntoWater(o, p._plots, x0, y0, tpp,
+    provSrcBox(p) ? latAtSourceY((provSrcBox(p).y0 + provSrcBox(p).y1) / 2) : 45);
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
   // (No shelf-edge fade any more. From MAP_VERSION 13 a sea province draws EVERY water cell it owns,
   // so there is no shelf boundary left to dissolve — the depth ramp in shelfRgb carries the water

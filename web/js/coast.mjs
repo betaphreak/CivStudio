@@ -36,46 +36,45 @@ const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
 // the water from shallow to deep on its own.
 
 /**
- * Soften every coastal plot's seaward side, so a coastline running at an angle to the plot grid
- * stops reading as a staircase of squares.
+ * Extend the COAST into each shallow water tile, along Civ4's authored 16-way blend curve.
  *
- * WHAT THESE MASKS ARE, which cost a wrong first attempt: they are BLEND-WEIGHT fields, not occupancy.
- * Mask 3 (sea to NW and NE) is a white *half*, not a rounded corner — Civ4 uses it as the alpha for
- * compositing the coast texture across the whole tile. Treating it as land occupancy and erasing by
- * it with `destination-out` deletes half a coastal plot and punches holes straight through to the
- * background, which is exactly what it looked like.
+ * DIRECTION MATTERS, and the first cut of this had it backwards. It stamped the mask on the LAND
+ * plot, which paints water INTO the land — so a tile like Gadhinglaj (4367), whose only water contact
+ * is one diagonal corner, grew a bite of sea inside it while the water tile beside it stayed square.
+ * Civ4 does the opposite: the coast tile is drawn on the WATER plot and blends toward the land, so
+ * the shore reaches out into the sea. Land is never painted over.
  *
- * So it is used the way it was authored: the shore colour is painted OVER the coastal plot through
- * the mask, letting water bleed into the plot along the authored curve instead of stopping at the
- * square edge. Nothing is destroyed, and the boundary picks up Civ4's shape.
+ * Keyed on the WATER tile's OWN adjacency, which is what makes it read correctly in an inlet. The
+ * tile NE of Gadhinglaj has `coast = 24` — only N and NW are water, six of its eight neighbours are
+ * land — so its mask index is 1, white (land) almost everywhere, and the sand fills nearly the whole
+ * tile. A tile facing open sea gets a thin rim instead. Same nibble convention as everywhere else:
+ * ProvinceRaster.seaMask's diagonals are NW/NE/SE/SW = the mask's TL/TR/BR/BL, computed globally, so
+ * there is no province seam even though the water and the land it hugs are usually different provinces.
  *
- * The index is `q.coast >> 4` — ProvinceRaster.seaMask's diagonal nibble is NW/NE/SE/SW = the mask's
- * TL/TR/BR/BL, computed over the whole world raster, so this carries no province seam. Configurations
- * 0 and 15 are solid white in the source (Civ4's "uniform tile, nothing to blend" at both extremes)
- * and are skipped.
+ * The baked strip's alpha is WATER coverage, and here we want the complement — sand where the land
+ * is — so the tint is punched out by the strip rather than clipped to it.
  */
-export function blendCoastEdges(o, plots, x0, y0, tpp, lat = 45) {
+export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
   if (!cmReady) return;
-  const C = COAST_MASK.cell;
-  // a scratch the mask is tinted through: drawImage cannot colourise, so paint the shore hue and
-  // clip it to the mask's alpha once, then stamp that per plot
+  const C = COAST_MASK.cell, ramp = beachRamp(lat);
   const tc = document.createElement("canvas"); tc.width = COAST_MASK.n * C; tc.height = C;
   const t = tc.getContext("2d");
-  t.drawImage(cmImg, 0, 0);
-  t.globalCompositeOperation = "source-in";
-  t.fillStyle = `rgb(${SHORE_COL})`;
+  t.fillStyle = `rgb(${rgbOf(ramp, SAND_WET, WET_SAND)})`;
   t.fillRect(0, 0, tc.width, tc.height);
+  t.globalCompositeOperation = "destination-out";   // erase by WATER coverage → sand on the LAND side
+  t.drawImage(cmImg, 0, 0);
   o.save();
-  o.globalAlpha = 0.55;
+  o.globalAlpha = 0.8;
   o.imageSmoothingEnabled = true;
   for (const q of plots) {
-    if (!q.coast) continue;
+    if (q.landDist !== 1) continue;                 // only the ring that actually touches land
     const i = (q.coast >> 4) & 15;
-    if (i === 0 || i === 15) continue;                 // uniform masks — nothing to blend
+    if (i === 15) continue;                         // every diagonal is water — nothing to reach in
     o.drawImage(tc, i * C, 0, C, C, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, tpp);
   }
   o.restore();
 }
+
 // the shallows tint — the Civ4 shoreblend hue baked into the bundle, or the old teal fallback
 const SHORE_COL = (SEA_BANDS && SEA_BANDS.shore) ? SEA_BANDS.shore.join(",") : "116,178,196";
 // beach sand — the hand-picked pair this used before the real art arrived. Still the fallback when
