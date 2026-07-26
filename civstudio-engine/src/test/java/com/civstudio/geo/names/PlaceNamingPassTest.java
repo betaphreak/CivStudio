@@ -32,7 +32,7 @@ class PlaceNamingPassTest {
 	}
 
 	private static Plot plotAt(TerrainRegistry reg, int x, int y) {
-		return new Plot(new PlotGeo(x, y, 0, 0, 0), reg.terrain("TERRAIN_DESERT"), PlotType.FLAT, null, null);
+		return new Plot(new PlotGeo(x, y, 0, 0, 0, 0), reg.terrain("TERRAIN_DESERT"), PlotType.FLAT, null, null);
 	}
 
 	@Test

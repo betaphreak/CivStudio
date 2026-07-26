@@ -15,9 +15,18 @@ package com.civstudio.geo;
  * @param river     packed river code (width / flow / node — see {@link ProvinceRaster#classifyRiver})
  * @param elevation heightmap elevation, {@code 0..255} ({@code 0} where absent)
  * @param coast     8-bit sea mask (edge + corner water — see {@code docs/coastlines.md})
+ * @param landDist  Chebyshev pixels to the nearest dry land: {@code 0} on land, {@code 1} for water
+ *                  touching a coast, rising outward to {@code ProvincePlotField.SHELF_MAX} at the
+ *                  outer edge of the coastal shelf. Computed over the WHOLE world raster
+ *                  ({@link ProvinceRaster#computeLandDistance}), so it is identical either side of a
+ *                  province boundary — which is the point of shipping it. The shelf ends at a hard
+ *                  integer cutoff, so without this the web client has no way to fade its outer ring
+ *                  and every coastline ends in a staircase of squares; anything it could derive
+ *                  instead sees only one province's plots and would print a seam at every boundary.
+ *                  See {@code docs/civ4-texture-inventory.md} §4 P3.
  */
-public record PlotGeo(int x, int y, int river, int elevation, int coast) {
+public record PlotGeo(int x, int y, int river, int elevation, int coast, int landDist) {
 
 	/** The geography of a province-less plot (a legacy/test plot): no position, water or elevation. */
-	public static final PlotGeo NONE = new PlotGeo(-1, -1, 0, 0, 0);
+	public static final PlotGeo NONE = new PlotGeo(-1, -1, 0, 0, 0, 0);
 }

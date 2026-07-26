@@ -26,9 +26,9 @@ class PlotPlaceNameStoreTest {
 	void placeNameRoundTripsThroughTheCache(@TempDir Path tmp) {
 		TerrainRegistry reg = TerrainRegistry.load();
 		Terrain desert = reg.terrain("TERRAIN_DESERT");
-		Plot named = new Plot(new PlotGeo(10, 20, 0, 0, 0), desert, PlotType.FLAT, null, null);
+		Plot named = new Plot(new PlotGeo(10, 20, 0, 0, 0, 0), desert, PlotType.FLAT, null, null);
 		named.setPlaceName("Kraków"); // UTF-8, exercises the encoding path
-		Plot unnamed = new Plot(new PlotGeo(11, 21, 0, 0, 0), desert, PlotType.FLAT, null, null);
+		Plot unnamed = new Plot(new PlotGeo(11, 21, 0, 0, 0, 0), desert, PlotType.FLAT, null, null);
 
 		try {
 			ProvincePlotStore.configure(tmp.toString());

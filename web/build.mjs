@@ -996,12 +996,19 @@ function bakeRiverTile() {
 // deepen/brighten it into ripples. (seadetail carries its pattern in RGB, so we read luminance,
 // unlike the river ribbon whose ripples are in the DXT5 alpha.) Returns {src, tile}, or null
 // when the art is absent (LFS not pulled / file://) — the renderer then draws the flat gradient.
+// CIV4-FIRST here, deliberately against the Civ6-first policy the rest of the water bakes follow
+// (docs/civ6-art-replacement.md). `Art/Terrain/water/water2.dds` is a painted OCEAN SURFACE — an
+// opaque blue sheet of real wave structure — whereas Civ6's SV_TerrainHexOcean is a flat strategic-
+// view tile with a gentle surface. For the thing that fills most of the screen, the painted waves win.
+// (This file sits in `terrain/water/`, which an earlier survey wrote off as redundant with
+// `terrain/textures/water/`. It is not: that folder holds blend/detail maps, this one holds the
+// surface itself, plus `ocean deep` and two bump maps.)
 function bakeSeaTile() {
-  const s = waterSrcImg(civ6.oceanTile(), 'Art/Terrain/textures/water/seadetail.dds');
+  const s = waterSrcImg(null, 'Art/Terrain/water/water2.dds')
+    || waterSrcImg(civ6.oceanTile(), 'Art/Terrain/textures/water/seadetail.dds');
   if (!s) return null;
-  console.log(`  sea ripple: ${s.civ6 ? 'Civ6 SV_TerrainHexOcean' : 'C2C seadetail'}`);
-  // the Civ6 SV ocean tile carries a gentler surface than the C2C wave detail → a touch more contrast
-  return bakeRippleTile(s.img, `water/sea`, s.civ6 ? 3.0 : 1.1);
+  console.log(`  sea ripple: ${s.civ6 ? 'Civ6 SV_TerrainHexOcean' : 'C2C water2 (painted ocean surface)'}`);
+  return bakeRippleTile(s.img, `water/sea`, s.civ6 ? 3.0 : 1.6);
 }
 
 // The shore shallows carry the same treatment (docs/coastlines.md Phase D): a neutral-mean
@@ -1652,6 +1659,16 @@ function bakeRippleTile(img, name, contrast) {
 // blend texture (seatrop/sea/seapol) rescaled to a hand-tuned dark-theme LUMINANCE (tropical
 // brightest/tealest, polar dimmest/greyest), mirroring how the land terrains are recoloured.
 // Falls back to the dark anchors when the art is absent (LFS not pulled).
+// The ocean's luminance anchors. These used to be much darker ([26,56,76] / [20,42,68] / [32,42,54],
+// resolving to around luma 38) — a near-black sea for a dark UI. That is what made the coastal shelf
+// read as a STAIRCASE: the shelf sits at the `shore` tint (luma ~161) against a sea at luma ~38, and
+// at that contrast every plot-square boundary between them is a hard edge no amount of shaping hides.
+//
+// Raised to roughly 45% of the shore's luminance, which is what a real water gradient looks like and
+// is close to (though still darker than) the Civ4 art itself — `water/water2.dds`, the painted ocean
+// surface, measures luma ~130. The HUE still comes from the art via hueAtLuminance; only the
+// luminance is authored here. See docs/civ4-texture-inventory.md §4 P3.
+const SEA_ANCHOR = { trop: [38, 82, 108], temp: [30, 66, 96], polar: [36, 62, 82] };
 function bakeSeaBands() {
   // Civ6-first: the SV Ocean tile gives one water hue; derive the three climate bands by warming
   // (tropical) / cooling (polar) it, and the shallows from the SV Coast tile. Anchors set each band's
@@ -1666,18 +1683,18 @@ function bakeSeaBands() {
     const warm = c => [c[0] * 1.08, c[1] * 1.0, c[2] * 0.88];   // tropical: warmer, greener
     const cool = c => [c[0] * 0.9, c[1] * 0.97, c[2] * 1.06];   // polar: cooler, greyer
     return {
-      trop:  hueAtLuminance([26, 56, 76], warm(oc)),
-      temp:  hueAtLuminance([20, 42, 68], oc),
-      polar: hueAtLuminance([32, 42, 54], cool(oc)),
+      trop:  hueAtLuminance(SEA_ANCHOR.trop, warm(oc)),
+      temp:  hueAtLuminance(SEA_ANCHOR.temp, oc),
+      polar: hueAtLuminance(SEA_ANCHOR.polar, cool(oc)),
       shore: hueAtLuminance([116, 178, 196], co),
     };
   }
   // C2C fallback: the Civ4 sea-blend textures (per-climate).
   const band = (art, anchor) => { const c = avgDds(art); return c ? hueAtLuminance(anchor, c) : anchor; };
   return {
-    trop:  band('Art/Terrain/textures/water/seatropblend.dds', [26, 56, 76]),
-    temp:  band('Art/Terrain/textures/water/seablend.dds',     [20, 42, 68]),
-    polar: band('Art/Terrain/textures/water/seapolblend.dds',  [32, 42, 54]),
+    trop:  band('Art/Terrain/textures/water/seatropblend.dds', SEA_ANCHOR.trop),
+    temp:  band('Art/Terrain/textures/water/seablend.dds',     SEA_ANCHOR.temp),
+    polar: band('Art/Terrain/textures/water/seapolblend.dds',  SEA_ANCHOR.polar),
     // the shallows tint: the tropical sea HUE at a bright coastal-teal luminance — the shore is a
     // brighter, lighter version of the open water. (shoreblend itself is a neutral sandy blend
     // with no usable water hue, like the land blends.) See docs/coastlines.md Phase D.
@@ -1716,9 +1733,13 @@ function bakeBeachRamps() {
 
 // The deep-ocean tint (for the depth-banding pass): the authentic hue of the Civ4 seadeep blend
 // at a very dark theme luminance, so open water reads far darker than the shelf. Dark fallback.
+// The deep-ocean tint the depth-banding pass darkens toward. Its hue now comes from
+// `Art/Terrain/water/ocean deep.dds` — Civ4's actual painted deep-water overlay, which is what that
+// file is for — rather than the neutral `seadeepblend` MASK. Raised alongside SEA_ANCHOR so the
+// shelf-to-deep ramp stays a gradient rather than a cliff into black.
 function seaDeepColor() {
-  const c = avgDds('Art/Terrain/textures/water/seadeepblend.dds');
-  return c ? hueAtLuminance([10, 20, 34], c) : [11, 21, 35];
+  const c = avgDds('Art/Terrain/water/ocean deep.dds') || avgDds('Art/Terrain/textures/water/seadeepblend.dds');
+  return c ? hueAtLuminance([18, 36, 54], c) : [18, 36, 54];
 }
 
 // Two-pass chamfer distance transform: for each ocean cell (`sea[k]===1`), the approximate

@@ -364,7 +364,8 @@ public final class ProvincePlotField {
 				// terrain/relief/feature/bonus draws — and thus the field — otherwise identical
 				int elevation = mask.elevation(lx, ly);
 				int coast = mask.coast(lx, ly);
-				PlotGeo geo = new PlotGeo(mask.originX() + lx, mask.originY() + ly, riverCode, elevation, coast);
+				// landDist is 0 on dry land by definition — the shelf ramp it feeds is water-only
+				PlotGeo geo = new PlotGeo(mask.originX() + lx, mask.originY() + ly, riverCode, elevation, coast, 0);
 				out.add(new ProvincePlot(geo, terrain, plotType, feature[idx], bonus, urban[idx]));
 			}
 		}
@@ -447,8 +448,10 @@ public final class ProvincePlotField {
 		List<ProvincePlot> out = new ArrayList<>(cells.size());
 		for (int[] c : cells) {
 			int lx = c[0], ly = c[1], idx = ly * w + lx;
+			// carry the shelf depth (1 = touching land … SHELF_MAX = outer edge) so the web client can
+			// FADE the shelf's outer ring instead of ending it in a hard square — see PlotGeo#landDist
 			PlotGeo geo = new PlotGeo(mask.originX() + lx, mask.originY() + ly, 0,
-					mask.elevation(lx, ly), mask.coast(lx, ly));
+					mask.elevation(lx, ly), mask.coast(lx, ly), mask.landDist(lx, ly));
 			out.add(new ProvincePlot(geo, terrainGrid[idx], PlotType.FLAT, featureGrid[idx], bonusGrid[idx], false));
 		}
 		return new ProvincePlotField(province, out);

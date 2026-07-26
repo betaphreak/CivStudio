@@ -59,7 +59,7 @@ public final class ProvincePlotStore {
 	 * The web bundle ships it as {@code mapVersion} (also an MCP tool, {@code get_map_version}). See
 	 * {@code docs/plot-serving.md}.
 	 */
-	public static final int MAP_VERSION = 11; // 11: seamless generation — world-coordinate terrain patches + a continuous WorldClimate field + a neighbour-land halo on the mask, and one recalibrated temperature model (authored climate authoritative, Mercator latitude demoted) that ends the map-wide over-snowing (docs/plot-generator.md §Seamless generation/§Temperature); 10: urban is a PURE overlay — city cells keep their full natural yield stack (terrain/relief/feature/bonus), only peaks clamped to hills; no more gen-time flatten/feature-strip/bonus-strip (docs/city-of-hamlets-plan.md §8); 9: sea-rooted river drainage — flow points seaward + a render width class per plot (docs/river-rendering.md §3/§4); 8: urban is an overlay flag on natural terrain (retired TERRAIN_URBAN ground — docs/urban-plots.md); 7: real-world plot place names (GeoNames); 6: water-dominant urban-core siting
+	public static final int MAP_VERSION = 12; // 12: water plots carry landDist (Chebyshev pixels to dry land, 1..SHELF_MAX across the shelf) so the web client can FADE the shelf's outer ring instead of ending it in a staircase of squares — the value is global, so unlike anything derived per-province it prints no seam (docs/civ4-texture-inventory.md §4 P3); 11: seamless generation — world-coordinate terrain patches + a continuous WorldClimate field + a neighbour-land halo on the mask, and one recalibrated temperature model (authored climate authoritative, Mercator latitude demoted) that ends the map-wide over-snowing (docs/plot-generator.md §Seamless generation/§Temperature); 10: urban is a PURE overlay — city cells keep their full natural yield stack (terrain/relief/feature/bonus), only peaks clamped to hills; no more gen-time flatten/feature-strip/bonus-strip (docs/city-of-hamlets-plan.md §8); 9: sea-rooted river drainage — flow points seaward + a render width class per plot (docs/river-rendering.md §3/§4); 8: urban is an overlay flag on natural terrain (retired TERRAIN_URBAN ground — docs/urban-plots.md); 7: real-world plot place names (GeoNames); 6: water-dominant urban-core siting
 
 	// The cache root — a working-dir/volume folder, NOT the source tree. Defaults to .map
 	// (matching PlotService's civstudio.plots.cache-dir default) and is overridden by the server via
@@ -104,7 +104,12 @@ public final class ProvincePlotStore {
 			// the built-up urban-core overlay flag (natural terrain kept underneath). Always
 			// serialized (a missing primitive can't round-trip through Jackson 3's record creator);
 			// "urban":false is a constant repeated token, so gzip all but erases it in the cache.
-			boolean urban) {
+			boolean urban,
+			// Chebyshev distance to dry land — 0 on land, 1..SHELF_MAX across the coastal shelf. The
+			// web client fades the shelf's outer ring by it (PlotGeo#landDist); like `urban` it is a
+			// primitive, so it is always written, and it is 0 on every land plot, which is the
+			// overwhelming majority — another constant token gzip erases.
+			int landDist) {
 
 		/** The persisted form of a runtime plot: its raster scalars + its type keys + its place name. */
 		static StoredPlot of(Plot p) {
@@ -112,12 +117,12 @@ public final class ProvincePlotStore {
 			return new StoredPlot(g.x(), g.y(), g.river(), p.terrain().type(), p.plotType().name(),
 					p.feature() == null ? null : p.feature().type(),
 					p.bonus() == null ? null : p.bonus().type(), g.elevation(), g.coast(),
-					p.placeName(), p.urban());
+					p.placeName(), p.urban(), g.landDist());
 		}
 
 		/** Resolve back to a runtime plot, looking the type keys up in {@code registry}. */
 		Plot toPlot(TerrainRegistry registry) {
-			Plot p = new Plot(new PlotGeo(x, y, river, elevation, coast),
+			Plot p = new Plot(new PlotGeo(x, y, river, elevation, coast, landDist),
 					registry.terrain(terrain), PlotType.valueOf(plotType),
 					feature == null ? null : registry.feature(feature),
 					bonus == null ? null : registry.bonus(bonus));

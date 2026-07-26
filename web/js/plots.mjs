@@ -8,7 +8,7 @@ import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
-import { paintCoast, drawSeaIce, blendCoastEdges } from "./coast.mjs";
+import { paintCoast, drawSeaIce, blendCoastEdges, fadeShelfEdge } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
 import { loadPlots } from "./plotfetch.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
@@ -396,6 +396,12 @@ function buildPlotTexCanvas(p) {
   // are, and what they are NOT — reading them as land occupancy deletes half a coastal plot.
   if (!water) blendCoastEdges(o, p._plots, x0, y0, tpp);
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
+  // DISSOLVE THE SHELF'S OUTER EDGE. The coastal shelf is a hard integer band (1 <= landDist <=
+  // SHELF_MAX), so without this it ends in a staircase of squares against the open sea — the most
+  // visible artefact left on a coastline. landDist ships per water plot from MAP_VERSION 12 precisely
+  // because it is computed globally: anything derived from this province's own plots would fade at
+  // every boundary between two provinces' shelves and print a seam. See coast.mjs.
+  if (water) fadeShelfEdge(o, p._plots, x0, y0, w, h, tpp);
   p._tcanvas = oc; p._tbox = { x0, y0, w, h }; p._grid = grid;   // grid: q.x*1e5+q.y → plot, for the resource tooltip
   p._tfoliage = bakeFoliage;   // which way this canvas was baked — drawPlots invalidates it when that flips
 }

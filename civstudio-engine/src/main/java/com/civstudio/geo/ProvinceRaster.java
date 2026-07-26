@@ -80,6 +80,9 @@ public final class ProvinceRaster {
 	// coastal-shelf water plots in ProvincePlotField (docs/coastlines.md).
 	private int[] landDistance;
 
+	/** Whether {@link #ensureRaster()} ran to completion — the ONLY safe "already loaded" signal. */
+	private volatile boolean rasterLoaded;
+
 	private ProvinceRaster(Map<Integer, Integer> idToColor) {
 		this.idToColor = idToColor;
 	}
@@ -396,8 +399,15 @@ public final class ProvinceRaster {
 		return Math.max(1, Math.min(9, Math.max(octave, authoredWidth)));
 	}
 
-	private void ensureRaster() throws IOException {
-		if (pixels != null)
+	// Guarded by `rasterLoaded`, set at the very END, and NOT by `pixels` as it used to be. `pixels` is
+	// assigned five statements before `waterColors`, so any failure in between — a missing terrain or
+	// heightmap raster, most likely — left the object half-built, and the next call took the early
+	// return and sailed on with `waterColors` still null. That surfaced as
+	// "Cannot invoke Set.contains because this.waterColors is null" out of isWater(), from a servlet
+	// thread, which points nowhere near the real cause. `synchronized` for the same reason: the server
+	// runs on virtual threads and two concurrent plot requests could both enter this.
+	private synchronized void ensureRaster() throws IOException {
+		if (rasterLoaded)
 			return;
 		BufferedImage img = ImageIO.read(AnbennarFiles.get(PROVINCES_BMP).toFile());
 		BufferedImage rImg = ImageIO.read(AnbennarFiles.get(RIVERS_BMP).toFile());
@@ -425,6 +435,7 @@ public final class ProvinceRaster {
 		this.riverFlow = net.dir();
 		this.riverAcc = net.acc();
 		this.landDistance = computeLandDistance();
+		this.rasterLoaded = true;   // LAST — see the guard above; a partial load must not look complete
 	}
 
 	// the Chebyshev distance from every pixel to the nearest dry-land (non-water) pixel: 0 on

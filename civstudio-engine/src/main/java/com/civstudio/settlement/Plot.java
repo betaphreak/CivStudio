@@ -187,7 +187,7 @@ public final class Plot {
 	 * @param bonus    the resource on it, or {@code null}
 	 */
 	public Plot(int x, int y, Terrain terrain, PlotType plotType, Feature feature, Bonus bonus) {
-		this(-1, new PlotGeo(x, y, 0, 0, 0), terrain, plotType, feature, bonus);
+		this(-1, new PlotGeo(x, y, 0, 0, 0, 0), terrain, plotType, feature, bonus);
 	}
 
 	private Plot(int index, PlotGeo geo, Terrain terrain, PlotType plotType, Feature feature, Bonus bonus) {
