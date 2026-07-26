@@ -1406,7 +1406,7 @@ function bakeFeatureSprites() {
     const variants = peakVariants();
     if (variants.length) {
       const g = bakeNifGroup(variants, PEAK_GROUP.name, path.join(WEB, 'assets'), PEAK_GROUP.size,
-                             { size: PEAK_GROUP.size, emit });
+                             { size: PEAK_GROUP.size, baseFade: PEAK_GROUP.baseFade, emit });
       if (g) { out.peak = g; console.log(`  peak: ${variants.length} variant(s) baked from .civ4-fpk`); }
     } else if (fs.existsSync(PEAK_MANIFEST)) {
       out.peak = JSON.parse(fs.readFileSync(PEAK_MANIFEST, 'utf8'));

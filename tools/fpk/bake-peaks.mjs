@@ -41,9 +41,17 @@ const ASSETS = path.join(ROOT, 'web/assets');
 // build.mjs IMPORTS this module for PEAK_GROUP/peakVariants and must not need the encoder to do so.
 const loadSharp = () => createRequire(path.join(ROOT, 'web/package.json'))('sharp');
 
-/** The peak group, shared with web/build.mjs so the two cannot drift. */
+/** The peak group, shared with web/build.mjs so the two cannot drift.
+ *
+ *  `baseFade` ramps the sprite's alpha out over the bottom 18% of its height (bakeNifGroup). A
+ *  mountain billboard is a 320px front elevation and its bottom row is a hard straight cut where rock
+ *  meets ground — visible as a line under every peak, and the contact shadow (terrain3d.mjs §4b) is a
+ *  small blob that never reaches the edges of a quad this wide. Fading the base is what makes the rock
+ *  dissolve into the terrain instead of ending on it.
+ *
+ *  Trees deliberately have no such fraction: their bottom rows are the trunk. */
 export const PEAK_GROUP = {
-  name: 'peak', size: 320, tex: 'peak/peak_all.dds',
+  name: 'peak', size: 320, tex: 'peak/peak_all.dds', baseFade: 0.18,
   nifs: ['peak/peak_mountaina.nif', 'peak/peak_mountainb.nif', 'peak/peak_mountainc.nif'],
 };
 
@@ -69,7 +77,8 @@ if (process.argv[1] && /bake-peaks\.mjs$/.test(process.argv[1])) {
     pending.push({ file: `trees/trees-${n}.webp`, w, h, rgba });
     return `assets/trees/trees-${n}.webp`;
   };
-  const rec = bakeNifGroup(variants, PEAK_GROUP.name, ASSETS, PEAK_GROUP.size, { size: PEAK_GROUP.size, emit });
+  const rec = bakeNifGroup(variants, PEAK_GROUP.name, ASSETS, PEAK_GROUP.size,
+                           { size: PEAK_GROUP.size, baseFade: PEAK_GROUP.baseFade, emit });
   if (!rec) { console.error('bake produced no sprites'); process.exit(1); }
 
   const sharp = loadSharp();

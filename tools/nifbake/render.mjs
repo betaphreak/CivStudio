@@ -144,6 +144,19 @@ function components(img, minSide = 12, minArea = 60) {
 
 // render one or more model variants, extract their plants as sprites, and pack them into a
 // single horizontal strip PNG (the TREES atlas format: {src, w, h, sprites:[[x,y,w,h]]})
+//
+// `opts.baseFade` (a fraction of each sprite's height, 0 = off) ramps the ALPHA out over the sprite's
+// bottom rows, so the model dissolves into the ground instead of ending at the quad's edge.
+//
+// WHY THIS BELONGS AT BAKE TIME, and why only some groups want it. A billboard is a front elevation
+// with a hard bottom row, and for a MOUNTAIN — 320px tall, wider than the contact shadow under it —
+// that row is a visible straight cut where rock meets grass, which no shadow blob reaches. Fading the
+// alpha here costs nothing at runtime and cannot desynchronise from the renderer, because both the
+// committed bake (tools/fpk/bake-peaks.mjs) and web/build.mjs go through this one function.
+//
+// A TREE must NOT have it: its bottom rows are the trunk, and a trunk that fades out is a shrub
+// hovering over the ground. So the fraction lives on the GROUP record (PEAK_GROUP.baseFade) rather
+// than being a global of this module — it is a property of the art, not of the baker.
 export function bakeNifGroup(variants, name, webAssets, size = 220, opts = {}) {
   const sheets = variants.map(v => ({ img: renderNif(v.nif, v.tex, size, opts) }));
   const all = [];
@@ -155,9 +168,23 @@ export function bakeNifGroup(variants, name, webAssets, size = 220, opts = {}) {
   let totW = 0; for (const x of chosen) totW += x.c.bw + GAP;
   const rgba = Buffer.alloc(totW * maxH * 4); const sprites = []; let ox = 0;
   for (const { img, c } of chosen) {
-    for (let y = 0; y < c.bh; y++) for (let x = 0; x < c.bw; x++) {
-      const so = ((c.miny + y) * img.W + (c.minx + x)) * 4, d = (y * totW + ox + x) * 4;
-      rgba[d] = img.rgba[so]; rgba[d + 1] = img.rgba[so + 1]; rgba[d + 2] = img.rgba[so + 2]; rgba[d + 3] = img.rgba[so + 3];
+    // rows over which the alpha ramps to nothing, measured from this sprite's own base
+    const fadeRows = Math.max(0, Math.round((opts.baseFade || 0) * c.bh));
+    for (let y = 0; y < c.bh; y++) {
+      // Smoothstep, not linear: a linear ramp starts with a slope discontinuity, which on a 320px
+      // sprite is itself a faint horizontal line — the artefact this exists to remove, moved upward.
+      let a = 1;
+      if (fadeRows && y >= c.bh - fadeRows) {
+        const t = (c.bh - 1 - y) / fadeRows;         // 1 at the top of the ramp, 0 on the last row
+        a = t * t * (3 - 2 * t);
+      }
+      for (let x = 0; x < c.bw; x++) {
+        const so = ((c.miny + y) * img.W + (c.minx + x)) * 4, d = (y * totW + ox + x) * 4;
+        // RGB is copied through unfaded. It is what bleeds under a lossy WebP's transparent pixels,
+        // and rock bleeding into rock is invisible; zeroing it would put a dark rim on the base.
+        rgba[d] = img.rgba[so]; rgba[d + 1] = img.rgba[so + 1]; rgba[d + 2] = img.rgba[so + 2];
+        rgba[d + 3] = a === 1 ? img.rgba[so + 3] : Math.round(img.rgba[so + 3] * a);
+      }
     }
     sprites.push([ox, 0, c.bw, c.bh]); ox += c.bw + GAP;
   }
