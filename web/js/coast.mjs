@@ -10,13 +10,12 @@
 // coast is a smooth wavy line across cells, not a grid staircase; (2) the real Civ4 shoredetail ripple
 // clipped to that shallow shape. (Earlier per-cell rectangular bites read as blue blotches on the land,
 // and the wave-crest foam lapped onto land — both dropped for this continuous shallows.)
-import { SHORE, ICE_ART, SEA_BANDS, BEACH, FOAM, COAST_MASK, COAST_TILES } from "./core.mjs";
+import { ICE_ART, BEACH, FOAM, COAST_TILES } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 
-// the baked greyscale shore-wave tile for the coast shallows (docs/coastlines.md Phase D); null →
-// the shallows stay flat-tinted, no ripple
-let shoreReady = false;
-const shoreImg = loadArt(SHORE, () => { shoreReady = true; });
+// (The baked shore-ripple tile is no longer loaded here. It only ever existed to texture the
+// procedural shallow band, and that band is gone — the shoreline is Civ4's painted coast tiles on the
+// water plots now. SHORE stays in the bundle for the sea layer.)
 // the real Civ4 pack-ice tile (docs/coastlines.md Phase G), features/icepack; null → drawSeaIce
 // falls back to flat pale floes
 let iceReady = false, icePat = null;
@@ -25,9 +24,6 @@ const iceImg = loadArt(ICE_ART, () => { iceReady = true; });
 // keeps its procedural white feather
 let foamReady = false;
 const foamImg = loadArt(FOAM, () => { foamReady = true; });
-// Civ4's 16-way shoreline stencil (§4 P3); null → coastal plots stay square
-let cmReady = false;
-const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
 // Civ4's painted coast tiles, one atlas per climate band (§4 P3); null → no coast tile is drawn
 const ctImg = {}, ctReady = {};
 if (COAST_TILES) for (const b of ["trop", "temp", "polar"])
@@ -88,8 +84,6 @@ export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
   o.restore();
 }
 
-// the shallows tint — the Civ4 shoreblend hue baked into the bundle, or the old teal fallback
-const SHORE_COL = (SEA_BANDS && SEA_BANDS.shore) ? SEA_BANDS.shore.join(",") : "116,178,196";
 // beach sand — the hand-picked pair this used before the real art arrived. Still the fallback when
 // BEACH is null (the coast blend atlases were absent at bake time).
 const SAND = "226,208,164", WET_SAND = "200,182,140";
@@ -124,30 +118,17 @@ export function paintCoast(o, W, H, plots, x0, y0, tpp, lat = 45) {
   // `detail` fades the land-extension detail out at low offscreen resolution (tpp), where a per-plot
   // bump would be a pixel or two of mush. Tracks offscreen resolution, NOT the on-screen zoom.
   const detail = Math.max(0, Math.min(1, (tpp - 8) / 12));
-  const bands = ctx2 => { for (const q of coastal) drawCoastBands(ctx2, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast); };
-  // The coast is WATER (the shelf tile), so we don't touch the land — the coastal LAND cells grow a
-  // SAND BEACH that protrudes into the shallows by a corner-continuous jittered depth (a smooth wavy
-  // sand line across cells, not a grid staircase) and feathers back onto the land. Shallows are painted
-  // first (in the water), then the beach on top: land → dry sand → wet sand → shallows → sea.
-  const beach = () => { if (detail > 0) for (const q of coastal) drawBeach(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q, ramp); };
-  // a soft foam lap just seaward of the sand (repurposes the retired foam crest)
-  const foam = () => { if (detail > 0) for (const q of coastal) drawFoam(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast, q.x, q.y, detail); };
-  if (!shoreReady) { bands(o); beach(); foam(); return; }   // no ripple art → flat shore-hue bands
-  // 1) shore-hue bands on a scratch layer (its alpha = the shallow-water shape)
-  const cc = document.createElement("canvas"); cc.width = W; cc.height = H;
-  bands(cc.getContext("2d"));
-  // 2) the shore ripple, clipped to that shape — 8 plots per 128px tile → fine near-shore chop
-  const rc = document.createElement("canvas"); rc.width = W; rc.height = H;
-  const r = rc.getContext("2d"), pat = r.createPattern(shoreImg, "repeat");
-  const sc = Math.max(0.25, tpp / 16);
-  pat.setTransform(new DOMMatrix([sc, 0, 0, sc, 0, 0]));
-  r.fillStyle = pat; r.fillRect(0, 0, W, H);
-  r.globalCompositeOperation = "destination-in"; r.drawImage(cc, 0, 0);
-  // 3) composite: shallows colour, ripple soft-light over it, then the sand beach ON TOP
-  o.drawImage(cc, 0, 0);
-  o.save(); o.globalCompositeOperation = "soft-light"; o.globalAlpha = 0.9; o.drawImage(rc, 0, 0); o.restore();
-  beach();
-  foam();
+  if (detail <= 0) return;
+  // THE SHALLOW BAND IS GONE, and its shore-ripple pass with it. It reached 1.35 cells OUTWARD from
+  // every coastal land plot in a flat shore hue — a procedural stand-in from before there was any
+  // shore art. There is now: Civ4's painted coast tiles are stamped on the WATER plots
+  // (extendCoastIntoWater), which is where a shoreline belongs. Keeping both meant the land province's
+  // canvas painted its band straight over the water province's real art and hid it — reported as
+  // "the coast doesn't display at all", and it was being covered rather than not drawn.
+  //
+  // What stays here is what genuinely belongs to the LAND plot: its sand, and the foam at its edge.
+  for (const q of coastal) drawBeach(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q, ramp);
+  for (const q of coastal) drawFoam(o, (q.x - x0) * tpp, (q.y - y0) * tpp, tpp, q.coast, q.x, q.y, detail);
 }
 // deterministic 0..1 hash — the same integer-mix idiom drawSeaIce uses, for jitter that is
 // stable across redraws and seed-reproducible (no Math.random)
@@ -197,18 +178,6 @@ function outwardBands(o, cx, cy, s, mask, col, f, a0) {
     gr.addColorStop(0, `rgba(${col},${a0})`); gr.addColorStop(1, `rgba(${col},0)`);
     o.fillStyle = gr; o.fillRect(px - (ux ? 0 : f), py - (uy ? 0 : f), f, f);
   }
-}
-// the shallow-water band: the Civ4 shoreblend hue reaching ~1 cell out from the shoreline into the
-// sea (its alpha is the shape the shore ripple is clipped to). The sand beach is drawn OVER this
-// afterward, so the visible shallows ring sits just beyond the wavy shore.
-//
-// A shelf-edge band was TRIED here and removed — see docs/civ4-texture-inventory.md §4 P2. The idea
-// was that the shallows should ramp to a dimmer shelf tone instead of fading out. It fails twice:
-// coastdeepblend carries no hue to ramp TO (its opaque pixels are flat grey), and any mid-tone ring
-// between bright shallows and the dark open sea just makes the pale halo WIDER — the fade to
-// transparent over dark water already reads as deepening. Left as one band deliberately.
-function drawCoastBands(o, cx, cy, s, mask) {
-  outwardBands(o, cx, cy, s, mask, SHORE_COL, s * 1.35, ".85");
 }
 // an INWARD fade of `col` from the shoreline back into the LAND cell — the mirror of
 // outwardBands. Used for the dry-sand beach apron feathering off the water's edge onto land.
