@@ -2,7 +2,7 @@
 //
 //   node web/build.mjs [seed]        (seed only names the baked terrain asset; default 24601)
 //
-// Reads the committed province map (civstudio-engine/target/generated/map/provinces.json) + outlines
+// Reads the committed world-bundle (content-source.mjs) for the province map + outlines
 // (borders.json) + geographic hierarchy + tech tree, distils them into one
 // JSON bundle written to web/data.js (which index.html loads), and bakes a dark-tinted crop of
 // the real EU4 terrain raster (data/anbennar/terrain.bmp) into a real image asset at
@@ -26,6 +26,7 @@ import { get as civ4Get, resolveArt as civ4ResolveArt, prefetch as civ4Prefetch 
 import * as civ6 from './civ6.mjs';
 import { decodeCached, resampleRGBA, octagonBacking, compositeCentered } from './imgutil.mjs';
 import { beachRampFromAtlas } from './beachramp.mjs';
+import { bundleResource, bundleResourceOpt } from './content-source.mjs';
 import { prefetch as anbPrefetch, get as anbGet } from './anbennar.mjs';
 import { bakeNifGroup, renderRouteNif, routeHalfExtent } from '../tools/nifbake/render.mjs';
 import { PEAK_GROUP, PEAK_MANIFEST, peakVariants } from '../tools/fpk/bake-peaks.mjs';
@@ -85,7 +86,7 @@ async function flushImages(assets) {
 // committed map/geo/terrain/tech resources. SEED still names the baked terrain assets.
 const SEED = process.argv[2] || '24601';
 
-const allProv = JSON.parse(fs.readFileSync(path.join(ROOT, 'civstudio-engine/target/generated/map/provinces.json'), 'utf8'));
+const allProv = bundleResource('/map/provinces.json');
 const byId = new Map(allProv.map(p => [p.id, p]));
 
 // land-like province types: dry surface LAND, the four underground Dwarovar types, and the
@@ -124,9 +125,9 @@ const CONTINENT_NAME = {
   europe: 'Cannor', asia: 'Haless', africa: 'Sarhal', north_america: 'Aelantir',
   south_america: 'Aelantir', serpentspine: 'Serpentspine', oceania: 'Hinuilands',
 };
-const superRegions = JSON.parse(fs.readFileSync(path.join(ROOT, 'civstudio-engine/target/generated/map/superregions.json'), 'utf8'));
-const regionsMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'civstudio-engine/target/generated/map/regions.json'), 'utf8'));
-const areasMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'civstudio-engine/target/generated/map/areas.json'), 'utf8'));
+const superRegions = bundleResource('/map/superregions.json');
+const regionsMeta = bundleResource('/map/regions.json');
+const areasMeta = bundleResource('/map/areas.json');
 const srNameByRegion = {};   // region key -> super-region display name
 const srKeyByRegion = {};    // region key -> super-region raw (Clausewitz) key
 for (const s of superRegions) for (const rk of s.regions) { srNameByRegion[rk] = s.name; srKeyByRegion[rk] = s.key; }
@@ -137,10 +138,9 @@ for (const a of areasMeta) areaDisplayName[a.key] = a.name;
 
 // political reference tables (optional resources; the political map mode colours
 // province polygons by their owner tag, and joins culture/religion for the sidebar)
-const readJsonOpt = f => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, f), 'utf8')); } catch { return []; } };
-const countryByTag = Object.fromEntries(readJsonOpt('civstudio-engine/target/generated/map/countries.json').map(c => [c.tag, { name: c.name, color: c.color }]));
-const cultureByKey = Object.fromEntries(readJsonOpt('civstudio-engine/target/generated/map/cultures.json').map(c => [c.key, { name: c.name, group: c.group, color: c.color }]));
-const religionByKey = Object.fromEntries(readJsonOpt('civstudio-engine/target/generated/map/religions.json').map(r => [r.key, { name: r.name, group: r.group, color: r.color }]));
+const countryByTag = Object.fromEntries(bundleResourceOpt('/map/countries.json').map(c => [c.tag, { name: c.name, color: c.color }]));
+const cultureByKey = Object.fromEntries(bundleResourceOpt('/map/cultures.json').map(c => [c.key, { name: c.name, group: c.group, color: c.color }]));
+const religionByKey = Object.fromEntries(bundleResourceOpt('/map/religions.json').map(r => [r.key, { name: r.name, group: r.group, color: r.color }]));
 
 // ---- EU4-style label baseline (phase b): the curved spine a province name is laid along ----
 // Approximates the polygon's medial axis: scanline-rasterise the interior, take the shape's
@@ -312,15 +312,62 @@ const ROUTE_BY_TYPE = {
 };
 const SIZE_ROUTE = 96;   // px longest-side each piece renders at, before atlas packing
 
+// The SURF — real Civ4 foam for the water's edge (docs/civ4-texture-inventory.md §4 P2).
+//
+// `waves/wave_crest.dds` is 256×128 of pure WHITE rgb with the whole shape in its ALPHA: a scalloped
+// foam band starting at row 2, densest at rows 8–13, trailing off to nothing by ~row 48. So it is a
+// foam MASK, not a colour texture, and it tiles along its 256px axis — exactly a shoreline strip.
+//
+// Its sibling `wave_base.dds` is NOT used, and that is a finding rather than an oversight: its rgb is
+// flat grey and its alpha peaks at 153 with a mean of 20 — a near-empty smudge with no structure. The
+// pair reads as "soft base + white crest" in the file listing; measured, only the crest carries art.
+//
+// Returns {src, w, h} (RGBA, so the renderer can tint and stamp it) or null when the art is absent —
+// drawFoam then keeps its procedural white feather.
+//
+// Only the CREST is kept, not the whole wash. The alpha runs 2..~48, but it is dense over rows 3–21
+// and then trails at a tenth of that for another 27 — and shipping the trail made the shoreline read
+// as a pale haze at map zooms rather than a line of surf, because a few screen pixels cannot resolve
+// a long soft ramp. Cropping to the dense rows gives a crisp lap that survives downscaling.
+const FOAM_ROWS = 26;                                  // rows of wave_crest that carry the dense crest
+
+// THE COAST TILES — Civ4's painted shore transition tiles, and the authored table that picks between
+// them (docs/civ4-texture-inventory.md §4 P3, the "wiggle" half).
+//
+// `textures/coast*blend.dds` is a 4x8 atlas of 32 hand-painted 128px tiles: sand, shallows and deep
+// water with the shoreline carried in the alpha. `CIV4ArtDefines_Terrain.xml` says which cell to draw
+// for each 4-bit diagonal configuration, and at what rotation — `<TextureBlend3>3,0  7,180  11,0 …`
+// is config 3 offering cells 3/7/11/… as VARIANTS, each with its own rotation. Variants are what stop
+// a long coastline repeating one painted curve, so they are kept and the renderer picks per plot.
+//
+// This is drawn on the WATER plot, never the land one — see coast.mjs extendCoastIntoWater for why
+// that direction is the whole point.
+//
+// Returns {cell, cols, blend:{cfg:[[cell,rot],…]}, temp/trop/polar:{src}} or null.
+const COAST_TILE_ATLASES = {
+  temp:  ['Art/Terrain/textures/coastblend.dds',      'ART_DEF_TERRAIN_COAST'],
+  trop:  ['Art/Terrain/textures/coasttropblend.dds',  'ART_DEF_TERRAIN_COAST_TROPICAL'],
+  polar: ['Art/Terrain/textures/coastpolarblend.dds', 'ART_DEF_TERRAIN_COAST_POLAR'],
+};
+
+// The ocean's luminance anchors. These used to be much darker ([26,56,76] / [20,42,68] / [32,42,54],
+// resolving to around luma 38) — a near-black sea for a dark UI. That is what made the coastal shelf
+// read as a STAIRCASE: the shelf sits at the `shore` tint (luma ~161) against a sea at luma ~38, and
+// at that contrast every plot-square boundary between them is a hard edge no amount of shaping hides.
+//
+// Raised to roughly 45% of the shore's luminance, which is what a real water gradient looks like and
+// is close to (though still darker than) the Civ4 art itself — `water/water2.dds`, the painted ocean
+// surface, measures luma ~130. The HUE still comes from the art via hueAtLuminance; only the
+// luminance is authored here. See docs/civ4-texture-inventory.md §4 P3.
+const SEA_ANCHOR = { trop: [38, 82, 108], temp: [30, 66, 96], polar: [36, 62, 82] };
+
 // Warm the C2C art cache in parallel so the synchronous resolveArt/loadGameFont bakes below hit the
 // disk cache instead of a per-file round trip (see civ4.mjs). Collect the terrain-art manifest's
 // textures plus the water/tree/foam art the bakes reference by literal path; a miss just falls back
 // to the sync fetch, so this list only needs to cover the bulk to be worth it.
 await (async () => {
-  const manifest = path.join(ROOT, 'civstudio-engine/target/generated/map/terrain-art.json');
   const arts = [];
-  try { for (const e of JSON.parse(fs.readFileSync(manifest, 'utf8'))) arts.push(e.path, e.grid, e.detail); }
-  catch { /* manifest optional */ }
+  for (const e of bundleResourceOpt('/map/terrain-art.json')) arts.push(e.path, e.grid, e.detail);
   arts.push(
     'Art/Terrain/Routes/Rivers/allriverssmall.dds', 'Art/Terrain/waves/wave_crest.dds',
     'Art/Terrain/textures/water/seadetail.dds', 'Art/Terrain/textures/water/shoredetail.dds',
@@ -430,7 +477,7 @@ fs.writeFileSync(path.join(WEB, 'political.js'), `window.POLITICAL = ${JSON.stri
 // draws in the default World view, unlike the lazy political layer): the icon-atlas descriptor, the
 // good metadata (name/colour/category from the engine's tradegoods.json), and each shipped province's
 // good key. The client stamps the icon on the province at the right zoom, like the per-plot bonuses.
-const tgMeta = readJsonOpt('civstudio-engine/target/generated/map/tradegoods.json');
+const tgMeta = bundleResourceOpt('/map/tradegoods.json');
 const tradeGoods = {
   icons: tradeGoodIcons,   // {src, cell, cols, index:{key:col}} or null (icon strip absent)
   goods: Object.fromEntries(tgMeta.map(g => [g.key, { name: g.name, color: g.color, category: g.category }])),
@@ -458,7 +505,7 @@ const gcKm = (a, b) => {
   return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
 };
 const TELEPORT_KM = 800;   // beyond this a straight connection line would sprawl across the map
-const adjacencies = (readJsonOpt('civstudio-engine/target/generated/map/adjacencies.json') || [])
+const adjacencies = (bundleResourceOpt('/map/adjacencies.json') || [])
   .filter(a => shipped.has(a.from) && shipped.has(a.to))
   .map(a => {
     const pa = provLL.get(a.from), pb = provLL.get(a.to);
@@ -718,10 +765,8 @@ function hueAtLuminance(base, real) {
 // TERRAIN_*, or null if the manifest or textures are unavailable (LFS not pulled),
 // so the bake degrades to the hand-tuned tints without failing.
 function terrainRealColors() {
-  const manifest = path.join(ROOT, 'civstudio-engine/target/generated/map/terrain-art.json');
-  if (!fs.existsSync(manifest)) { console.log('  terrain-art: manifest absent — using hand-tuned tints'); return null; }
-  let arr;
-  try { arr = JSON.parse(fs.readFileSync(manifest, 'utf8')); } catch { return null; }
+  const arr = bundleResourceOpt('/map/terrain-art.json');
+  if (!arr.length) { console.log('  terrain-art: absent from the world bundle — using hand-tuned tints'); return null; }
   const map = new Map();
   for (const e of arr) {
     const base = avgDds(e.path), detail = avgDds(e.detail);
@@ -766,10 +811,8 @@ function resolveArt(artPath) { return civ4ResolveArt(artPath); }
 // so the plot renderer feathers a higher-layer terrain over its lower neighbours at
 // shared edges (docs §6.1). Empty if the manifest is absent (renderer keeps hard edges).
 function terrainLayerOrders() {
-  const mp = path.join(ROOT, 'civstudio-engine/target/generated/map/terrain-art.json');
-  if (!fs.existsSync(mp)) return {};
   try {
-    const a = JSON.parse(fs.readFileSync(mp, 'utf8'));
+    const a = bundleResourceOpt('/map/terrain-art.json');
     const o = {};
     for (const e of a) o[e.terrain] = e.layerOrder;
     return o;
@@ -828,10 +871,8 @@ function terrainDisplayColors(real) {
 // Returns {src, tile, cols:{TERRAIN_*: column}}, or null if the manifest/textures are
 // absent (the page then keeps the flat-colour plot tiles).
 function bakeTerrainTiles(colorsHex) {
-  const manifestPath = path.join(ROOT, 'civstudio-engine/target/generated/map/terrain-art.json');
-  if (!fs.existsSync(manifestPath)) return null;
-  let manifest;
-  try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { return null; }
+  const manifest = bundleResourceOpt('/map/terrain-art.json');
+  if (!manifest.length) return null;
   const hexRgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   // Multi-LoD: one horizontal-strip atlas per tile size. Width = terrains × T must stay under WebP's
   // 16383px cap, so the tiers are small→deep [128, 256] (a bigger deep tier would need a 2D grid).
@@ -1031,24 +1072,6 @@ function bakeShoreTile() {
   return bakeRippleTile(s.img, `water/shore`, s.civ6 ? 3.5 : 1.3);
 }
 
-// The SURF — real Civ4 foam for the water's edge (docs/civ4-texture-inventory.md §4 P2).
-//
-// `waves/wave_crest.dds` is 256×128 of pure WHITE rgb with the whole shape in its ALPHA: a scalloped
-// foam band starting at row 2, densest at rows 8–13, trailing off to nothing by ~row 48. So it is a
-// foam MASK, not a colour texture, and it tiles along its 256px axis — exactly a shoreline strip.
-//
-// Its sibling `wave_base.dds` is NOT used, and that is a finding rather than an oversight: its rgb is
-// flat grey and its alpha peaks at 153 with a mean of 20 — a near-empty smudge with no structure. The
-// pair reads as "soft base + white crest" in the file listing; measured, only the crest carries art.
-//
-// Returns {src, w, h} (RGBA, so the renderer can tint and stamp it) or null when the art is absent —
-// drawFoam then keeps its procedural white feather.
-//
-// Only the CREST is kept, not the whole wash. The alpha runs 2..~48, but it is dense over rows 3–21
-// and then trails at a tenth of that for another 27 — and shipping the trail made the shoreline read
-// as a pale haze at map zooms rather than a line of surf, because a few screen pixels cannot resolve
-// a long soft ramp. Cropping to the dense rows gives a crisp lap that survives downscaling.
-const FOAM_ROWS = 26;                                  // rows of wave_crest that carry the dense crest
 function bakeFoamStrip() {
   const file = resolveArt('Art/Terrain/waves/wave_crest.dds');
   const img = file && decodeCached(file);
@@ -1102,24 +1125,6 @@ function bakeCoastMasks() {
   return { src: queueWebpRGBA('water/coastmask', N * C, C, strip, { quality: 100 }), cell: C, n: N };
 }
 
-// THE COAST TILES — Civ4's painted shore transition tiles, and the authored table that picks between
-// them (docs/civ4-texture-inventory.md §4 P3, the "wiggle" half).
-//
-// `textures/coast*blend.dds` is a 4x8 atlas of 32 hand-painted 128px tiles: sand, shallows and deep
-// water with the shoreline carried in the alpha. `CIV4ArtDefines_Terrain.xml` says which cell to draw
-// for each 4-bit diagonal configuration, and at what rotation — `<TextureBlend3>3,0  7,180  11,0 …`
-// is config 3 offering cells 3/7/11/… as VARIANTS, each with its own rotation. Variants are what stop
-// a long coastline repeating one painted curve, so they are kept and the renderer picks per plot.
-//
-// This is drawn on the WATER plot, never the land one — see coast.mjs extendCoastIntoWater for why
-// that direction is the whole point.
-//
-// Returns {cell, cols, blend:{cfg:[[cell,rot],…]}, temp/trop/polar:{src}} or null.
-const COAST_TILE_ATLASES = {
-  temp:  ['Art/Terrain/textures/coastblend.dds',      'ART_DEF_TERRAIN_COAST'],
-  trop:  ['Art/Terrain/textures/coasttropblend.dds',  'ART_DEF_TERRAIN_COAST_TROPICAL'],
-  polar: ['Art/Terrain/textures/coastpolarblend.dds', 'ART_DEF_TERRAIN_COAST_POLAR'],
-};
 function bakeCoastTiles() {
   let xml;
   try { xml = civ4Get('CIV4ArtDefines_Terrain.xml').toString('utf8'); } catch { return null; }
@@ -1560,7 +1565,7 @@ function bakeBonusIcons() {
       const f = m[0].match(/<FontButtonIndex>(-?\d+)<\/FontButtonIndex>/); if (f) fbiOf[m[1]] = +f[1];
     }
   }
-  const bonuses = JSON.parse(fs.readFileSync(path.join(ROOT, 'civstudio-engine/target/generated/bonuses.json'), 'utf8'));
+  const bonuses = bundleResource('/bonuses.json');
   // C2C bonus class → which Civ6 class backing (yellow bonus / purple luxury / red strategic).
   // Local (not a module const) so this module-load-time bake doesn't hit its temporal dead zone.
   const CLASS_BACKING = {
@@ -1635,7 +1640,7 @@ function bakeTradeGoodIcons() {
   if (strip.height < TG_CELL) return null;
 
   // bake every real good the reference layer knows (skips `unknown`, which the exporter drops too)
-  const goods = JSON.parse(fs.readFileSync(path.join(ROOT, 'civstudio-engine/target/generated/map/tradegoods.json'), 'utf8'));
+  const goods = bundleResource('/map/tradegoods.json');
   const picks = [];   // [key, srcCol]
   for (const g of goods) {
     const col = indexOfGood[g.key];
@@ -1720,16 +1725,6 @@ function bakeRippleTile(img, name, contrast) {
 // blend texture (seatrop/sea/seapol) rescaled to a hand-tuned dark-theme LUMINANCE (tropical
 // brightest/tealest, polar dimmest/greyest), mirroring how the land terrains are recoloured.
 // Falls back to the dark anchors when the art is absent (LFS not pulled).
-// The ocean's luminance anchors. These used to be much darker ([26,56,76] / [20,42,68] / [32,42,54],
-// resolving to around luma 38) — a near-black sea for a dark UI. That is what made the coastal shelf
-// read as a STAIRCASE: the shelf sits at the `shore` tint (luma ~161) against a sea at luma ~38, and
-// at that contrast every plot-square boundary between them is a hard edge no amount of shaping hides.
-//
-// Raised to roughly 45% of the shore's luminance, which is what a real water gradient looks like and
-// is close to (though still darker than) the Civ4 art itself — `water/water2.dds`, the painted ocean
-// surface, measures luma ~130. The HUE still comes from the art via hueAtLuminance; only the
-// luminance is authored here. See docs/civ4-texture-inventory.md §4 P3.
-const SEA_ANCHOR = { trop: [38, 82, 108], temp: [30, 66, 96], polar: [36, 62, 82] };
 function bakeSeaBands() {
   // Civ6-first: the SV Ocean tile gives one water hue; derive the three climate bands by warming
   // (tropical) / cooling (polar) it, and the shallows from the SV Coast tile. Anchors set each band's

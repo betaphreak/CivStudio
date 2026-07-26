@@ -26,3 +26,13 @@ export function bundleResource(key) {
   if (!(key in r)) throw new Error(`world-bundle has no resource ${key} (${FIXTURE})`);
   return r[key];
 }
+
+/**
+ * Like {@link bundleResource} but returns `[]` for a resource the bundle does not carry, for the
+ * datasets a bake can do without (a missing trade-good table just means no icons). Keeps "absent"
+ * a value rather than an exception, which is what the old readJsonOpt-on-disk did.
+ */
+export function bundleResourceOpt(key) {
+  const r = bundle().resources;
+  return key in r ? r[key] : [];
+}
