@@ -476,9 +476,13 @@ public final class ProvinceRaster {
 		return d;
 	}
 
+	/** rivers.bmp's "no river here" colour — any other colour is painted water. Mirrors ProvinceExporter. */
+	private static final int RIVER_NONE = 0xFFFFFF;
+
 	// the pixel colours of water provinces, from default.map's sea_starts + lakes id blocks
-	// (the raw source ProvinceExporter reads), mapped through idToColor. Self-contained so
-	// every generation path classifies coast identically. Empty if default.map is absent.
+	// (the raw source ProvinceExporter reads), mapped through idToColor, PLUS the flooded
+	// provinces default.map does not list (see below). Self-contained so every generation path
+	// classifies coast identically. Empty if default.map is absent.
 	private Set<Integer> loadWaterColors() throws IOException {
 		Set<Integer> colors = new HashSet<>();
 		Optional<Path> f = AnbennarFiles.getOptional(DEFAULT_MAP);
@@ -505,7 +509,44 @@ public final class ProvinceRaster {
 				}
 			}
 		}
+		addFloodedProvinces(colors);
 		return colors;
+	}
+
+	/**
+	 * THE FLOODING AUTO-CORRECT, mirrored from {@link
+	 * com.civstudio.geo.export.ProvinceExporter}{@code .classify}: a province that {@code default.map}
+	 * lists as neither sea nor lake, but whose every pixel is painted in {@code rivers.bmp}, is a
+	 * water province the map source forgot to declare. The exporter already reclassifies those to
+	 * {@code LAKE} — this makes the RASTER agree.
+	 *
+	 * <p>Without it the two disagreed, and the consequence was silent and total. Seven lakes (6068,
+	 * 6087, 6511, 6512, 6559, 6592, 6762 — the last being Humacs Island in the Gulf of Ouord) were
+	 * typed {@code LAKE}, so {@code ProvincePlotField.generateWater} ran for them; but their colours
+	 * were absent here, so {@link #computeLandDistance} scored every one of their pixels as dry land
+	 * (distance 0), and {@code generateWater} skips anything with {@code landDist < 1}. They served
+	 * ZERO plots against hundreds declared — a lake rendered as a hole. 1884 Taspasu, the one flooded
+	 * lake {@code default.map} does list, worked fine throughout, which is what makes the two sources
+	 * of truth the cause rather than a coincidence.
+	 *
+	 * <p>Restricted to colours that are actually provinces ({@code idToColor}), so a fully-painted
+	 * patch of map background can never be promoted to water.
+	 */
+	private void addFloodedProvinces(Set<Integer> colors) {
+		Set<Integer> known = new HashSet<>(idToColor.values());
+		Map<Integer, int[]> tally = new HashMap<>();   // colour → {pixels, painted}
+		for (int i = 0; i < pixels.length; i++) {
+			int rgb = pixels[i] & 0xFFFFFF;
+			if (!known.contains(rgb))
+				continue;
+			int[] t = tally.computeIfAbsent(rgb, k -> new int[2]);
+			t[0]++;
+			if ((river[i] & 0xFFFFFF) != RIVER_NONE)
+				t[1]++;
+		}
+		for (Map.Entry<Integer, int[]> e : tally.entrySet())
+			if (e.getValue()[0] - e.getValue()[1] < 1)   // entirely painted — the exporter's own test
+				colors.add(e.getKey());
 	}
 
 	// read an 8-bit indexed BMP's raw palette indices (not RGB) into a row-major
