@@ -129,8 +129,10 @@ Two findings worth keeping:
 
 - **`textures/iceblend.dds` is 512×1024 (128px cells)**, while `TERRAIN_PERMAFROST` binds the 64px
   `textures/land/IceBlend.dds`. A single-terrain resolution upgrade is available if it ever matters.
-- **`peakblend.dds` is 1024×1024 — 256px cells**, the highest in the tree. Unused: PEAK is relief and
-  a prop, not one of the `KEEP` terrains.
+- **`peakblend.dds` is 1024×1024 — 256px cells**, the highest in the tree. ~~Unused: PEAK is relief
+  and a prop, not one of the `KEEP` terrains.~~ **Wrong — it is now baked; see §5.3.** It is not one
+  of *our* `KEEP` terrains, but Civ4 gives it a full art define, the same 14-cell table, and
+  LayerOrder 100 — the top of the game.
 
 **Why the 64px ceiling is not the constraint it appears to be.** The base sheet supplies low-frequency
 colour and the corner SHAPE; all the visible grain comes from the `<Detail>` texture, and **40 of
@@ -255,6 +257,45 @@ the land sheet. Baking water into this sheet would draw the same vertex twice, f
   never resolve, so "has gaps ⇒ stale" would thrash forever — exactly the trap §6 records. The caller
   stores the keys and re-bakes only when one *resolves*, which is the `_tshoreGaps` contract.
 
+### 5.3 Relief: PEAK is a blend layer, HILL is a wash
+
+Relief is `Plot.plotType` (FLAT/HILL/PEAK), orthogonal to the terrain key — a 3D prop since P4b and a
+hand-rolled recolour in the 2D bake (`plots.mjs`: HILL `×1.14 + 8`, PEAK averaged toward 150,152,158).
+Civ4 authors both as terrain layers with their own blend art, and **both use the identical 14-cell
+land table**, so neither needs new machinery. But they are not the same kind of art, and the
+difference decides what to do with each.
+
+**PEAK — baked, as a 17th row.** LayerOrder **100**, above every terrain in the game including the
+eight water keys at 50–71. `PeakBlend.dds` is 1024×1024 (4×4 of 256px, the highest-resolution blend
+art in the tree) and its detail is **IceDetail** — Civ4 paints a peak as snow-capped rock that
+REPLACES the ground rather than tinting it. Its corner mask is the cleanest measured anywhere: set
+corners **254.9**, clear corners **0.7** (LushBlend, the reference, is 240.4/0.5). Its interior cell
+is alpha 246–254.
+
+This is what puts real mountain ground under the billboard: at LayerOrder 100 a PEAK plot wins all
+four of its own corners, so it takes the interior cell, and its neighbours take its blend cells —
+the rock spills outward the way the sprite's base sits. That should let §8's `PEAK_GROUP.baseFade`
+question be reopened, since the billboard would then meet peak ground instead of grassland.
+
+The 256px cells sample down to the sheet's 64 and lose nothing visible — the blend pass draws at
+12–32 px/plot, so even 64 is oversampled 2–5× (same argument as §2's LoD note).
+
+**HILL — deliberately excluded, and the measurement is the reason.** `ART_DEF_TERRAIN_HILL` exists
+with the same table and LayerOrder 30, but `Land/HillBlend.dds` is **not a corner mask**. Mean alpha
+per cell runs 28–102, and its INTERIOR cell reaches only **102 of 255** where PEAK's is 254 and every
+land terrain's is opaque. Scored like every other atlas it binds **0 of 14** configs — its "set"
+corners peak at alpha 25. Civ4 authors a hill as a translucent **wash over whatever terrain the plot
+already has** (a grassland hill is still grassland), where a peak replaces the ground.
+
+So HILL must **not** own corners either. A hill plot's ground *is* its base terrain, so it should keep
+contributing that terrain to the ownership contest exactly as it does today. Giving HILL its own
+LayerOrder 30 in the contest would let it suppress a lower neighbour's blend while having nothing to
+draw — strictly worse than the present behaviour. `terrainLayer` therefore carries `PEAK: 100` and no
+`HILL` key at all.
+
+What HILL should get instead is its authored wash as a **ground overlay**, replacing the invented
+`×1.14 + 8` brightening — see §8.
+
 ## 6. Traps
 
 - **The province canvas is also the 3D mesh texture** (`terrain3d.mjs` reads `p._tcanvas`), so this
@@ -293,8 +334,18 @@ the land sheet. Baking water into this sheet would draw the same vertex twice, f
 
 ## 8. Loose ends from the same session
 
+- **The HILL wash is authored art we are not using.** `Land/HillBlend.dds` interior cell (alpha ~102)
+  × `Land/HillDetail.dds` is Civ4's real hill treatment: a translucent overlay composited over the
+  plot's own ground. Today `plots.mjs` fakes it with `r*1.14 + 8`, an invented brightening — exactly
+  what `use-authored-art-not-substitutes` forbids. Baking the interior cell as an RGBA wash tile and
+  compositing it over a HILL plot's ground at its authored alpha would retire that. Note it is a
+  GROUND overlay, not a blend row (§5.3), and that 3D already has the other half of Civ4's hill —
+  `heightfield.mjs` raises the mesh. PEAK's own invented recolour (averaging toward 150,152,158) is
+  retired by §5.3 instead.
 - `PEAK_GROUP.baseFade` is 0.18. It removed the hard bottom edge on the mountain billboards, but a
-  faint boundary is still visible on the largest masses — 0.24 is worth trying.
+  faint boundary is still visible on the largest masses — 0.24 is worth trying. **Re-open this after
+  phase 3:** with PEAK baked as a blend layer (§5.3) the billboard will stand on real peak ground
+  rather than on grassland, which may make the fade unnecessary rather than merely better tuned.
 - Coast config **0** (every corner touching land — one-plot lakes, one-plot-wide channels) has no
   table entry and draws no tile, so those show plain water: 78 of 3,000 shoreline plots.
 - The polar sea roughly doubled in brightness when `SEA_ANCHOR` was removed (`13801f07`) and still has

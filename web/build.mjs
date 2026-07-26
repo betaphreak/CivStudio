@@ -63,6 +63,9 @@ const ATLAS_COLS = 4;
 /** Corner configurations the land blend table covers: 1–14. See bakeLandBlendCells (hoisted for the same reason). */
 const LAND_BLEND_CFGS = 14;
 
+/** The relief layer Civ4 authors as a blending terrain, keyed by what `Plot.plotType` carries. See reliefArtEntries. */
+const RELIEF_ART = { PEAK: 'ART_DEF_TERRAIN_PEAK' };
+
 // Baked art assets ship as WebP (see docs) rather than PNG: the ground-texture atlas alone drops
 // ~2.7 MB → ~0.37 MB, and the whole eager image payload roughly quarters, with no visible loss.
 // sharp's encoder is async, so bakes stay synchronous and just QUEUE their raw pixels here (the
@@ -868,11 +871,16 @@ function resolveArt(artPath) { return civ4ResolveArt(artPath); }
 // TERRAIN_* -> Civ4 LayerOrder from terrain-art.json: higher layers paint over lower,
 // so the plot renderer feathers a higher-layer terrain over its lower neighbours at
 // shared edges (docs §6.1). Empty if the manifest is absent (renderer keeps hard edges).
+// PEAK (100) and HILL (30) are carried here too, keyed by what `Plot.plotType` holds rather than by a
+// TERRAIN_* key: Civ4 authors both as terrain layers with real LayerOrders, and the corner-ownership
+// rule needs them on the same scale as everything else (js/terrain-corners.mjs). PEAK's 100 is above
+// every terrain in the game, the eight water keys at 50–71 included.
 function terrainLayerOrders() {
   try {
     const a = bundleResourceOpt('/map/terrain-art.json');
     const o = {};
     for (const e of a) o[e.terrain] = e.layerOrder;
+    for (const e of reliefArtEntries()) o[e.terrain] = e.layerOrder;
     return o;
   } catch { return {}; }
 }
@@ -1101,6 +1109,63 @@ function landBlendTable(e) {
 }
 
 /**
+ * RELIEF AS ONE MORE BLEND LAYER — `ART_DEF_TERRAIN_PEAK`, read straight out of
+ * `CIV4ArtDefines_Terrain.xml` and handed back shaped like a `terrain-art.json` row so the blend bake
+ * treats it as one more terrain.
+ *
+ * WHY IT IS NOT IN THE MANIFEST. `terrain-art.json` is keyed by `TERRAIN_*`, and relief is not a
+ * terrain in this codebase — it is `Plot.plotType` (FLAT/HILL/PEAK), orthogonal to the terrain key, a
+ * 3D prop since P4b and a hand-rolled recolour in the 2D bake. But Civ4 authors PEAK as a full
+ * terrain LAYER with its own blend art, using THE SAME 14-cell table as the land terrains (cells
+ * 8,1,2,6,13,10,3,5,9,7,4,12,11,14, all rotation 0 — measured), so it costs one row and no new
+ * machinery. The key is `PEAK` rather than a `TERRAIN_*` because that is what `plotType` carries, so
+ * a caller indexes it without a translation table.
+ *
+ * PEAK — LayerOrder **100**, above every terrain in the game INCLUDING the water keys at 50–71.
+ * `PeakBlend.dds` is 1024×1024 — 4×4 of 256px, the highest-resolution blend art in the tree — and its
+ * detail is IceDetail, i.e. Civ4 paints a peak as snow-capped rock. Its corner mask is the cleanest
+ * measured anywhere: set corners 254.9, clear corners 0.7, against LushBlend's 240.4/0.5. That is
+ * exactly the ground a mountain billboard should stand on. (This corrects
+ * docs/land-blend-plan.md §2, which recorded peakblend as "unused" — unused by US; Civ4 gives it a
+ * full define and the top layer order.)
+ *
+ * HILL IS DELIBERATELY EXCLUDED, and the measurement is the reason. `ART_DEF_TERRAIN_HILL` exists,
+ * carries the same 14-cell table and LayerOrder 30 — but `Land/HillBlend.dds` is not a corner mask at
+ * all. Its mean alpha per cell runs 28–102 and its INTERIOR cell (all four corners hill) reaches only
+ * 102 of 255, where PEAK's interior is 254 and every land terrain's is opaque. Scored the way every
+ * other atlas is scored, it binds 0 of 14 configs: its "set" corners peak at alpha 25. Civ4 authors a
+ * hill as a translucent WASH over whatever terrain the plot already has — a grassland hill is still
+ * grassland — where a peak REPLACES the ground. Baking the wash as a blend row would stamp a
+ * structure that is not in the art and would permanently sit at 14 failed corner checks, destroying
+ * the value of that check as a regression signal. The hill wash is real authored art and worth using
+ * one day, but as a ground overlay, not here; see docs/land-blend-plan.md §8.
+ *
+ * PEAK's 256px cells sample down to the sheet's 64 and lose nothing visible: the blend pass draws at
+ * 12–32 px/plot, so even 64 is oversampled 2–5×.
+ */
+function reliefArtEntries() {
+  let xml;
+  try { xml = fs.readFileSync(civ4Get('CIV4ArtDefines_Terrain.xml'), 'utf8'); } catch { return []; }
+  const out = [];
+  for (const m of xml.matchAll(/<TerrainArtInfo>([\s\S]*?)<\/TerrainArtInfo>/g)) {
+    const type = /<Type>(.*?)<\/Type>/.exec(m[1]);
+    const key = type && Object.keys(RELIEF_ART).find(k => RELIEF_ART[k] === type[1]);
+    if (!key) continue;
+    const blend = {};
+    for (const b of m[1].matchAll(/<TextureBlend(\d+)>([\s\S]*?)<\/TextureBlend\d+>/g))
+      blend[String(+b[1]).padStart(2, '0')] = b[2].trim().replace(/\s+/g, ' ');
+    out.push({
+      terrain: key,
+      path: /<Path>(.*?)<\/Path>/.exec(m[1])?.[1],
+      detail: /<Detail>(.*?)<\/Detail>/.exec(m[1])?.[1],
+      layerOrder: +(/<LayerOrder>(.*?)<\/LayerOrder>/.exec(m[1])?.[1] || 0),
+      blend,
+    });
+  }
+  return out;
+}
+
+/**
  * THE LAND BLEND CELLS — Civ4's hand-painted terrain transitions, and the authored table that picks
  * between them. docs/land-blend-plan.md phase 1; the coast half of the same idea is bakeCoastTiles.
  *
@@ -1128,7 +1193,7 @@ function landBlendTable(e) {
 function bakeLandBlendCells() {
   const manifest = bundleResourceOpt('/map/terrain-art.json');
   if (!manifest.length) return null;
-  const entries = manifest.map(e => [e, landBlendTable(e)]).filter(([, t]) => t);
+  const entries = [...manifest, ...reliefArtEntries()].map(e => [e, landBlendTable(e)]).filter(([, t]) => t);
   if (!entries.length) return null;
   const CELL = 64, COLS = LAND_BLEND_CFGS;
   // every land terrain names the same cell per config; ship one map, but verify rather than assume
