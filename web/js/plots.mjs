@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -27,24 +27,9 @@ const rvImg = loadArt(RIVER, () => { rvReady = true; });
 const treeImg = {}, treeReady = {};
 if (TREES) for (const k of Object.keys(TREES))
   treeImg[k] = loadArt(TREES[k], () => { treeReady[k] = true; for (const p of P) p._tcanvas = null; });
-// flat Civ6 strategic-view feature overlays (docs/civ6-art-replacement.md §D): one tile per Civ6-covered
-// feature, blitted to fill a featured plot instead of scattering billboards. Deduped by src (FOREST +
-// FOREST_ANCIENT share one image).
-const foImg = {}, foReady = {};   // both keyed by FEATURE_*
-if (FEATURE_OVERLAYS) { const imgBySrc = {};
-  for (const k of Object.keys(FEATURE_OVERLAYS)) {
-    const asset = FEATURE_OVERLAYS[k];
-    if (!imgBySrc[asset.src]) imgBySrc[asset.src] = loadArt(asset, () => {
-      for (const kk of Object.keys(FEATURE_OVERLAYS)) if (FEATURE_OVERLAYS[kk].src === asset.src) foReady[kk] = true;
-      for (const p of P) p._tcanvas = null;
-    });
-    foImg[k] = imgBySrc[asset.src];
-  }
-}
-// flat Civ6 strategic-view improvement overlays (docs/civ6-art-replacement.md §F): one 128² alpha sprite
-// per Civ6-covered improvement (Farm/Mine/Quarry), blitted centred on an improved plot — like a feature
-// overlay. Placement is DEFERRED: nothing carries an `improvement` yet (the engine doesn't emit one), so
-// this layer is wired but draws nothing until per-plot placement lands. Keyed by IMPROVEMENT_*.
+// Civ4 improvement sprites (build.mjs bakeImprovementOverlays): one sheet per improvement, carrying
+// VARIANT cells — an_eu_farm01/02/03 and friends — so a province of farms is not one stamp repeated.
+// Placement is DEFERRED: nothing carries an `improvement` yet, so this is wired but draws nothing.
 const impImg = {}, impReady = {};
 if (IMPROVEMENT_OVERLAYS) {
   for (const k of Object.keys(IMPROVEMENT_OVERLAYS)) {
@@ -494,14 +479,9 @@ function stampTrees(o, cx, cy, s, feature, sx, sy) {
   return true;
 }
 function featureSprite(o, cx, cy, s, feature, sx, sy) {
-  // A few features (today just OASIS and SWAMP) have a flat Civ6 SV overlay that fills the plot; per-plot
-  // horizontal flip breaks the tiling. Everything else — forest, jungle, savanna, bamboo, cactus — is
-  // scattered Civ4 billboards. FLOOD_PLAINS (a ground quality) draws nothing.
-  if (foImg[feature] && foReady[feature]) {
-    if ((sx ^ sy) & 1) { o.save(); o.translate(cx + s, cy); o.scale(-1, 1); o.drawImage(foImg[feature], 0, 0, s, s); o.restore(); }
-    else o.drawImage(foImg[feature], cx, cy, s, s);
-    return;
-  }
+  // Every feature draws as scattered Civ4 billboards (docs/features-art.md). The flat Civ6
+  // strategic-view overlays that used to short-circuit SWAMP and OASIS are gone with the depot; both
+  // always had a billboard group underneath, so nothing is lost. FLOOD_PLAINS draws nothing by design.
   // tall grass has no good billboard (the C2C sword-grass sprite was a muddy wheat crop), so draw it
   // procedurally: a few clumps of thin curved blades. Clean, varied, no ugly texture.
   if (isGrassFeature(feature)) { stampGrass(o, cx, cy, s, mkRng(foliageSeed(sx, sy))); return; }
@@ -537,8 +517,19 @@ function stampGrass(o, cx, cy, s, rng) {
 // draws if the art isn't loaded, the improvement is uncovered by Civ6, or (today) the plot has no
 // improvement at all — placement is deferred (docs/civ6-art-replacement.md §F).
 function improvementSprite(o, cx, cy, s, improvement, sx, sy) {
-  if (!impImg[improvement] || !impReady[improvement]) return;
-  if ((sx ^ sy) & 1) { o.save(); o.translate(cx + s, cy); o.scale(-1, 1); o.drawImage(impImg[improvement], 0, 0, s, s); o.restore(); }
-  else o.drawImage(impImg[improvement], cx, cy, s, s);
+  const sheet = IMPROVEMENT_OVERLAYS && IMPROVEMENT_OVERLAYS[improvement];
+  if (!sheet || !impImg[improvement] || !impReady[improvement]) return;
+  // pick a VARIANT per plot, the way the tree billboards do — the sheet carries Civ4's own
+  // an_eu_farm01/02/03 rather than one model, and stamping the first everywhere reads as a pattern
+  const cells = sheet.sprites && sheet.sprites.length ? sheet.sprites : null;
+  const r = cells ? cells[Math.floor(mkRng(foliageSeed(sx, sy))() * cells.length) % cells.length] : null;
+  const flip = (sx ^ sy) & 1;               // per-plot mirror, so even one variant is not uniform
+  o.save();
+  if (flip) { o.translate(cx + s, cy); o.scale(-1, 1); } else o.translate(cx, cy);
+  if (r) {
+    const k = Math.min(s / r[2], s / r[3]);  // fit the cell in the plot, keeping its aspect
+    o.drawImage(impImg[improvement], r[0], r[1], r[2], r[3], (s - r[2] * k) / 2, (s - r[3] * k) / 2, r[2] * k, r[3] * k);
+  } else o.drawImage(impImg[improvement], 0, 0, s, s);
+  o.restore();
 }
 export { drawPlots };

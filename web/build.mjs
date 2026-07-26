@@ -23,7 +23,6 @@ import { decodeDds } from './dds.mjs';
 import { decodeTga } from './tga.mjs';
 import { loadGameFont, resourceCellRGBA, CELL as GF_CELL } from './gamefont.mjs';
 import { get as civ4Get, resolveArt as civ4ResolveArt, prefetch as civ4Prefetch } from './civ4.mjs';
-import * as civ6 from './civ6.mjs';
 import { decodeCached, resampleRGBA, octagonBacking, compositeCentered } from './imgutil.mjs';
 import { beachRampFromAtlas } from './beachramp.mjs';
 import { bundleResource, bundleResourceOpt } from './content-source.mjs';
@@ -312,6 +311,11 @@ const ROUTE_BY_TYPE = {
 };
 const SIZE_ROUTE = 96;   // px longest-side each piece renders at, before atlas packing
 
+// The three class backing colours the resource octagons are drawn on. These were sampled out of
+// Civ6's Resources256 atlas; with the Civ6 depot gone they are the measured values, kept as constants
+// so the icon set still reads as one backed style rather than losing its class colour-coding.
+const CLASS_BACKING_RGB = { bonus: [196, 148, 40], luxury: [82, 54, 112], strategic: [156, 44, 40] };
+
 // The SURF — real Civ4 foam for the water's edge (docs/civ4-texture-inventory.md §4 P2).
 //
 // `waves/wave_crest.dds` is 256×128 of pure WHITE rgb with the whole shape in its ALPHA: a scalloped
@@ -398,10 +402,8 @@ const bonusIcons = bakeBonusIcons();         // {src, cell, cols, index:{type:i}
 const tradeGoodIcons = bakeTradeGoodIcons(); // {src, cell, cols, index:{key:col}} Anbennar trade-good icons, or null
 const trees = bakeFeatureSprites();          // {leafy,palm,swamp:{src,w,h,sprites}} real foliage cutouts, or null
 const routes = bakeRoutes();                 // {trail,road,rail:{src,w,h,cell:{piece:[x,y,w,h]}}} baked route sprites, or null
-const featureOverlays = bakeFeatureOverlays(); // {FEATURE_*: {src,w,h}} flat Civ6 SV feature overlays, or null
-const improvementOverlays = bakeImprovementOverlays(); // {IMPROVEMENT_*: {src,w,h}} flat Civ6 SV improvement overlays, or null
-const districtTiles = bakeDistrictTiles();   // {DISTRICT_TYPE: {src,w,h}} flat Civ6 SV district hex chips, or null
-const fow = bakeFowTiles();                   // {HATCH_*|PARCHMENT: {src,tile}} Civ6 fog-of-war tiles, or null (art only — no RevealedMap yet)
+const improvementOverlays = bakeImprovementOverlays(); // {IMPROVEMENT_*: {src,w,h}} Civ4 improvement models via nifbake, or null
+const districtTiles = null;                   // Civ6-only art, removed — no Civ4 district-hex equivalent exists
 const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} climate sea + shore colours
 const beach = bakeBeachRamps();              // {trop, temp, polar} real Civ4 sand ramps, or null (hand-picked sand)
 const foam = bakeFoamStrip();                // {src, w, h} real Civ4 wave-crest strip, or null (procedural feather)
@@ -527,7 +529,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, featureOverlays, improvementOverlays, districtTiles, fow, seaBands, beach, foam, coastMask, coastTiles,
+  map, realms, terrainColors, terrainLayer, terrainTiles, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -553,7 +555,7 @@ console.log(`  foam strip: ${foam ? `${foam.src} (${foam.w}×${foam.h})` : 'skip
 console.log(`  coast masks: ${coastMask ? `${coastMask.src} (${coastMask.n}×${coastMask.cell}²)` : 'skipped (no coastblendmasks) — renderer keeps square coastal plots'}`);
 console.log(`  coast tiles: ${coastTiles ? `${Object.keys(coastTiles.blend).length} configs, 3 bands` : 'skipped (no coast*blend.dds / XML) — renderer keeps the flat sand tint'}`);
 console.log(`  ice tile: ${ice ? ice.src : 'skipped (no icepack_1024.dds / LFS)'}`);
-console.log(`  improvement overlays: ${improvementOverlays ? Object.keys(improvementOverlays).length + ' Civ6 SV (placement deferred)' : 'skipped (no Civ6 depot)'}`);
+console.log(`  improvement overlays: ${improvementOverlays ? Object.keys(improvementOverlays).length + ' Civ4 models (placement deferred)' : 'skipped (no improvement art)'}`);
 
 // ---------------------------------------------------------------------------
 // terrain baking
@@ -876,23 +878,20 @@ function bakeTerrainTiles(colorsHex) {
   const hexRgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
   // Multi-LoD: one horizontal-strip atlas per tile size. Width = terrains × T must stay under WebP's
   // 16383px cap, so the tiers are small→deep [128, 256] (a bigger deep tier would need a 2D grid).
-  // Source per terrain: Civ6 in-world ground (civ6.terrainGround) when the depot is mounted and the
-  // terrain maps (docs/civ6-assets.md §5, Varied fold), else the C2C detail texture — recoloured to the
+  // Source per terrain: the C2C detail texture — recoloured to the
   // terrain's display colour either way, so only the ground *pattern* changes, not the map's palette.
   const LODS = [128, 256];
   const cols = {};
   const lods = [];
-  let civ6Count = 0, c2cCount = 0, anyDecoded = false;
+  let c2cCount = 0, anyDecoded = false;
   for (const T of LODS) {
     const W = manifest.length * T, H = T;
     const rgb = Buffer.alloc(W * H * 3);
     let idx = 0, decoded = 0;
     for (const e of manifest) {
       const target = hexRgb(colorsHex[e.terrain] || '#465046');
-      const civ6Ground = civ6.terrainGround(e.terrain);
-      let tile = civ6Ground ? groundTileFromFile(civ6Ground, target, T) : null;
-      if (tile) { if (T === LODS[0]) civ6Count++; }
-      else { tile = detailTile(e.detail, target, T); if (tile && T === LODS[0]) c2cCount++; }
+      const tile = detailTile(e.detail, target, T);
+      if (tile && T === LODS[0]) c2cCount++;
       if (tile) decoded++;
       const t = makeSeamless(tile || solidTile(target, T), T);   // wrap-feather so the repeat has no grid seam
       for (let y = 0; y < T; y++)
@@ -908,14 +907,13 @@ function bakeTerrainTiles(colorsHex) {
     lods.push({ src, tile: T });
   }
   if (!anyDecoded) return null;   // no textures decoded → keep flat colours
-  console.log(`  terrain tiles: ${civ6Count} Civ6 + ${c2cCount} C2C ground sources; LoDs ${LODS.join('/')}px`);
+  console.log(`  terrain tiles: ${c2cCount} C2C ground sources; LoDs ${LODS.join('/')}px`);
   // src/tile default to the deep (largest) LoD so an un-migrated reader still works; `lods` is the tier list.
   const deep = lods[lods.length - 1];
   return { src: deep.src, tile: deep.tile, cols, lods };
 }
 // downsample a decoded image to a T×T RGB tile, then recolour so its mean = target.
-// Alpha is ignored — for both C2C detail textures and Civ6 grounds the terrain lives in RGB
-// (a Civ6 _Color/_B ground carries the tuft/ground detail in RGB; alpha is a mask). See docs/civ6-assets.md §2a.
+// Alpha is ignored — a C2C detail texture carries the terrain in RGB and uses alpha as a mask.
 function recolorTile(img, target, T) {
   const bx = img.width / T, by = img.height / T;
   const tmp = new Float64Array(T * T * 3);
@@ -923,7 +921,7 @@ function recolorTile(img, target, T) {
   for (let j = 0; j < T; j++)
     for (let i = 0; i < T; i++) {
       let r = 0, g = 0, b = 0, n = 0;
-      // box-average the source region; clamp so an UPSCALE (source smaller than T, e.g. Civ6's 128²
+      // box-average the source region; clamp so an UPSCALE (source smaller than T
       // Grass_Dark_B) still samples ≥1 pixel — else n=0 → NaN → a black tile (the box loop skips).
       const y0 = Math.min(img.height - 1, Math.floor(j * by)), y1 = Math.max(y0 + 1, Math.floor((j + 1) * by));
       const x0 = Math.min(img.width - 1, Math.floor(i * bx)), x1 = Math.max(x0 + 1, Math.floor((i + 1) * bx));
@@ -951,11 +949,7 @@ function detailTile(artPath, target, T) {
   const img = decodeCached(file);
   return img ? recolorTile(img, target, T) : null;
 }
-// recolour a Civ6 in-world ground texture (absolute path from civ6.terrainGround) to a T×T tile; null if unreadable.
-function groundTileFromFile(file, target, T) {
-  const img = decodeCached(file);
-  return img ? recolorTile(img, target, T) : null;
-}
+
 // a flat T×T RGB tile of one colour (fallback when a detail texture is unavailable)
 function solidTile(rgbArr, T) {
   const out = Buffer.alloc(T * T * 3);
@@ -999,19 +993,10 @@ function makeSeamless(rgb, T) {
 function bakeRiverTile() {
   const RIVER_RGB = [74, 124, 170];   // cohesive with the map's river blue
   const T = 64;
-  // Civ6-first: the SV Coast water surface, recoloured to the map's river blue. (Civ6's own river tile,
+  // (An earlier cut preferred a Civ6 strategic-view water surface here; Civ6's own river tile,
   // TER_River_Water, is a strategic-view texture with baked-in flow ARROWS — ugly at full-tile fill; the
   // coast tile is clean tile-scale ripple.) recolorTile scales channels so the mean = river blue while
   // keeping the ripple.
-  const civ6Water = civ6.coastTile();
-  if (civ6Water) {
-    const img = decodeCached(civ6Water);
-    if (img) {
-      console.log('  river tile: Civ6 SV_TerrainHexCoast (recoloured river-blue)');
-      return { src: queueWebp('water/river', T, T, makeSeamless(recolorTile(img, RIVER_RGB, T), T), null, { quality: 85 }), tile: T };
-    }
-  }
-  // C2C fallback: the Civ4 allriverssmall texture, whose ripple STRANDS live in the DXT5 alpha channel.
   const artFile = resolveArt('Art/Terrain/Routes/Rivers/allriverssmall.dds');
   if (!artFile) return null;
   let img; try { img = decodeDds(fs.readFileSync(artFile)); } catch { return null; }
@@ -1048,10 +1033,10 @@ function bakeRiverTile() {
 // surface itself, plus `ocean deep` and two bump maps.)
 function bakeSeaTile() {
   const s = waterSrcImg(null, 'Art/Terrain/water/water2.dds')
-    || waterSrcImg(civ6.oceanTile(), 'Art/Terrain/textures/water/seadetail.dds');
+    || waterSrcImg(null, 'Art/Terrain/textures/water/seadetail.dds');
   if (!s) return null;
-  console.log(`  sea ripple: ${s.civ6 ? 'Civ6 SV_TerrainHexOcean' : 'C2C water2 (painted ocean surface)'}`);
-  return bakeRippleTile(s.img, `water/sea`, s.civ6 ? 3.0 : 1.6);
+  console.log('  sea ripple: C2C water2 (painted ocean surface)');
+  return bakeRippleTile(s.img, `water/sea`, 1.6);
 }
 
 // The shore shallows carry the same treatment (docs/coastlines.md Phase D): a neutral-mean
@@ -1066,10 +1051,10 @@ function bakeSeaTile() {
 // Our shallows are the sea shelf, so coastdetail is the correct binding. Visible only when the Civ6
 // coast tile is absent, since that still wins (docs/civ6-art-replacement.md).
 function bakeShoreTile() {
-  const s = waterSrcImg(civ6.coastTile(), 'Art/Terrain/textures/coastdetail.dds');
+  const s = waterSrcImg(null, 'Art/Terrain/textures/coastdetail.dds');
   if (!s) return null;
-  console.log(`  shore grain: ${s.civ6 ? 'Civ6 SV_TerrainHexCoast' : 'C2C coastdetail'}`);
-  return bakeRippleTile(s.img, `water/shore`, s.civ6 ? 3.5 : 1.3);
+  console.log('  shore grain: C2C coastdetail');
+  return bakeRippleTile(s.img, `water/shore`, 1.3);
 }
 
 function bakeFoamStrip() {
@@ -1127,7 +1112,8 @@ function bakeCoastMasks() {
 
 function bakeCoastTiles() {
   let xml;
-  try { xml = civ4Get('CIV4ArtDefines_Terrain.xml').toString('utf8'); } catch { return null; }
+  // civ4Get returns the cached FILE PATH, not its contents — the same shape bakeBonusIcons consumes.
+  try { xml = fs.readFileSync(civ4Get('CIV4ArtDefines_Terrain.xml'), 'utf8'); } catch { return null; }
   const out = { cell: 128, cols: 4, blend: null };
   for (const [band, [art, artDef]] of Object.entries(COAST_TILE_ATLASES)) {
     const file = resolveArt(art);
@@ -1175,30 +1161,6 @@ function bakeIceTile() {
   // Civ6-first: Features_Icecaps_Visible is a hex icecap — opaque cracked-ice centre, transparent
   // corners. Crop the central 40% (solidly-opaque ice, no transparent hex corners bleeding in), force
   // it opaque, and it tiles as a repeating pattern.
-  const civ6Ice = civ6.iceTile();
-  if (civ6Ice) {
-    const img = decodeCached(civ6Ice);
-    if (img) {
-      const T = 128;
-      const cw = Math.round(img.width * 0.4), ch = Math.round(img.height * 0.4);  // opaque core, clear of the hex margin
-      const ox = (img.width - cw) >> 1, oy = (img.height - ch) >> 1;
-      const crop = new Uint8Array(cw * ch * 4);
-      for (let y = 0; y < ch; y++)
-        for (let x = 0; x < cw; x++) {
-          const s = ((oy + y) * img.width + ox + x) * 4, d = (y * cw + x) * 4;
-          crop[d] = img.rgba[s]; crop[d + 1] = img.rgba[s + 1]; crop[d + 2] = img.rgba[s + 2]; crop[d + 3] = 255;
-        }
-      const rgba = resampleRGBA(crop, cw, ch, T, T);
-      const rgb = Buffer.alloc(T * T * 3);
-      for (let i = 0; i < T * T; i++) { rgb[i * 3] = rgba[i * 4]; rgb[i * 3 + 1] = rgba[i * 4 + 1]; rgb[i * 3 + 2] = rgba[i * 4 + 2]; }
-      const assets = path.join(WEB, 'assets');
-      fs.mkdirSync(assets, { recursive: true });
-      console.log('  ice tile: Civ6 Features_Icecaps_Visible (central crop)');
-      return { src: queueWebp('water/ice', T, T, rgb, null, { quality: 85 }), tile: T };
-    }
-  }
-  // C2C fallback: the Civ4 pack-ice texture. Its upper ~65% is a clean cracked-ice surface (the lower
-  // strip is a fringe of edge icicles we skip); crop that clean region and downsample to a square tile.
   const artFile = resolveArt('Art/Terrain/features/icepack/icepack_1024.dds');
   if (!artFile) return null;
   let img; try { img = decodeDds(fs.readFileSync(artFile)); } catch { return null; }
@@ -1417,100 +1379,73 @@ function bakeSpriteGroup(artPath, name) {
 // which the frontend blits to fill a featured plot instead of scattering C2C billboards. C2C-only
 // flora (bamboo, cactus, tall-grass, savanna) is intentionally absent → keeps its billboard bake.
 // Returns {FEATURE_*: {src,w,h}} or null (depot absent → frontend keeps all billboards).
-function bakeFeatureOverlays() {
-  const FEATS = ['FEATURE_SWAMP', 'FEATURE_OASIS'];   // forest/jungle keep the varied C2C leafy billboards
-  const T = 128, out = {}, byFile = {};
-  for (const feat of FEATS) {
-    const file = civ6.featureOverlay(feat);
-    if (!file) continue;
-    if (byFile[file]) { out[feat] = byFile[file]; continue; }   // FOREST + FOREST_ANCIENT share Features_Forest
-    const img = decodeCached(file);
-    if (!img) continue;
-    const rgba = resampleRGBA(img.rgba, img.width, img.height, T, T);
-    const name = 'trees/feat-' + feat.replace('FEATURE_', '').toLowerCase();
-    const desc = { src: queueWebpRGBA(name, T, T, rgba, { quality: 88 }), w: T, h: T };
-    out[feat] = desc; byFile[file] = desc;
-  }
-  const n = new Set(Object.values(out)).size;
-  if (!n) return null;
-  console.log(`  feature overlays: ${n} Civ6 flat SV (${Object.keys(out).join(', ')})`);
-  return out;
-}
+// FEATURE OVERLAYS ARE GONE with the Civ6 depot, and nothing is lost. They were four flat
+// strategic-view chips — marsh, oasis, floodplains, icecaps — and every one already had a C2C path
+// that ran when Civ6 was absent: SWAMP and OASIS stamp real Civ4 billboards (docs/features-art.md),
+// FLOOD_PLAINS is a ground quality that draws no foliage by design, and ICE has the icepack tile.
+// featureSprite falls through to those on its own; the bundle key simply stops existing.
 
-// Bake the flat Civ6 strategic-view IMPROVEMENT overlays (docs/civ6-art-replacement.md §F): the three
-// improvements Civ6 ships a flat SV for — Farm/Mine/Quarry — each a 128² centred symbol on transparent
-// (kept as an alpha cutout, blitted over an improved plot like a feature overlay). The other C2C
-// improvements have no Civ6 flat SV and are deferred (logged, not silently dropped). Civ6-only: returns
-// null when the depot is absent (no C2C improvement art is baked today). Placement is deferred — the
-// frontend layer draws these on plots carrying an `improvement`, which the engine does not emit yet.
 function bakeImprovementOverlays() {
-  const IMPS = ['IMPROVEMENT_FARM', 'IMPROVEMENT_MINE', 'IMPROVEMENT_QUARRY'];
+  // Civ4's own improvement MODELS, rendered by tools/nifbake — the same offline renderer the cactus,
+  // the peaks, the city and the route pieces go through. Replaces Civ6's three flat strategic-view
+  // chips; Civ4 has far more improvements than that (cottage, hamlet, village, town, pasture,
+  // plantation, lumbermill, fort, windmill, workshop …), so this is a table rather than a hardcoded three.
+  //
+  // VARIANTS, NOT DIRECTIONS. Civ4 ships no rotated copies — the engine rotates the model at draw
+  // time — and this renderer does not need them either: improvementSprite blits a flat sprite and
+  // already mirrors it per plot, the same convention the tree and peak billboards use. What Civ4 DOES
+  // ship is variety (an_eu_farm01/02/03), and that is worth taking for the same reason the tree bake
+  // keeps ten cutouts: one stamp repeated across every farm in a province reads as a pattern.
+  //
+  // The `_freeze0000..0003` files are NOT variants — they are animation freeze frames for Civ4's
+  // animated improvements (swaying crops, a turning mine wheel). Baking them would stamp four nearly
+  // identical sprites and call it variety. The `_modern` / `modern` models are ERA swaps, left for
+  // whenever improvements gain an era axis.
+  const IMPS = {
+    IMPROVEMENT_FARM:   [['farm/an_eu_farm01.nif', 'farm/an_eu_farm02.nif', 'farm/an_eu_farm03.nif'], 'farm/farm_diff256.dds'],
+    IMPROVEMENT_MINE:   [['mine/mine.nif'],                                                           'mine/mine.dds'],
+    IMPROVEMENT_QUARRY: [['quarry/quarry.nif'],                                                       'quarry/quarry.dds'],
+  };
   const T = 128, out = {};
-  for (const imp of IMPS) {
-    const file = civ6.improvementOverlay(imp);
-    if (!file) continue;
-    const img = decodeCached(file);
-    if (!img) continue;
-    const rgba = resampleRGBA(img.rgba, img.width, img.height, T, T);
+  for (const [imp, [rels, tex]] of Object.entries(IMPS)) {
+    const texFile = resolveArt('Art/Structures/Improvements/' + tex);
+    if (!texFile) continue;
+    const variants = rels.map(r => resolveArt('Art/Structures/Improvements/' + r))
+      .filter(Boolean).map(nif => ({ nif, tex: texFile }));
+    if (!variants.length) continue;
     const name = 'improvements/imp-' + imp.replace('IMPROVEMENT_', '').toLowerCase();
-    out[imp] = { src: queueWebpRGBA(name, T, T, rgba, { quality: 88 }), w: T, h: T };
+    try {
+      const g = bakeNifGroup(variants, name, path.join(WEB, 'assets'), T,
+        { size: T, emit: (n, w, h, rgba) => queueWebpRGBA(name, w, h, rgba, { quality: 88 }) });
+      if (g) out[imp] = g;                 // {src, w, h, sprites:[[x,y,w,h]…]} — one cell per variant
+    } catch (e) { console.log(`  ${imp}: nif render skipped (${e.message})`); }
   }
   if (!Object.keys(out).length) return null;
-  console.log(`  improvement overlays: ${Object.keys(out).length} Civ6 flat SV (${Object.keys(out).join(', ')}); placement deferred`);
+  const n = Object.values(out).reduce((a, g) => a + (g.sprites ? g.sprites.length : 1), 0);
+  console.log(`  improvement overlays: ${Object.keys(out).length} Civ4 improvements, ${n} variant sprite(s) via nifbake; placement deferred`);
   return out;
 }
 
-// Bake the 7 Civ6 strategic-view DISTRICT hex chips (docs/district-buildout.md D4a): the full-hex
-// coloured tile + emblem Civ6 ships for CityCenter/Campus/HolySite/Encampment/Commercial/Theater/
-// Neighborhood (docs/civ6-art-replacement.md §H). Each is kept as an RGBA cutout (the alpha is the
-// hex mask, like the feature overlays) so the district view (city.mjs, D5) stamps it as the ground a
-// district's C2C building sprites sit on. Keyed by the eos DistrictType. Civ6-only: null when the
-// depot is absent (the view falls back to the flat pip).
-function bakeDistrictTiles() {
-  const T = 256, out = {};
-  for (const type of Object.keys(civ6.DISTRICT_TILE)) {
-    const file = civ6.districtTile(type);
-    if (!file) continue;
-    const img = decodeCached(file);
-    if (!img) continue;
-    const rgba = resampleRGBA(img.rgba, img.width, img.height, T, T);
-    const name = 'districts/dis-' + type.toLowerCase();
-    out[type] = { src: queueWebpRGBA(name, T, T, rgba, { quality: 90 }), w: T, h: T };
-    // the ABANDONED neighborhood variant (docs/urban-plots.md): an urban plot not linked to a live
-    // settlement reads as a ruin. Derive it from the live NEIGHBORHOOD chip — desaturated, darkened
-    // and tinted toward mossy stone — so the district layer can draw forsaken city-sites distinctly.
-    if (type === 'NEIGHBORHOOD') {
-      out.NEIGHBORHOOD_ABANDONED = {
-        src: queueWebpRGBA(name + '-abandoned', T, T, ruinRGBA(rgba), { quality: 90 }), w: T, h: T,
-      };
-    }
-  }
-  if (!Object.keys(out).length) return null;
-  console.log(`  district tiles: ${Object.keys(out).length} Civ6 hex chips (${Object.keys(out).join(', ')})`);
-  return out;
-}
+// FEATURE OVERLAYS ARE GONE with the Civ6 depot, and nothing is lost. They were four flat
+// strategic-view chips — marsh, oasis, floodplains, icecaps — and every one already had a C2C path
+// that ran when Civ6 was absent: SWAMP and OASIS stamp real Civ4 billboards (docs/features-art.md),
+// FLOOD_PLAINS is a ground quality that draws no foliage by design, and ICE has the icepack tile.
+// featureSprite falls through to those on its own; the bundle key simply stops existing.
 
-// The fog-of-war tiles (docs/explorer-caravan.md §8): four cross-hatch densities for "explored but
-// not currently visible", plus the parchment ground for "never revealed". Baked as tileable squares
-// so a fog layer can pattern-fill a province polygon the way sea.mjs patterns the ocean ripple.
-//
-// NOTE: nothing renders these yet — the per-settlement RevealedMap is Phase 6 and unbuilt. They are
-// baked now so the art pipeline is settled and the fog layer is a pure frontend change when it
-// lands. If that gets cut, delete this and its FOW_TILE table rather than leaving orphan assets.
-function bakeFowTiles() {
-  const T = 256, out = {};
-  for (const key of Object.keys(civ6.FOW_TILE)) {
-    const file = civ6.fowTile(key);
-    if (!file) continue;
-    const img = decodeCached(file);
-    if (!img) continue;
-    const rgba = resampleRGBA(img.rgba, img.width, img.height, T, T);
-    out[key] = { src: queueWebpRGBA('fow/fow-' + key.toLowerCase().replace(/_/g, '-'), T, T, rgba, { quality: 88 }), tile: T };
-  }
-  if (!Object.keys(out).length) return null;
-  console.log(`  fog of war: ${Object.keys(out).length} Civ6 FOW tiles (${Object.keys(out).join(', ')})`);
-  return out;
-}
+
+// DISTRICT TILES ARE GONE and there is NO Civ4 replacement, which is worth stating rather than
+// papering over: districts are a Civ6 concept and Civ4 has no district-hex art of any kind. The
+// nearest Civ4 things — the cottage/hamlet/village/town improvement models — are settlement-TIER art,
+// not district art, and mapping CAMPUS or THEATER onto them would be invention, not a port. The
+// district view keeps its C2C nifbake building sprites; only the coloured hex ground underneath is
+// lost. See docs/district-buildout.md D4a.
+
+// FOG OF WAR IS GONE and there is no Civ4 source: searched all six FPKs and Civ4 fogs through the
+// engine (vertex alpha), not through a texture — the only "fog" assets in the archives are an
+// explosion effect and some button icons. Nothing rendered these anyway: they were baked ahead of the
+// RevealedMap that would consume them (docs/explorer-caravan.md §8), which is not built. When it is,
+// the fog will need authoring or a procedural hatch rather than a port.
+
 
 // desaturate + darken + mossy-tint an RGBA buffer in place-ish (returns a fresh buffer) so a district
 // chip reads as an abandoned ruin. Alpha (the hex cutout) is preserved untouched.
@@ -1528,30 +1463,9 @@ function ruinRGBA(rgba) {
   return out;
 }
 
-// the three Civ6 class backing colours, sampled from Resources256 cells (bonus=0, luxury=14,
-// strategic=43); a hand-tuned Civ6-ish palette when the depot/atlas is absent.
-function civ6BackingColors() {
-  const fallback = { bonus: [196, 148, 40], luxury: [82, 54, 112], strategic: [156, 44, 40] };
-  const atlas = civ6.resolveTexture('Resources256');
-  const img = atlas && decodeCached(atlas);
-  if (!img) return fallback;
-  const cell = 256, cols = img.width / cell;
-  const med = a => a.length ? a.sort((x, y) => x - y)[a.length >> 1] : 0;
-  const sample = idx => {
-    const cx = (idx % cols) * cell, cy = Math.floor(idx / cols) * cell, rs = [], gs = [], bs = [];
-    for (const [px, py] of [[40, 40], [216, 40], [40, 216], [216, 216], [128, 26]]) {
-      const o = ((cy + py) * img.width + cx + px) * 4;
-      if (img.rgba[o + 3] < 200) continue;
-      rs.push(img.rgba[o]); gs.push(img.rgba[o + 1]); bs.push(img.rgba[o + 2]);
-    }
-    return rs.length ? [med(rs), med(gs), med(bs)] : null;
-  };
-  return { bonus: sample(0) || fallback.bonus, luxury: sample(14) || fallback.luxury, strategic: sample(43) || fallback.strategic };
-}
-// Bake the per-plot resource icons Civ6-first (docs/civ6-art-replacement.md §B): a Civ6 Resources256
-// atlas cell (keeps its own class backing) where the bonus maps (civ6.resourceIcon), else the C2C
-// GameFont glyph composited on a matching procedural class-coloured octagon — so the whole set reads
-// as one backed style. Emitted as a @32/@64 LoD atlas. Returns {src, cell, cols, index, lods} or null.
+// Bake the per-plot resource icons: the C2C GameFont glyph composited on a class-coloured octagon,
+// so the whole set reads as one backed style. Emitted as a @32/@64 LoD atlas.
+// Returns {src, cell, cols, index, lods} or null.
 function bakeBonusIcons() {
   const gf = loadGameFont(ROOT);
   let binfo = null, adef = null;
@@ -1573,32 +1487,20 @@ function bakeBonusIcons() {
     BONUSCLASS_CROP: 'bonus', BONUSCLASS_LIVESTOCK: 'bonus', BONUSCLASS_SEAFOOD: 'bonus',
     BONUSCLASS_PRODUCTION: 'bonus', BONUSCLASS_MISC: 'bonus',
   };
-  const backing = civ6BackingColors();
-  const atlasFile = civ6.resolveTexture('Resources256');
-  const atlasImg = atlasFile ? decodeCached(atlasFile) : null;
+  const backing = CLASS_BACKING_RGB;
 
   const BASE = 64;                          // primary LoD cell; @32 is downscaled from it
   const picks = [];                         // [type, rgba(BASE²)]
-  let civ6n = 0, c2cn = 0;
+  let c2cn = 0;
   for (const b of bonuses) {
     const bg = backing[CLASS_BACKING[b.bonusClass] || 'bonus'];
-    const ic = civ6.resourceIcon(b.type);
-    let cell = null;
-    if (ic && ic.atlas && atlasImg) {       // Civ6 atlas cell — already carries its own class backing
-      const cx = (ic.cell % ic.cols) * ic.cellPx, cy = Math.floor(ic.cell / ic.cols) * ic.cellPx;
-      const sub = Buffer.alloc(ic.cellPx * ic.cellPx * 4);
-      for (let y = 0; y < ic.cellPx; y++) { const so = ((cy + y) * atlasImg.width + cx) * 4; sub.set(atlasImg.rgba.subarray(so, so + ic.cellPx * 4), y * ic.cellPx * 4); }
-      cell = resampleRGBA(sub, ic.cellPx, ic.cellPx, BASE, BASE); civ6n++;
-    } else if (ic && ic.tex) {              // loose Civ6 sprite on a procedural backing
-      const img = decodeCached(ic.tex);
-      if (img) { cell = octagonBacking(BASE, bg); compositeCentered(cell, BASE, img.rgba, img.width, img.height, 0.72); civ6n++; }
-    }
-    if (!cell) {                            // C2C GameFont glyph on a matching class backing
-      const gcell = gf ? resourceCellRGBA(gf, fbiOf[tagOf[b.type]]) : null;
-      if (!gcell) continue;                 // no icon anywhere → skip (frontend keeps its procedural glyph)
-      cell = octagonBacking(BASE, bg);
-      compositeCentered(cell, BASE, gcell, GF_CELL, GF_CELL, 0.78); c2cn++;
-    }
+    // the C2C GameFont glyph on a matching class-coloured octagon. This used to be the FALLBACK under
+    // a Civ6 Resources256 atlas cell; with Civ6 removed it is the only path, and it always covered the
+    // whole set anyway — the Civ6 atlas only ever mapped a subset.
+    const gcell = gf ? resourceCellRGBA(gf, fbiOf[tagOf[b.type]]) : null;
+    if (!gcell) continue;                   // no glyph → skip (frontend keeps its procedural glyph)
+    const cell = octagonBacking(BASE, bg);
+    compositeCentered(cell, BASE, gcell, GF_CELL, GF_CELL, 0.78); c2cn++;
     picks.push([b.type, cell]);
   }
   if (!picks.length) return null;
@@ -1615,7 +1517,7 @@ function bakeBonusIcons() {
     });
     lods.push({ src: queueWebpRGBA(`icons/bonus-icons@${S}`, aw, ah, rgba, { quality: 90 }), cell: S, cols });
   }
-  console.log(`  bonus icons: ${civ6n} Civ6 + ${c2cn} C2C (class-backed), ${picks.length} total, LoDs 32/64`);
+  console.log(`  bonus icons: ${c2cn} C2C GameFont glyphs (class-backed), ${picks.length} total, LoDs 32/64`);
   const deep = lods[lods.length - 1];
   return { src: deep.src, cell: deep.cell, cols, count: picks.length, index, lods };
 }
@@ -1733,18 +1635,6 @@ function bakeSeaBands() {
     let r = 0, g = 0, b = 0; const n = img.width * img.height;
     for (let i = 0; i < n; i++) { r += img.rgba[i * 4]; g += img.rgba[i * 4 + 1]; b += img.rgba[i * 4 + 2]; }
     return [r / n, g / n, b / n]; };
-  const oc = avgImg(civ6.oceanTile()), co = avgImg(civ6.coastTile());
-  if (oc && co) {
-    console.log('  sea bands: Civ6 SV Ocean/Coast');
-    const warm = c => [c[0] * 1.08, c[1] * 1.0, c[2] * 0.88];   // tropical: warmer, greener
-    const cool = c => [c[0] * 0.9, c[1] * 0.97, c[2] * 1.06];   // polar: cooler, greyer
-    return {
-      trop:  hueAtLuminance(SEA_ANCHOR.trop, warm(oc)),
-      temp:  hueAtLuminance(SEA_ANCHOR.temp, oc),
-      polar: hueAtLuminance(SEA_ANCHOR.polar, cool(oc)),
-      shore: hueAtLuminance([116, 178, 196], co),
-    };
-  }
   // C2C fallback: the Civ4 sea-blend textures (per-climate).
   const band = (art, anchor) => { const c = avgDds(art); return c ? hueAtLuminance(anchor, c) : anchor; };
   return {

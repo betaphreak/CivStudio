@@ -257,12 +257,13 @@ public final class WorldBundle {
 		ObjectNode meta = root.putObject("meta");
 		meta.set("seed", manifest.get("seed"));
 		root.set("provinces", provinces);
-		// "fow" is the Civ6 fog-of-war art (docs/explorer-caravan.md §8) — baked and shipped ahead of
-		// the RevealedMap that will consume it, so it is absent from an un-rebaked manifest and simply
-		// arrives null (nothing renders it yet).
+		// featureOverlays / fow are GONE with the Civ6 depot: the feature overlays always had a C2C
+		// billboard path underneath them, and Civ4 has no fog-of-war texture at all (it fogs in the
+		// engine), so there was nothing to port and nothing rendered them. districtTiles ships as null
+		// for the same reason — districts are a Civ6 concept with no Civ4 art.
 		for (String k : List.of("map", "realms", "terrainColors", "terrainLayer", "terrainTiles", "river",
-				"sea", "shore", "ice", "bonusIcons", "trees", "routes", "featureOverlays", "improvementOverlays",
-				"districtTiles", "fow", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading"))
+				"sea", "shore", "ice", "bonusIcons", "trees", "routes", "improvementOverlays",
+				"districtTiles", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading"))
 			root.set(k, manifest.get(k));
 		root.set("geo", geo);
 		root.set("adjacencies", adjacencies);
