@@ -8,7 +8,7 @@ import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
-import { paintCoast, drawSeaIce, extendCoastIntoWater } from "./coast.mjs";
+import { drawSeaIce, extendCoastIntoWater } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
 import { loadPlots } from "./plotfetch.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
@@ -432,15 +432,8 @@ function buildPlotTexCanvas(p) {
     }
     if (anySnow) { sxc.putImageData(sim, 0, 0); o.imageSmoothingEnabled = true; o.drawImage(sc, 0, 0, w, h, 0, 0, w * tpp, h * tpp); }
   }
-  // 4) coast shallows: real Civ4 shore texture, drawn as one province-level pass so the ripple
-  // blends over the whole shore region at once (paintCoast); then rivers, then features on top, so a
-  // river reaching the sea sits over the shallows/foam rather than under them — and so tree foliage
-  // sits over the river (two passes, not per-plot, so a tree always overlaps a neighbouring river cell)
-  // the province's latitude picks its beach's climate band (tropical white sand → temperate gold →
-  // polar), the same bands the sea gradient uses, so a shore and the water off it agree
-  const sbox = provSrcBox(p);
-  paintCoast(o, oc.width, oc.height, p._plots, x0, y0, tpp,
-    sbox ? latAtSourceY((sbox.y0 + sbox.y1) / 2) : 45);
+  // (No land-side coast pass any more. The shoreline is Civ4's painted coast tiles, stamped on the
+  // WATER plots below — sand is a coast feature, not a land one. See coast.mjs.)
   // desaturate the river ribbon so water recedes into the landscape instead of gridding vivid cyan
   // over it — baked once into the cached province canvas, so it costs nothing per frame
   o.filter = "saturate(0.7) brightness(0.94)";
