@@ -66,8 +66,14 @@ const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
  *
  * Plots without landDist (a pre-v12 cache) fade nothing, which is exactly the old look.
  */
+// The ramp spans the WHOLE shelf, ring 1 included. Holding ring 1 solid was the first cut and it
+// missed the point: ring 1 is the bright shallow water that hugs the coast, so its own outer edge
+// steps wherever the coastline steps — which is the staircase. Starting the ramp at 1 turns the
+// shelf into a continuous fade from the beach out to open water, and the 1px/plot bilinear upscale
+// smooths across the rings rather than between three discrete alphas. The near-shore shallows do not
+// thin out, because coast.mjs paints its own band outward from the LAND province on top of this.
 const SHELF_MAX = 3;          // ProvincePlotField.SHELF_MAX — the outermost shelf ring
-const SHELF_FADE_FROM = 2;    // rings at or past this dissolve; ring 1 (touching land) stays solid
+const SHELF_FADE_FROM = 1;    // ring 1 (touching land) starts the ramp
 export function fadeShelfEdge(o, plots, x0, y0, w, h, tpp) {
   let any = false;
   const fc = document.createElement("canvas"); fc.width = w; fc.height = h;

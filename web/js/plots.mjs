@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, RIVER, TREES, FEATURE_OVERLAYS, IMPROVEMENT_OVERLAYS, SEA_BANDS, LY, NB4, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
@@ -82,6 +82,23 @@ const MAX_TEX_PLOTS = 20000;
 // (r*0.55+42, g*0.55+60, b*0.55+76) resolved to, kept so only the STRENGTH now varies
 const RIVER_TINT = [93, 133, 169];
 
+// A shelf water plot's colour, interpolated by DEPTH rather than taken flat from its terrain key.
+// The keys are only two-valued across the shelf (TERRAIN_COAST touching land, TERRAIN_SEA beyond),
+// so a flat fill puts a hard step through the middle of it; landDist runs 1..SHELF_MAX and turns
+// that into a ramp from the bright shallow hue toward the open-sea band. Falls back to the plain
+// terrain colour for a pre-v12 plot with no landDist.
+const SHELF_MAX = 3;
+function shelfRgb(q) {
+  const shallow = terrainRgb(q.terrain);
+  const deep = (SEA_BANDS && SEA_BANDS.temp) || [50, 53, 98];
+  const t = Math.min(1, Math.max(0, (q.landDist - 1) / SHELF_MAX));   // 0 at the coast, →1 outward
+  return [0, 1, 2].map(i => Math.round(shallow[i] + (deep[i] - shallow[i]) * t));
+}
+/** A shelf plot's opacity: solid where it touches land, dissolving to the open-sea layer outward. */
+function shelfAlpha(landDist) {
+  return Math.max(0, Math.round(255 * (1 - (landDist - 1) / SHELF_MAX)));
+}
+
 // rasterise a province's plots to a 1px/plot offscreen canvas: terrain colour, relief
 // shading (hill lighter, peak toward rock-grey), a light feature tint, and river blend
 function buildPlotCanvas(p, plots) {
@@ -89,6 +106,16 @@ function buildPlotCanvas(p, plots) {
   // terrain key); the land-only relief/feature/river tints below are skipped for them
   const water = p.type === "SEA" || p.type === "LAKE";
   const { canvas, box } = buildPixelCanvas(plots, (q, d, o) => {
+    // A shelf water plot ramps in BOTH colour and alpha by depth — the same treatment the textured
+    // canvas gets, and it has to be here too because drawPlots blits this cheap canvas UNDERNEATH the
+    // textured one. Leaving it opaque here is what made the textured canvas's shelf fade invisible:
+    // the erase revealed this layer still painting a hard bright square.
+    if (water && q.landDist) {
+      const g = shelfRgb(q);
+      d[o] = g[0]; d[o + 1] = g[1]; d[o + 2] = g[2];
+      d[o + 3] = shelfAlpha(q.landDist);
+      return;
+    }
     const c = terrainRgb(q.terrain); let r = c[0], g = c[1], b = c[2];
     if (!water) {
       const f = q.feature;
@@ -243,6 +270,12 @@ function buildPlotTexCanvas(p) {
   const pat = {};
   for (const q of p._plots) {
     const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
+    // Shelf water gets a CONTINUOUS colour by depth rather than its terrain key's flat fill. The keys
+    // only carry two values across the shelf — TERRAIN_COAST for the ring touching land, TERRAIN_SEA
+    // beyond it — and painting them as flat squares puts a hard colour step through the middle of the
+    // shelf, which is most of what read as a staircase. landDist (MAP_VERSION 12) gives the real
+    // depth, so the ring boundary becomes a ramp. Land is untouched.
+    if (water && q.landDist) { const g = shelfRgb(q); o.fillStyle = `rgb(${g[0]},${g[1]},${g[2]})`; o.fillRect(cx, cy, tpp, tpp); continue; }
     let pp = pat[q.terrain];
     if (pp === undefined) { const tc = ttTiles && ttTiles[q.terrain]; pp = pat[q.terrain] = tc ? o.createPattern(tc, "repeat") : null; }
     if (pp) { o.fillStyle = pp; o.fillRect(cx, cy, tpp, tpp); }
