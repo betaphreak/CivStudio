@@ -8,7 +8,7 @@ import { draw } from "./repaint.mjs";
 import { bandAlpha, kBand, atLeast, BAND, ground3D, props3D } from "./bands.mjs";
 import { loadArt, plotBounds, buildPixelCanvas, blitProvinceCanvas } from "./plotcanvas.mjs";
 import { riverClass, riverLinks, cellStrokes, ribbonWidth } from "./river-geom.mjs";
-import { paintCoast, drawSeaIce, blendCoastEdges, fadeShelfEdge } from "./coast.mjs";
+import { paintCoast, drawSeaIce, blendCoastEdges } from "./coast.mjs";
 import { drawBonusOverlay } from "./bonusicons.mjs";
 import { loadPlots } from "./plotfetch.mjs";
 import { placeFoliage, foliageGroup, isGrassFeature, mkRng, foliageSeed } from "./foliage.mjs";
@@ -82,21 +82,29 @@ const MAX_TEX_PLOTS = 20000;
 // (r*0.55+42, g*0.55+60, b*0.55+76) resolved to, kept so only the STRENGTH now varies
 const RIVER_TINT = [93, 133, 169];
 
-// A shelf water plot's colour, interpolated by DEPTH rather than taken flat from its terrain key.
-// The keys are only two-valued across the shelf (TERRAIN_COAST touching land, TERRAIN_SEA beyond),
-// so a flat fill puts a hard step through the middle of it; landDist runs 1..SHELF_MAX and turns
-// that into a ramp from the bright shallow hue toward the open-sea band. Falls back to the plain
-// terrain colour for a pre-v12 plot with no landDist.
-const SHELF_MAX = 3;
+// A water plot's colour, interpolated by DEPTH rather than taken flat from its terrain key.
+//
+// The keys are only two-valued (TERRAIN_COAST touching land, TERRAIN_SEA beyond), so a flat fill
+// puts a hard step through the water; landDist gives the real depth. From MAP_VERSION 13 a sea
+// province carries a plot for EVERY water cell it owns, not a 3px shelf, so this ramp now covers the
+// open ocean too — which is the whole point. The old shelf ended at a plot-square boundary between
+// two different renderings of water, and no amount of feathering that edge helped, because the edge
+// was the artefact.
+//
+// WATER_DEPTH is where the ramp bottoms out, in plots from shore. It is a look parameter, not a
+// generation one: past it every plot is simply open-sea colour.
+// The ramp must run from ONE shallow anchor, not from each plot's own terrain colour. The keys are
+// two-valued — TERRAIN_COAST at landDist 1, TERRAIN_SEA from 2 outward — so lerping from
+// `terrainRgb(q.terrain)` restarts the ramp on a much darker base at ring 2 and reinstates exactly
+// the hard step it was meant to remove. (It did; this cost a round.) Mapping SEA→COAST (and
+// LAKE→LAKE_SHORE) gives the climate's shallow hue for every water plot, so depth alone drives it.
+const WATER_DEPTH = 10;
+const shallowKey = t => t.replace("TERRAIN_SEA", "TERRAIN_COAST").replace(/^TERRAIN_LAKE$/, "TERRAIN_LAKE_SHORE");
 function shelfRgb(q) {
-  const shallow = terrainRgb(q.terrain);
+  const shallow = terrainRgb(shallowKey(q.terrain));
   const deep = (SEA_BANDS && SEA_BANDS.temp) || [50, 53, 98];
-  const t = Math.min(1, Math.max(0, (q.landDist - 1) / SHELF_MAX));   // 0 at the coast, →1 outward
+  const t = Math.min(1, Math.max(0, (q.landDist - 1) / WATER_DEPTH));   // 0 at the coast, →1 outward
   return [0, 1, 2].map(i => Math.round(shallow[i] + (deep[i] - shallow[i]) * t));
-}
-/** A shelf plot's opacity: solid where it touches land, dissolving to the open-sea layer outward. */
-function shelfAlpha(landDist) {
-  return Math.max(0, Math.round(255 * (1 - (landDist - 1) / SHELF_MAX)));
 }
 
 // rasterise a province's plots to a 1px/plot offscreen canvas: terrain colour, relief
@@ -106,14 +114,14 @@ function buildPlotCanvas(p, plots) {
   // terrain key); the land-only relief/feature/river tints below are skipped for them
   const water = p.type === "SEA" || p.type === "LAKE";
   const { canvas, box } = buildPixelCanvas(plots, (q, d, o) => {
-    // A shelf water plot ramps in BOTH colour and alpha by depth — the same treatment the textured
-    // canvas gets, and it has to be here too because drawPlots blits this cheap canvas UNDERNEATH the
-    // textured one. Leaving it opaque here is what made the textured canvas's shelf fade invisible:
-    // the erase revealed this layer still painting a hard bright square.
+    // A water plot takes the depth ramp here too, not just in the textured canvas — drawPlots blits
+    // this cheap canvas UNDERNEATH that one, so a flat fill here would show straight through any
+    // treatment applied there. (That is not hypothetical: it is what made an earlier shelf fade
+    // invisible, and cost three wrong diagnoses before the layering was noticed.)
     if (water && q.landDist) {
       const g = shelfRgb(q);
       d[o] = g[0]; d[o + 1] = g[1]; d[o + 2] = g[2];
-      d[o + 3] = shelfAlpha(q.landDist);
+      d[o + 3] = 255;   // water is CONTINUOUS from v13 — nothing to dissolve into behind it
       return;
     }
     const c = terrainRgb(q.terrain); let r = c[0], g = c[1], b = c[2];
@@ -429,12 +437,9 @@ function buildPlotTexCanvas(p) {
   // are, and what they are NOT — reading them as land occupancy deletes half a coastal plot.
   if (!water) blendCoastEdges(o, p._plots, x0, y0, tpp);
   if (water) drawSeaIce(o, p._plots, x0, y0, tpp);   // polar sea ice on the shelf water plots
-  // DISSOLVE THE SHELF'S OUTER EDGE. The coastal shelf is a hard integer band (1 <= landDist <=
-  // SHELF_MAX), so without this it ends in a staircase of squares against the open sea — the most
-  // visible artefact left on a coastline. landDist ships per water plot from MAP_VERSION 12 precisely
-  // because it is computed globally: anything derived from this province's own plots would fade at
-  // every boundary between two provinces' shelves and print a seam. See coast.mjs.
-  if (water) fadeShelfEdge(o, p._plots, x0, y0, w, h, tpp);
+  // (No shelf-edge fade any more. From MAP_VERSION 13 a sea province draws EVERY water cell it owns,
+  // so there is no shelf boundary left to dissolve — the depth ramp in shelfRgb carries the water
+  // from shore to deep on its own. fadeShelfEdge existed to feather an edge that no longer exists.)
   p._tcanvas = oc; p._tbox = { x0, y0, w, h }; p._grid = grid;   // grid: q.x*1e5+q.y → plot, for the resource tooltip
   p._tfoliage = bakeFoliage;   // which way this canvas was baked — drawPlots invalidates it when that flips
 }

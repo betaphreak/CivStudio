@@ -29,6 +29,12 @@ const foamImg = loadArt(FOAM, () => { foamReady = true; });
 let cmReady = false;
 const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
 
+// fadeShelfEdge lived here and is GONE. It feathered the coastal shelf's outer edge, because the
+// shelf stopped at an arbitrary 3px band whose boundary against the open-sea gradient stepped with
+// every plot square. From MAP_VERSION 13 a sea province draws every water cell it owns, so there is
+// no such boundary — the artefact was the band, not the edge treatment. plots.mjs `shelfRgb` carries
+// the water from shallow to deep on its own.
+
 /**
  * Soften every coastal plot's seaward side, so a coastline running at an angle to the plot grid
  * stops reading as a staircase of squares.
@@ -48,56 +54,6 @@ const cmImg = loadArt(COAST_MASK, () => { cmReady = true; });
  * 0 and 15 are solid white in the source (Civ4's "uniform tile, nothing to blend" at both extremes)
  * and are skipped.
  */
-/**
- * Fade the coastal shelf's OUTER ring, so it stops ending in a staircase of squares against the open
- * sea.
- *
- * The shelf is a hard integer band — ProvincePlotField keeps water plots with 1 <= landDist <=
- * SHELF_MAX — so its outer boundary is a per-plot cliff. `landDist` is what fixes it, and the reason
- * it had to come from the engine (MAP_VERSION 12) rather than be derived here: it is computed over
- * the whole world raster, so it is identical either side of a province boundary. Anything this file
- * could work out from its own province's plot list would fade at every boundary between two
- * provinces' shelves and print a seam there.
- *
- * Built at ONE PIXEL PER PLOT and blitted upscaled with smoothing, the same trick the snow cap uses:
- * a per-plot alpha would only trade a hard staircase for a softer one, whereas the bilinear upscale
- * ramps continuously between neighbouring plots. Composited `destination-out`, so the smooth open-sea
- * layer behind shows through instead of a square of shelf colour.
- *
- * Plots without landDist (a pre-v12 cache) fade nothing, which is exactly the old look.
- */
-// The ramp spans the WHOLE shelf, ring 1 included. Holding ring 1 solid was the first cut and it
-// missed the point: ring 1 is the bright shallow water that hugs the coast, so its own outer edge
-// steps wherever the coastline steps — which is the staircase. Starting the ramp at 1 turns the
-// shelf into a continuous fade from the beach out to open water, and the 1px/plot bilinear upscale
-// smooths across the rings rather than between three discrete alphas. The near-shore shallows do not
-// thin out, because coast.mjs paints its own band outward from the LAND province on top of this.
-const SHELF_MAX = 3;          // ProvincePlotField.SHELF_MAX — the outermost shelf ring
-const SHELF_FADE_FROM = 1;    // ring 1 (touching land) starts the ramp
-export function fadeShelfEdge(o, plots, x0, y0, w, h, tpp) {
-  let any = false;
-  const fc = document.createElement("canvas"); fc.width = w; fc.height = h;
-  const f = fc.getContext("2d");
-  const im = f.createImageData(w, h);
-  for (const q of plots) {
-    const d = q.landDist || 0;
-    if (d < SHELF_FADE_FROM) continue;
-    any = true;
-    // ramp across the outer rings; the last keeps a little coverage so the shelf dissolves rather
-    // than stopping
-    const t = (d - SHELF_FADE_FROM + 1) / (SHELF_MAX - SHELF_FADE_FROM + 1);
-    const k = ((q.y - y0) * w + (q.x - x0)) * 4;
-    im.data[k + 3] = Math.min(255, t * 235) | 0;
-  }
-  if (!any) return;
-  f.putImageData(im, 0, 0);
-  o.save();
-  o.globalCompositeOperation = "destination-out";
-  o.imageSmoothingEnabled = true;
-  o.drawImage(fc, 0, 0, w, h, 0, 0, w * tpp, h * tpp);
-  o.restore();
-}
-
 export function blendCoastEdges(o, plots, x0, y0, tpp, lat = 45) {
   if (!cmReady) return;
   const C = COAST_MASK.cell;

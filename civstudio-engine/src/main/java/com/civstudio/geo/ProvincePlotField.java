@@ -137,13 +137,19 @@ public final class ProvincePlotField {
 	private static final double SPARSE_CHANCE = 0.35;
 
 	/**
-	 * How far (Chebyshev pixels) from dry land a sea/lake province still gets water plots — its
-	 * <b>coastal shelf</b>. {@code 1} = COAST (touching land), {@code 2..SHELF_MAX} = SEA;
-	 * cells further out get no plot (the web draws them as the open-sea ripple). This is where
-	 * the Civ4 sea bonuses live, so it bounds the added plot count to a near-shore ring. See
-	 * {@code docs/coastlines.md}.
+	 * How far (Chebyshev pixels) from dry land the Civ4 <b>sea bonuses</b> are placed — fish, crab,
+	 * whale, pearls are coastal, and scattering them across open ocean would litter the deep with
+	 * resource icons no one can reach. {@code 1} = COAST (touching land), {@code 2..3} = near-shore
+	 * SEA. See {@code docs/coastlines.md}.
+	 * <p>
+	 * This used to bound plot GENERATION as well, and that is exactly what produced the coastline
+	 * staircase: a sea province's plots stopped at an arbitrary three-ring band, and its outer
+	 * boundary — where plot-rendered water met the screen-space sea gradient — stepped with every
+	 * plot square. Softening that edge cannot work, because the band itself is the artefact. A sea
+	 * province now generates a plot for <b>every</b> water cell it owns, so water is continuous and
+	 * there is no boundary left to step. See {@code docs/civ4-texture-inventory.md} §4 P3.
 	 */
-	private static final int SHELF_MAX = 3;
+	private static final int BONUS_SHELF_MAX = 3;
 
 	/**
 	 * The climate-field temperature (°C, C2C scale) at or below which water reads <b>polar</b> — the
@@ -373,13 +379,16 @@ public final class ProvincePlotField {
 	}
 
 	/**
-	 * The coastal-shelf water field of a sea/lake province: each of its own water cells within
-	 * {@link #SHELF_MAX} pixels of dry land becomes a {@code FLAT} water plot — COAST (touching
-	 * land) or SEA further out, in the province's climate variant ({@link MapTerrainCodec#water})
-	 * — carrying a sea resource from the same {@link BonusGenerator} the land uses (fish, crab,
-	 * whale, pearls, … place themselves by the water terrain). Deep-water cells beyond the shelf
-	 * get no plot, so the added count is a near-shore ring and the web keeps drawing open water as
-	 * the sea ripple. Cold water carries {@code FEATURE_ICE} (the C2C polar-cap + drift-ice model).
+	 * The water field of a sea/lake province: <b>every</b> water cell it owns becomes a {@code FLAT}
+	 * water plot — COAST (touching land) or SEA further out, in the province's climate variant
+	 * ({@link MapTerrainCodec#water}) — each carrying its {@code landDist}, so the web can ramp the
+	 * water continuously from shallow to deep instead of ending it at a boundary.
+	 * <p>
+	 * It used to stop at a three-pixel shelf and leave the deep to the web's screen-space sea
+	 * gradient. That is what made every coastline a staircase: the shelf's outer edge was a
+	 * plot-square boundary between two different renderings of water. Sea RESOURCES are still
+	 * near-shore only ({@link #BONUS_SHELF_MAX}) — the plots extend, the fish do not.
+	 * Cold water carries {@code FEATURE_ICE} (the C2C polar-cap + drift-ice model).
 	 * Deterministic off the same per-province terrain stream as the land path — an ice draw per
 	 * cell only where ice can form, then the bonus draws, in row-major order. See {@code
 	 * docs/coastlines.md}.
@@ -424,15 +433,16 @@ public final class ProvincePlotField {
 		Terrain[] terrainGrid = new Terrain[w * h];
 		Feature[] featureGrid = new Feature[w * h];
 		List<int[]> cells = new ArrayList<>();
+		List<int[]> bonusCells = new ArrayList<>();   // the near-shore subset — see BONUS_SHELF_MAX
 		for (int ly = 0; ly < h; ly++)
 			for (int lx = 0; lx < w; lx++) {
 				if (!mask.isLand(lx, ly)) // the province's own water pixels
 					continue;
 				int dist = mask.landDist(lx, ly);
-				if (dist < 1 || dist > SHELF_MAX) // keep only the near-shore shelf ring
+				if (dist < 1) // dry land — not this province's water
 					continue;
 				Terrain terrain = MapTerrainCodec.water(lake, dist, temp, registry);
-				if (terrain == null) // registry lacks the shelf water terrains — no water plots
+				if (terrain == null) // registry lacks the water terrains — no water plots
 					continue;
 				int idx = ly * w + lx;
 				terrainGrid[idx] = terrain;
@@ -440,16 +450,23 @@ public final class ProvincePlotField {
 				featureGrid[idx] = anyIce && rng.uniform() < iceCover
 						&& ice.validTerrains().contains(terrain.type()) ? ice : null;
 				cells.add(new int[] { lx, ly });
+				if (dist <= BONUS_SHELF_MAX)
+					bonusCells.add(new int[] { lx, ly });
 			}
-		// sea resources (fish/crab/whale/…) via the same per-province placement pass (relief-free)
-		Bonus[] bonusGrid = BonusGenerator.place(w, h, cells, terrainGrid, null, featureGrid,
+		// Sea resources (fish/crab/whale/…) via the same per-province placement pass (relief-free),
+		// offered only the NEAR-SHORE cells now that every water cell is a plot. Two reasons, and the
+		// second is the one that would have bitten quietly: the deep ocean would fill with resources
+		// nothing can reach, and the placement pass draws row-major over the list it is given, so
+		// handing it the whole ocean would shift every coastal draw and silently re-roll placements
+		// that have nothing to do with this change.
+		Bonus[] bonusGrid = BonusGenerator.place(w, h, bonusCells, terrainGrid, null, featureGrid,
 				latitude, bonuses, rng, true);
 
 		List<ProvincePlot> out = new ArrayList<>(cells.size());
 		for (int[] c : cells) {
 			int lx = c[0], ly = c[1], idx = ly * w + lx;
-			// carry the shelf depth (1 = touching land … SHELF_MAX = outer edge) so the web client can
-			// FADE the shelf's outer ring instead of ending it in a hard square — see PlotGeo#landDist
+			// carry the water depth (1 = touching land, rising outward) so the web client can ramp the
+			// water continuously from shallow to deep — see PlotGeo#landDist
 			PlotGeo geo = new PlotGeo(mask.originX() + lx, mask.originY() + ly, 0,
 					mask.elevation(lx, ly), mask.coast(lx, ly), mask.landDist(lx, ly));
 			out.add(new ProvincePlot(geo, terrainGrid[idx], PlotType.FLAT, featureGrid[idx], bonusGrid[idx], false));
