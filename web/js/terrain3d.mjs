@@ -787,7 +787,7 @@ function resize() {
  * Bring the mesh set in line with what is loaded. Deliberately driven by the SAME state drawPlots
  * maintains — `p._plots`, `p._tcanvas`/`_tbox` — rather than by its own fetching and building:
  * drawPlots still runs every frame and only skips its blits (see plots.drawPlots), so the viewport cull,
- * the lazy loadPlots, the per-frame build budget and MAX_TEX_PLOTS all keep working untouched.
+ * the lazy loadPlots and the per-frame build budget all keep working untouched.
  */
 function syncMeshes() {
   // Vertical exaggeration first, because the prop geometry below is built at it — see

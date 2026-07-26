@@ -247,19 +247,25 @@ detail, and either works as neutral grain — but coastdetail is what `ART_DEF_T
 while shoredetail belongs to `LAKE_SHORE`, and our shallows are the sea shelf. A correctness fix, not
 a visible one: the Civ6 coast tile still wins where it is available.
 
-**P3 — faithful shoreline shape.** Two halves, and they are separable:
+**P3 — faithful shoreline shape. DONE, and the falloff half arrived by a different route than planned.**
 
-- *Falloff.* Bake the sixteen `coastscalemask00..15.tga` into one strip and index it by the plot's
-  4-bit water-neighbour mask. Replaces `coastDepth`'s per-corner hash with the authored ramp. Needs
-  **colour-mapped TGA support in `web/tga.mjs`** — the mask families are 8-bit palettised and today's
-  decoder is truecolour-only (a working reader is ~40 lines; it was prototyped to produce this
-  document's figures).
-- *Wiggle.* Extend `TerrainArtExporter.KEEP` — or add a water-terrain pass beside it — so the coast
-  `ART_DEF`s export their `TextureBlend` tables (every one carries a full 15-entry table already), then
-  select the atlas cell by bitmask + rotation instead of hashing. Same unlock as §3.4 for land.
+- *Wiggle.* **SHIPPED.** `TerrainArtExporter.KEEP` was extended with the eight water terrains (§6), so
+  the coast `ART_DEF`s export their `TextureBlend` tables — 24 of the 33 manifest entries now carry a
+  full 15-entry table — and the atlas cell is selected by bitmask + rotation. The hash survives, but
+  only to pick among the authored VARIANTS a configuration offers, which is what this document asks
+  for below: one scallop stamped into every coastal cell of a 5,264-province world reads as a rhythm.
+- *Falloff.* **The blocker is gone, and so is the reason.** Colour-mapped TGA support landed
+  (`web/tga.mjs` + `tga.test.mjs`), `bakeCoastMasks` decodes all sixteen and ships `coastmask.webp` —
+  and it goes unread, because what it was written to replace (`coastDepth`'s per-corner hash) was
+  deleted along with the rest of the procedural shoreline. Since the coast cell now ships whole with
+  its **authored 128px alpha** (§6), the shoreline shape is already the authored one; the masks are
+  the same shape at 16px. This document says as much where it lists them: `coastlandblends.dds` is
+  "the cheap way to get Civ4's wiggle *without decoding the full 700 KB atlas*". We decode the atlas.
 
-Order matters: P1 was a bake plus a fill change, P2 a bake plus a renderer change, P3 is the one that
-touches the Java exporter.
+**Measured, so the next reader does not re-open it:** the sixteen masks are corner-keyed in our own bit
+order (`01`→NW dark, `02`→NE, `04`→SE, `08`→SW; `00` and `15` solid white), exactly like the
+`TextureBlend` table. Wiring them in would swap a 128px authored mask for a 16px one, and it would
+**not** fix the orthogonal-contact gap (§6) — `00`/`15` being blank is the same corner blindness.
 
 ### What stays procedural, on purpose
 
@@ -437,3 +443,35 @@ warm tan around Anbenncost.
 - `CoastDeepDetail.dds` and the `*_DEEP` terrains are unbound: the engine stamps no deep-coast key, so
   there is nothing to bind them to.
 - The water terrains' own 16-way `TextureBlend` tables are exported and unread, exactly like land's.
+
+### Amendments — what changed after §6 first landed
+
+Three corrections, all from measurement, all in the same session:
+
+1. **The coast cell ships WHOLE now.** `bakeCoastTiles` used to multiply each pixel's alpha by a warmth
+   ramp `(r-b)/40` so only the sand survived. That discarded the base's painted water and — worse —
+   **overwrote the authored shoreline mask** with a hand-rolled function, undoing P3 one stage earlier.
+   Its own justification had expired: "we have no base to replace: water plots are drawn TRANSPARENT".
+   They are not, since §6. Alpha-0 went 74% → 36%, near-opaque 11% → 52%, mean alpha 41 → 143.
+2. **The base is modulated by its detail, as the art define binds it.** `ART_DEF_TERRAIN_COAST` binds
+   `<Path>` (the atlas — colour + painted shoreline) *and* `<Detail>` (`coastdetail.dds` — all the
+   grain, mean luma 131.9 with alpha 0 throughout, which is a modulate map, not a ground texture). We
+   drew only the base. The detail needed no new bake: `bakeShoreTile` already renders it neutral-mean
+   greyscale and ships it as `shore`, where it sat unread. Composited with `hard-light`, the canvas
+   operator neutral at grey-128 with the detail on top — Civ4's modulate2x. `multiply` would halve the
+   whole coast.
+3. **`MAX_TEX_PLOTS` is gone.** `extendCoastIntoWater` runs only inside the textured build, so every
+   province over the 20,000-plot cap drew no coast tile at all — **15 of the 365 coastal water
+   provinces**, whole shorelines where the sea ran straight into the land. Only 11 of 4,804 land
+   provinces are over it either way. The per-frame build budget still defers a huge province to a later
+   frame; it now takes its turn late rather than never being textured.
+
+**The one thing authored art cannot fix.** A water plot touching land ONLY orthogonally has all four
+diagonals water → config 15 → cell 29, the flat interior tile, so the sea runs into the land with no
+shore. Measured at 9 of 417 ring plots (2.2%). Both the `TextureBlend` table and the sixteen masks are
+corner-keyed, so neither has anything to say about an edge: Civ4 blends terrain on a MESH whose
+vertices are plot corners, and edge contact is carried by the geometry. A per-plot square stamp has no
+equivalent. The long-term answer is a corner lattice rather than more art — `js/heightfield.mjs`
+already indexes plot corners for the 3D terrain, so the vertex grid exists; it is the 2D tex-canvas
+rasteriser that still thinks in squares. (Rivers are NOT part of that: ours are pixel/centre-line by
+data, and `docs/river-rendering.md` §5 rejected edge-based river art for exactly that reason.)

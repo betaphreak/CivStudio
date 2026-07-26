@@ -53,10 +53,13 @@ function extractTiles() {
 // budget is spent, then defer the rest to later frames (drawPlots reschedules a paint). At least one
 // province always builds per frame, so it still converges quickly.
 const PLOT_FRAME_BUDGET_MS = 6;
-// Above this plot count, skip the (multi-pass, per-plot) textured build and use the cheap flat 1px/plot
-// canvas instead — a single giant province (e.g. ~80k plots) would otherwise block for seconds on its
-// one textured build, which the per-frame budget can't interrupt mid-build.
-const MAX_TEX_PLOTS = 20000;
+// (There is no plot-count cap on the textured build any more. There was — MAX_TEX_PLOTS = 20000, to
+// bound a single giant province's build, which the per-frame budget cannot interrupt mid-build. It cost
+// more than it saved once the coast art landed: `extendCoastIntoWater` runs only inside the textured
+// build, so every province over the cap drew NO coast tile at all, and 15 of the 365 coastal water
+// provinces are over it — whole shorelines where the sea ran straight into the land. Only 11 of 4,804
+// land provinces are over it either way. The budget still defers the build to a later frame; dropping
+// the cap means a huge province now takes its turn late rather than never being textured at all.)
 
 // Urban plots (docs/urban-plots.md): a city is now an OVERLAY on natural terrain, not a synthetic
 // terrain — the plot cache (MAP_VERSION 8+) carries the generated ground plus a `urban` flag, so an
@@ -154,7 +157,7 @@ function drawPlots(only) {
   if (cam.k < K_PLOT) return;
   // From band 5 the 3D ground drapes these very offscreens over its meshes (js/terrain3d.mjs §3), so the
   // BLITS below are skipped — but everything else here still has to run, and that is the point: the
-  // viewport cull, the lazy loadPlots, the per-frame build budget, MAX_TEX_PLOTS and the bonus overlay
+  // viewport cull, the lazy loadPlots, the per-frame build budget and the bonus overlay
   // are all machinery terrain3d would otherwise have to reimplement. It reads `p._tcanvas`/`_tbox`
   // straight off what this pass maintains.
   const blit = !ground3D();
@@ -175,8 +178,7 @@ function drawPlots(only) {
     if (!p._plots) { loadPlots(p); continue; }   // request the server-generated grid on first sight
     if (!p._plots.length) continue;              // loaded-empty (deep ocean): nothing to draw
     vis.push(p);
-    // giant provinces skip the heavy textured build (bounded worst case) and use the flat canvas
-    if (textured && p._plots.length <= MAX_TEX_PLOTS) {
+    if (textured) {
       // The cached canvas was baked either WITH foliage (2D owns the ground) or without it (3D stands the
       // trees up instead). If the mode has flipped since, it is the wrong canvas — drop it and let the budget
       // below rebuild it. Lazy by construction: a province off screen is never touched, and rebuilds the first

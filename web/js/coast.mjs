@@ -17,7 +17,7 @@
 // The bundle still carries `beach` (the rectified sand ramps) and `foam` (the wave-crest strip); both
 // are superseded by the painted tiles and simply go unread. The bakes are left in place rather than
 // ripped out, so nothing has to be re-derived if a future layer wants a sand colour or a surf strip.
-import { ICE_ART, COAST_TILES } from "./core.mjs";
+import { ICE_ART, COAST_TILES, SHORE } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
 import { waterBand, coastConfig } from "./water-terrain.mjs";
 
@@ -31,6 +31,19 @@ if (COAST_TILES) for (const b of ["trop", "temp", "polar"])
   ctImg[b] = loadArt(COAST_TILES[b], () => { ctReady[b] = true; });
 /** Which climate atlas a latitude takes — the FALLBACK band, for a plot with no terrain key. */
 const bandOf = lat => { const a = Math.abs(lat); return a <= 23 ? "trop" : a >= 60 ? "polar" : "temp"; };
+
+// THE DETAIL HALF of ART_DEF_TERRAIN_COAST. The art define binds two textures and Civ4 composites
+// them: `<Path>` (coast*blend.dds — the base: colour and the painted shoreline) MODULATED BY
+// `<Detail>` (coastdetail.dds — all the grain). We drew only the base, so a coast plot was flat
+// painted art with no texture in it, while the terrain beneath supplied grain the tile then covered.
+//
+// The detail layer needs no new bake: `bakeShoreTile` already renders coastdetail.dds to a
+// neutral-mean greyscale tile (mean 128, contrast 1.3, seamless) and ships it as `shore` — where it
+// sat UNREAD, orphaned when the shallow band it was written for was deleted. Its own comment says
+// what it is for: "a neutral-mean greyscale detail, drawn over … so it grains the shore hue without
+// recolouring it".
+let shReady = false, shPat = null;
+const shImg = SHORE ? loadArt(SHORE, () => { shReady = true; }) : null;
 
 // deterministic 0..1 hash — the same integer-mix idiom drawSeaIce uses, for jitter that is
 // stable across redraws and seed-reproducible (no Math.random)
@@ -64,6 +77,7 @@ export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
   const C = COAST_TILES.cell, cols = COAST_TILES.cols, blend = COAST_TILES.blend;
   o.save();
   o.imageSmoothingEnabled = true;
+  const stamped = [];                                     // plot rects that took a cell (the detail pass below)
   for (const q of plots) {
     if (q.landDist !== 1) continue;                       // only the ring that touches land
     // The atlas is picked PER PLOT, from its own terrain key, falling back to the province latitude
@@ -91,6 +105,28 @@ export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
       o.drawImage(A, sx, sy, C, C, -tpp / 2, -tpp / 2, tpp, tpp);
       o.restore();
     } else o.drawImage(A, sx, sy, C, C, cx, cy, tpp, tpp);
+    stamped.push([cx, cy]);
+  }
+  // …then MODULATE the base by its detail — the second half of the art define, in a second pass so
+  // the composite mode is set once rather than per plot.
+  //
+  // `hard-light` with the DETAIL on top is the canvas operator that matches Civ4's modulate2x: it is
+  // neutral where the top layer is grey 128 (which is exactly what bakeShoreTile normalises to), and
+  // modulates in both directions from there. `multiply` would be wrong — a mean-128 layer would halve
+  // the whole coast. `soft-light` is the gentler alternative, and is what the sea ripple uses; swap to
+  // it if this reads too strong at deep zoom.
+  //
+  // ONLY over the plots that took a cell. Every other water plot already carries this grain: its
+  // ground tile IS the recoloured detail texture, so modulating it again would double the contrast.
+  // The pattern is left at native scale and anchored to the canvas, like the seabed's own tiling, so
+  // the grain runs continuously from the painted coast into the open water beside it.
+  if (stamped.length && shReady && shImg) {
+    shPat = shPat || o.createPattern(shImg, "repeat");
+    if (shPat) {
+      o.globalCompositeOperation = "hard-light";
+      o.fillStyle = shPat;
+      for (const [cx, cy] of stamped) o.fillRect(cx, cy, tpp, tpp);
+    }
   }
   o.restore();
 }

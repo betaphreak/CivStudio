@@ -155,7 +155,7 @@ The design as built, and the six things that were not obvious going in:
 
 - **`drawPlots` still runs; only its BLITS are skipped.** It was tempting to have the renderer own plot
   loading and texture building, and it would have duplicated the viewport cull, the lazy `loadPlots`, the
-  6 ms/frame build budget and `MAX_TEX_PLOTS`. Instead `drawPlots` keeps all of it and terrain3d reads
+  6 ms/frame build budget. Instead `drawPlots` keeps all of it and terrain3d reads
   `p._tcanvas`/`_tbox` off what that pass maintains. The 3D path added no fetching or scheduling code.
 - **Three loads lazily, and that answers the bundle objection.** 751 KB / 188 KB gz behind a dynamic
   `import()` fired the first time the camera crosses band 5, so the cost falls only on sessions that
@@ -221,9 +221,10 @@ mesh shows through.
   asynchronously via `loadPlots`.
 - **`CanvasTexture` on the existing `p._tcanvas`**, WeakMap-keyed on the canvas object so invalidation is
   free (every rebuild allocates a fresh canvas, so the existing `p._tcanvas = null` hooks suffice). UVs
-  must account for `buildPlotTexCanvas`'s `PAD = 2` cells of transparent margin. A province over
-  `MAX_TEX_PLOTS` (20 000) never builds a `_tcanvas` at all — it falls back to `_pcanvas` with
-  `NearestFilter`.
+  must account for `buildPlotTexCanvas`'s `PAD = 2` cells of transparent margin. (There was also a
+  `MAX_TEX_PLOTS` cap — 20 000 — above which a province never built a `_tcanvas` at all and fell back
+  to `_pcanvas` with `NearestFilter`. Removed: the coast tiles draw only inside the textured build, so
+  the cap silently cost 15 coastal water provinces their entire shoreline art.)
 - **Sea provinces get flat meshes at y = 0** with their own `_tcanvas` (`buildPlotTexCanvas` already
   handles water), plus a horizon plane. `sea.drawSeaBase` is the one layer above the cut that cannot be
   projected — it fills the viewport from the latitude at each screen row and is not geometry at all — so
