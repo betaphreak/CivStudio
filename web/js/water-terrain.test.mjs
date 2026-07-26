@@ -2,7 +2,7 @@
 // node --test web/js/water-terrain.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shelf, waterBand, shelfMix, shelfColor, WATER_DEPTH } from "./water-terrain.mjs";
+import { shelf, waterBand, shelfMix, shelfColor, coastConfig, WATER_DEPTH } from "./water-terrain.mjs";
 
 const COAST = [43, 71, 101], SEA = [30, 66, 96];
 const TROP_COAST = [40, 78, 106], TROP_SEA = [38, 82, 108];
@@ -79,4 +79,46 @@ test("a bundle with no water colours falls back to the art-derived pair", () => 
 test("a plot with no terrain key at all still paints, via the fallback", () => {
   const fb = { shallow: [1, 2, 3], deep: [11, 22, 33] };
   assert.deepEqual(shelfColor(undefined, 1, colorOf, fb), [1, 2, 3]);
+});
+
+// ---- coastConfig: our sea mask -> Civ4's TextureBlend index -------------------------------------
+// Our bits (docs/coastlines.md §A): 1=E, 2=W, 4=S, 8=N, set = that neighbour is water.
+// Civ4's (recovered from the blend table's own rotations):  1=N, 2=E, 4=S, 8=W.
+const E = 1, W = 2, S = 4, N = 8;                     // ours
+const cN = 1, cE = 2, cS = 4, cW = 8;                 // Civ4's
+
+test("coastConfig maps each single direction to Civ4's bit for the SAME direction", () => {
+  assert.equal(coastConfig(N), cN);
+  assert.equal(coastConfig(E), cE);
+  assert.equal(coastConfig(S), cS);
+  assert.equal(coastConfig(W), cW);
+});
+
+test("coastConfig reads the EDGE nibble and ignores the diagonal corners", () => {
+  // 16=NW, 32=NE, 64=SE, 128=SW — none of these may reach the table
+  for (const corner of [16, 32, 64, 128, 16 | 32 | 64 | 128])
+    assert.equal(coastConfig(corner), 0);
+  assert.equal(coastConfig(N | 32 | 128), cN);        // corners set alongside an edge change nothing
+});
+
+test("opposite pairs stay opposite, adjacent pairs stay adjacent", () => {
+  // this is the property the old corner-nibble read broke: the table gives 05/10 the STRIP cells and
+  // 03/06/12/09 the CORNER cells, so a pair that is opposite for us must be opposite for Civ4 too
+  const OPPOSITE = [cN | cS, cE | cW];
+  assert.ok(OPPOSITE.includes(coastConfig(N | S)));
+  assert.ok(OPPOSITE.includes(coastConfig(E | W)));
+  for (const adj of [N | E, E | S, S | W, W | N])
+    assert.ok(!OPPOSITE.includes(coastConfig(adj)), `${adj} should not map to an opposite pair`);
+});
+
+test("three land neighbours leaves exactly one water bit — the shore faces the water", () => {
+  // a plot wedged in a bay: only its northern neighbour is water
+  assert.equal(coastConfig(N), cN);
+  assert.equal(Number.isInteger(Math.log2(coastConfig(N))), true);   // exactly one bit
+});
+
+test("fully enclosed and fully open are preserved", () => {
+  assert.equal(coastConfig(N | E | S | W), 15);       // all water → the flat interior cell 29
+  assert.equal(coastConfig(0), 0);                    // no water neighbour → no entry, nothing drawn
+  assert.equal(coastConfig(undefined), 0);
 });

@@ -19,7 +19,7 @@
 // ripped out, so nothing has to be re-derived if a future layer wants a sand colour or a surf strip.
 import { ICE_ART, COAST_TILES } from "./core.mjs";
 import { loadArt } from "./plotcanvas.mjs";
-import { waterBand } from "./water-terrain.mjs";
+import { waterBand, coastConfig } from "./water-terrain.mjs";
 
 // the real Civ4 pack-ice tile (docs/coastlines.md Phase G), features/icepack; null → drawSeaIce
 // falls back to flat pale floes
@@ -75,7 +75,11 @@ export function extendCoastIntoWater(o, plots, x0, y0, tpp, lat = 45) {
     const band = waterBand(q.terrain) || provBand;
     const A = ctImg[band];
     if (!A || !ctReady[band]) continue;
-    const cfg = (q.coast >> 4) & 15;
+    // The plot's EDGE adjacency, permuted into Civ4's bit order (js/water-terrain.mjs coastConfig).
+    // This used to be `(q.coast >> 4) & 15` — the diagonal CORNER nibble, in our own bit order — so
+    // the table was indexed by the wrong four neighbours and three of the four single-bit
+    // configurations came out rotated to the wrong side of the plot.
+    const cfg = coastConfig(q.coast);
     const variants = blend[cfg];
     if (!variants || !variants.length) continue;          // config 0 has no entry — nothing to blend
     const [cell, rot] = variants[Math.floor(chash(q.x * 31 + cfg, q.y * 17) * variants.length) % variants.length];

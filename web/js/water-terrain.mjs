@@ -51,6 +51,35 @@ export function waterBand(terrain) {
   return s ? s.band : null;
 }
 
+/**
+ * The Civ4 `TextureBlend` index for a water plot, from our 8-bit sea mask.
+ *
+ * TWO conversions, and both were being skipped.
+ *
+ * **1. The EDGE nibble, not the corner one.** `docs/coastlines.md` §A: the low nibble is the
+ * orthogonal edges, the high nibble the diagonal corners. The renderer fed the table `coast >> 4` —
+ * the corners — but the table is edge-shaped, which its own contents prove: bits 1/2/4/8 select one
+ * cell at four rotations, adjacent pairs (03/06/12/09) a corner cell, OPPOSITE pairs (05/10) a strip
+ * cell, three-set (07/14/13/11) a nearly-enclosed cell, and 15 the flat interior tile 29. Read as
+ * corners, `05` and `10` are adjacent pairs being handed a strip.
+ *
+ * **2. The bit ORDER differs.** Ours is `1=E, 2=W, 4=S, 8=N`; Civ4's is `1=N, 2=E, 4=S, 8=W`,
+ * recovered from the table's own rotations — cell 1's painted water faces S unrotated, and the table
+ * gives cfg 04 rotation 0, cfg 08 rotation 90 (→W), cfg 01 rotation 180 (→N), cfg 02 rotation 270
+ * (→E). Only `S` happens to coincide, so three of the four single-bit configurations were rotating
+ * the shoreline to the wrong side of the plot.
+ *
+ * Set bit = that neighbour is WATER, in both conventions — that part agrees, so only the permutation
+ * is needed. Returns 0..15; 0 means no neighbour is water (the table has no entry, nothing is drawn).
+ */
+export function coastConfig(coast) {
+  const e = (coast || 0) & 15;
+  return ((e & 1) ? 2 : 0)    // our E → Civ4 E
+       | ((e & 2) ? 8 : 0)    // our W → Civ4 W
+       | ((e & 4) ? 4 : 0)    // our S → Civ4 S
+       | ((e & 8) ? 1 : 0);   // our N → Civ4 N
+}
+
 /** Position along the shelf ramp: 0 on the ring that touches land, 1 at open-sea depth. */
 export function shelfMix(landDist, depth = WATER_DEPTH) {
   return Math.min(1, Math.max(0, ((landDist || 0) - 1) / depth));

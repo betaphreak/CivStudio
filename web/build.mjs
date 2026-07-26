@@ -1167,45 +1167,55 @@ function bakeCoastTiles() {
     const file = resolveArt(art);
     const img = file && decodeCached(file);
     if (!img) return null;
-    // ONLY THE SAND IS KEPT. A cell carries the whole Civ4 coast tile — sand AND its own water —
-    // because Civ4 uses it as the base terrain. We have no base to replace: water plots are drawn
-    // TRANSPARENT and the sea gradient behind is the ocean (plots.mjs). Shipping the cell whole
-    // therefore lays the atlas's own water (43,71,101) over that gradient, and every coast plot reads
-    // as a dark SQUARE — tried, measured, reverted. The alpha is weighted by warmth (r-b) so the
-    // painted shore band survives and the painted water does not: real art on the real sea, with no
-    // invented fill colour anywhere in between.
+    // THE CELL SHIPS WHOLE, WITH ITS OWN AUTHORED ALPHA. This used to keep only the sand: the alpha
+    // was multiplied by a warmth ramp `(r-b)/40` so the painted water fell away. Two things were wrong
+    // with that, and the second is the worse one:
+    //
+    //   1. It discarded half of what the art define binds. `ART_DEF_TERRAIN_COAST` binds `<Path>`
+    //      (this atlas — the BASE: colour plus the painted transition) and `<Detail>` (CoastDetail —
+    //      the grain). Keeping only the warm pixels throws the base's water away.
+    //   2. **The alpha IS the authored shoreline shape**, and the warmth ramp overwrote it with a
+    //      hand-rolled function. That is the thing §4 P3 is still listed as wanting to fix, being
+    //      actively undone one stage earlier.
+    //
+    // The justification for it was explicit and has expired: "we have no base to replace: water plots
+    // are drawn TRANSPARENT and the sea gradient behind is the ocean". Water plots carry real terrain
+    // now (§6), so the cell has something coherent to sit on and its own water no longer lands on a
+    // near-black gradient. That is what made shipping it whole read as dark SQUARES before: not the
+    // painted water, but the absence of anything of that colour on the plots next to it.
     const n = img.width * img.height;
     const rgba = Buffer.alloc(n * 4);
-    // Pass 1: alpha = warmth, and accumulate the mean SAND colour while we are here.
-    let sr = 0, sg = 0, sb = 0, sn = 0;
-    const a8 = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      const r = img.rgba[i * 4], g = img.rgba[i * 4 + 1], b = img.rgba[i * 4 + 2];
-      const warm = Math.max(0, Math.min(1, (r - b) / 40));   // 0 once it is water, 1 on sand
-      a8[i] = Math.round(img.rgba[i * 4 + 3] * warm);
-      if (a8[i] > 128) { sr += r; sg += g; sb += b; sn++; }
-    }
-    const sand = sn ? [sr / sn | 0, sg / sn | 0, sb / sn | 0] : [200, 185, 140];
-    // the atlas's own painted WATER — the mean of its cold opaque pixels. Shipped so the water plots
-    // can be filled with Civ4's shallow-water colour instead of an invented one: it is measured from
-    // coast*blend.dds, not chosen.
+    // The atlas's own painted WATER, taken from the one cell that is nothing else: cell 29 is what
+    // TextureBlend15 (all four neighbours water) selects, and it measures a FLAT SOLID — alpha 255,
+    // luma sd 0.0 — i.e. Civ4's interior water for this terrain, with no grain in it at all. That is
+    // the colour the seabed under these tiles is painted (terrainColors via waterColors), so the tile
+    // and the ground it sits on are the same number by construction rather than by a fitted mean.
+    const C = out.cell, cols = out.cols, INTERIOR = 29;
+    const sx0 = ((INTERIOR - 1) % cols) * C, sy0 = Math.floor((INTERIOR - 1) / cols) * C;
     let wr = 0, wg = 0, wb = 0, wn = 0;
+    for (let y = 0; y < C; y++)
+      for (let x = 0; x < C; x++) {
+        const k = ((sy0 + y) * img.width + sx0 + x) * 4;
+        wr += img.rgba[k]; wg += img.rgba[k + 1]; wb += img.rgba[k + 2]; wn++;
+      }
+    // ALPHA BLEED, kept: a transparent pixel's RGB is still averaged downstream — lossy WebP does not
+    // preserve colour under alpha 0, and drawImage downscales a 128px cell to ~32px on screen — so
+    // leaving anything dark there drags it back into the visible pixels (this is what painted a BLACK
+    // band along every coastline once, bisected to exactly here). The bleed target is now the cell's
+    // own OPAQUE mean rather than a global sand colour: with the authored alpha restored, what sits
+    // next to a transparent pixel is whatever that cell is painted, not necessarily sand.
+    let br = 0, bg = 0, bb = 0, bn = 0;
     for (let i = 0; i < n; i++) {
-      if (img.rgba[i * 4 + 3] < 200 || img.rgba[i * 4] >= img.rgba[i * 4 + 2]) continue;
-      wr += img.rgba[i * 4]; wg += img.rgba[i * 4 + 1]; wb += img.rgba[i * 4 + 2]; wn++;
+      if (img.rgba[i * 4 + 3] < 200) continue;
+      br += img.rgba[i * 4]; bg += img.rgba[i * 4 + 1]; bb += img.rgba[i * 4 + 2]; bn++;
     }
-    // Pass 2: ALPHA BLEED. Transparent pixels take the sand colour rather than keeping the atlas's
-    // painted dark water. Zeroed alpha does not zero RGB, and both stages downstream average RGB
-    // across it: lossy WebP does not preserve colour under alpha 0, and drawImage downscales a 128px
-    // cell to ~32px on screen. Leaving the dark water there dragged it back into every sand pixel and
-    // painted a BLACK band along every coastline — bisected to this, after the raster and the sea
-    // layer were each cleared by measurement.
+    const bleed = bn ? [br / bn | 0, bg / bn | 0, bb / bn | 0] : [200, 185, 140];
     for (let i = 0; i < n; i++) {
-      const keep = a8[i] > 0;
-      rgba[i * 4]     = keep ? img.rgba[i * 4]     : sand[0];
-      rgba[i * 4 + 1] = keep ? img.rgba[i * 4 + 1] : sand[1];
-      rgba[i * 4 + 2] = keep ? img.rgba[i * 4 + 2] : sand[2];
-      rgba[i * 4 + 3] = a8[i];
+      const a = img.rgba[i * 4 + 3];
+      rgba[i * 4]     = a ? img.rgba[i * 4]     : bleed[0];
+      rgba[i * 4 + 1] = a ? img.rgba[i * 4 + 1] : bleed[1];
+      rgba[i * 4 + 2] = a ? img.rgba[i * 4 + 2] : bleed[2];
+      rgba[i * 4 + 3] = a;
     }
     out[band] = {
       src: queueWebpRGBA(`water/coast-${band}`, img.width, img.height, rgba, { quality: 90 }),
