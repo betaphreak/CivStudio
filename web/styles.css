@@ -623,7 +623,6 @@ table.cmp tr.click:hover td { background: var(--line-soft); }
   color: var(--rg, #eef2f8);
 }
 .adv-zoom .rg-ico   { font-size: 12.5px; line-height: 1; }
-.adv-zoom .rg-plane { opacity: .68; font-weight: 500; color: var(--ink-soft); }
 /* the viewport-context clause ("· Sea Tropical") — subordinate to the band name it qualifies */
 .adv-zoom .rg-ctx   { opacity: .7; font-weight: 500; }
 

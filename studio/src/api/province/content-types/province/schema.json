@@ -91,9 +91,13 @@
       "type": "enumeration",
       "pluginOptions": { "i18n": { "localized": false } },
       "enum": [
-        "halcann",
+        "cannor",
+        "serpentspine",
+        "haless",
+        "sarhal",
         "aelantir",
-        "hinuilands"
+        "hinuilands",
+        "halcann"
       ]
     },
     "winter": {

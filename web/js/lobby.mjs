@@ -186,7 +186,10 @@ function spectate(row) {
   // a session carries its realm (docs/realms.md §A session carries its realm) — if it lives in another
   // realm, cross to it first. The choice rides in the URL (?session=), so it survives the reload with
   // no side-channel needed; the sessionStorage intents are kept as a belt-and-braces fallback.
-  const active = new URLSearchParams(location.search).get("realm") || "halcann";
+  // `halcann` is the retired Old-World key, resolved to Cannor as core.mjs does — so a session
+  // recorded before the six-realm split does not read as "another realm" and reload for nothing
+  const _r = new URLSearchParams(location.search).get("realm");
+  const active = (_r === "halcann" ? "cannor" : _r) || "cannor";
   if (row.realm && row.realm !== active) {
     const u = new URL(location.href);
     u.searchParams.set("realm", row.realm);

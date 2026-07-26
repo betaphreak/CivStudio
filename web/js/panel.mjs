@@ -58,17 +58,11 @@ function hideSpinner(){ if(spinnerEl) spinnerEl.hidden=true; }
 // (the movement-cost dev overlay toggle + its legend were removed from the UI; S.showCost stays
 //  false, so the cost layer stays dormant.)
 
-// the map plane (Overworld/Underworld) — the physical base. Underworld dims the surface to
-// a ghost and lights the underground CAVERN provinces in place (see main.drawUnderworld).
-function setPlane(pl){
-  S.plane = pl;
-  S.baseVersion++;   // the political ledger is per-plane (surface vs underground) — force its rebuild
-  // repaint every plane button (data-plane) wherever it lives now — the Globe advisor's
-  // sub-control strip holds these buttons (see advisors.mjs), not the old #planeToggle spot
-  document.querySelectorAll("[data-plane]").forEach(b=> b.setAttribute("aria-pressed", b.dataset.plane===pl));
-  draw();
-}
-// the overlay (None / Nation / Culture / Faith / Caravans) — one at a time over the active plane.
+// (setPlane and the Overworld/Underworld toggle are gone. The Serpentspine is a realm, reached
+//  through the realm selector or by clicking a cave mouth — docs/realms.md §The Serpentspine was
+//  never a plane.)
+
+// the overlay (None / Nation / Culture / Faith / Caravans) — one at a time over the map.
 // "Caravans" is the live server view (S.overlay === "live"): the running colony + its caravans.
 //
 // `keepSelection` is for the one caller that is not a user choosing an overlay: the band spine
@@ -211,14 +205,12 @@ if (povToggle) povToggle.querySelectorAll("button").forEach(b =>
 // (The mobile hamburger drawer + phone bar-reshuffle were removed — one content-width top bar now
 // serves both landscape and portrait; see styles.css.)
 
-// ---- plane + overlay toggles ----
-document.querySelectorAll("#planeToggle button").forEach(b =>
-  b.addEventListener("click", () => setPlane(b.dataset.plane)));
+// ---- overlay toggles ----
 document.querySelectorAll("#overlayToggle button").forEach(b =>
   b.addEventListener("click", () => setOverlay(b.dataset.ov)));
 // (the top bar's [data-tip] buttons are wired by btntip.mjs, alongside the map controls)
 
-export { resetView, toggleFullscreen, togglePlay, closePanel, setOverlay, setPlane, updateSearchContext };
+export { resetView, toggleFullscreen, togglePlay, closePanel, setOverlay, updateSearchContext };
 
 export function boot() {
   // Hand the band spine the overlay setter, so zooming past band 5 can set the political overlay
@@ -253,15 +245,7 @@ export function boot() {
     ["pointerdown", "mousedown", "click", "touchstart", "wheel"].forEach(t =>
       elm.addEventListener(t, e => e.stopPropagation(), { passive: true })));
   setPov(S.pov);              // paints the camera-POV toggle (default: God)
-  setPlane(S.plane);          // paints the plane toggle
-  // Only Halcann has an underworld (the Serpentspine); hide the plane toggle in the other realms and
-  // pin the surface (docs/realms.md §UI / §Realm is not z — Aelantir/Hinuilands have no z=-1 plane).
-  if (ACTIVE_REALM && ACTIVE_REALM !== "halcann") {
-    const pt = document.getElementById("planeToggle");
-    if (pt) pt.style.display = "none";
-    if (S.plane !== "overworld") setPlane("overworld");
-  }
-  setOverlay(S.overlay);      // paints the overlay chrome/rail (default: none → plain Overworld)
+  setOverlay(S.overlay);      // paints the overlay chrome/rail (default: none → the plain map)
   // apply the ?p=/#p= deep link AFTER first layout — focusProvince needs a sized VIEW, so calling
   // it inline at boot (before the stage has laid out) silently no-ops
   requestAnimationFrame(() => requestAnimationFrame(applyHash));

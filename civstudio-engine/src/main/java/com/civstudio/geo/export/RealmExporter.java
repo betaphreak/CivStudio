@@ -4,7 +4,7 @@ import com.civstudio.data.Exports;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.EnumSet;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 
 import com.civstudio.geo.Continent;
+import com.civstudio.geo.ProvinceType;
 import com.civstudio.geo.Realm;
 
 import tools.jackson.core.type.TypeReference;
@@ -30,24 +31,36 @@ import tools.jackson.databind.ObjectMapper;
  * mvn -pl civstudio-engine compile exec:exec -Dsim.main=com.civstudio.geo.export.RealmExporter
  * </pre>
  *
- * <h2>The four resolution rules (docs/realms.md §The model)</h2>
+ * <h2>The six resolution rules (docs/realms.md §The model)</h2>
  * <ol>
  * <li><b>Quirks → {@link Realm#NONE}.</b> Three provinces are dropped from their realm: the two
  *     antimeridian projection artifacts (the Toreiels) and the Antarctic ice shelf (Ekyunimoy).
  *     They have continents, so this override comes first.</li>
- * <li><b>Land → by {@link Continent}.</b> Any non-water province: {@link
- *     Realm#fromContinent(Continent)} (both Americas → Aelantir, {@code oceania} → Hinuilands, the
- *     rest → Halcann; a continent-less land province → {@link Realm#NONE}).</li>
- * <li><b>Water → adjacent land.</b> A {@code SEA}/{@code LAKE} province takes the realm of the
- *     non-water land it touches. Assigned by adjacency, never by continent (≈50 sea/lake provinces
- *     carry a continent and must be ignored). The data has <b>zero conflicts</b> — no water province
- *     touches land in more than one realm — which this exporter asserts.</li>
- * <li><b>Deep ocean → {@link Realm#NONE}.</b> Water that touches no land (99 provinces) → fog.</li>
+ * <li><b>Underground (and the range's surface) → {@link Realm#SERPENTSPINE}.</b> Every province
+ *     whose {@link ProvinceType#isUnderground()} is true, <em>whatever continent it carries</em> —
+ *     19 holds sit under {@code europe}/{@code asia}/{@code africa} — plus the {@code serpentspine}
+ *     continent's 57 surface walls and passes. 442 land provinces. This runs before rule 3 for the
+ *     sake of those 19; resolving the realm by continent instead strands them (docs/realms.md
+ *     §Serpentspine membership is by type, not continent).</li>
+ * <li><b>Other land → by {@link Continent}.</b> {@link Realm#fromContinent(Continent)}:
+ *     {@code europe} → Cannor, {@code asia} → Haless, {@code africa} → Sarhal, both Americas →
+ *     Aelantir, {@code oceania} → Hinuilands; a continent-less land province → {@link
+ *     Realm#NONE}. (Rules 2 and 3 compose in {@link Realm#forLand}.)</li>
+ * <li><b>Water → the MAJORITY realm of the land it touches.</b> A {@code SEA}/{@code LAKE} province
+ *     takes the realm held by most of the non-water land provinces it borders; ties break on the
+ *     nearest such land, then on the lower {@link Realm} ordinal. Assigned by adjacency, never by
+ *     continent (≈50 sea/lake provinces carry a continent and must be ignored). Ten provinces are
+ *     contested under the six-realm split — all along the Cannor/Sarhal and Haless/Sarhal seams —
+ *     and this reports them rather than failing (docs/realms.md §Six realms contest ten seas).</li>
+ * <li><b>An unplaced {@code LAKE} → nearest land.</b> A lake is enclosed by land by definition, so
+ *     it is never deep ocean; a realm-less one would be an invisible hole in every realm view.</li>
+ * <li><b>Deep ocean → {@link Realm#NONE}.</b> Water that touches no land (90 provinces) → fog.</li>
  * </ol>
  *
- * <p>Plus an <b>assertion</b> (not a rule): the Phase 0 portal waypoints ({@link #PORTAL_WAYPOINTS})
- * must resolve to {@link Realm#HALCANN} and agree with their adjacency endpoints — the guess an
- * earlier design draft made a fourth rule out of, kept here as the cheap check it should have been.
+ * <p>Plus three <b>assertions</b> (not rules), each guarding a way the split can silently go wrong:
+ * every underground province resolves to {@link Realm#SERPENTSPINE} and the realm holds exactly
+ * {@link #SERPENTSPINE_EXPECTED} land provinces; and the Phase 0 portal waypoints ({@link
+ * #PORTAL_WAYPOINTS}) resolve to {@link Realm#CANNOR} and agree with their adjacency endpoints.
  */
 public final class RealmExporter {
 
@@ -61,11 +74,20 @@ public final class RealmExporter {
 	private static final Set<Integer> QUIRKS = Set.of(6237, 6238, 1808);
 
 	/**
-	 * Phase 0 portal waypoints — placeholder-named hubs Anbennar uses as teleporter anchors. Rule 2
-	 * lands them in Halcann via their {@code europe} continent; the assertion below checks their
+	 * Phase 0 portal waypoints — placeholder-named hubs Anbennar uses as teleporter anchors. Rule 3
+	 * lands them in Cannor via their {@code europe} continent; the assertion below checks their
 	 * adjacency endpoints agree.
 	 */
 	private static final Set<Integer> PORTAL_WAYPOINTS = Set.of(7025, 7027, 7030, 7033);
+
+	/**
+	 * The Serpentspine's expected land count: 385 underground provinces (366 on the {@code
+	 * serpentspine} continent, 17 {@code europe}, 1 {@code africa}, 1 {@code asia}) plus the 57
+	 * surface provinces of the {@code serpentspine} continent. Asserted, because the failure mode of
+	 * getting rule 2 wrong is silent: the 19 off-continent holds become invisible polygons in a
+	 * surface realm rather than an error.
+	 */
+	private static final int SERPENTSPINE_EXPECTED = 442;
 
 	private final ObjectMapper mapper = new ObjectMapper();
 
@@ -113,7 +135,7 @@ public final class RealmExporter {
 			Map<Integer, Map<String, Object>> byId) {
 		Map<Integer, Realm> realm = new HashMap<>();
 
-		// pass 1 — quirks → NONE, all non-water land → by continent
+		// pass 1 — quirks → NONE, all non-water land → underground first, then by continent
 		for (Map<String, Object> row : rows) {
 			int id = id(row);
 			if (QUIRKS.contains(id)) {
@@ -122,38 +144,52 @@ public final class RealmExporter {
 			}
 			if (isWater(row))
 				continue; // resolved in pass 2
-			realm.put(id, Realm.fromContinent(Continent.fromKey((String) row.get("continent"))));
+			realm.put(id, Realm.forLand(type(row), Continent.fromKey((String) row.get("continent"))));
 		}
 
-		// pass 2 — water → the realm of the non-water land it touches (0 → deep ocean, 1 → that
-		// realm, ≥2 → conflict). Depends only on pass 1, so no fixpoint is needed.
-		int conflicts = 0;
+		// pass 2 — water → the MAJORITY realm among the non-water land it touches (0 → deep ocean).
+		// Depends only on pass 1, so no fixpoint is needed.
+		//
+		// Under three realms every water province touched at most one, and this asserted it. Splitting
+		// Halcann puts Cannor, Sarhal and Haless on opposite shores of the same inland waters, so ten
+		// provinces are now contested — eight of them 4:1 or wider, and the closest a 4:3 strait. The
+		// vote is deterministic (no seed, no iteration order): most borders wins, then nearest land,
+		// then the lower Realm ordinal. NONE is not an option — a realm-less sea is an invisible hole
+		// in every view, and these are coastal waters, not deep ocean.
+		int contested = 0;
 		for (Map<String, Object> row : rows) {
 			int id = id(row);
 			if (QUIRKS.contains(id) || !isWater(row))
 				continue;
-			EnumSet<Realm> touched = EnumSet.noneOf(Realm.class);
+			Map<Realm, Integer> votes = new EnumMap<>(Realm.class);
+			Map<Realm, Double> nearest = new EnumMap<>(Realm.class);
 			for (int nb : neighbors(row)) {
 				Map<String, Object> n = byId.get(nb);
 				if (n == null || isWater(n) || QUIRKS.contains(nb))
 					continue;
 				Realm r = realm.get(nb);
-				if (r != null && r != Realm.NONE)
-					touched.add(r);
+				if (r == null || r == Realm.NONE)
+					continue;
+				votes.merge(r, 1, Integer::sum);
+				nearest.merge(r, dist2(row, n), Math::min);
 			}
-			if (touched.size() == 1) {
-				realm.put(id, touched.iterator().next());
-			} else {
-				realm.put(id, Realm.NONE);
-				if (touched.size() > 1) {
-					conflicts++;
-					System.out.println("  WATER CONFLICT " + id + " " + row.get("name") + " " + touched);
-				}
+			if (votes.isEmpty()) {
+				realm.put(id, Realm.NONE); // deep ocean (rule 6); a LAKE here is caught by pass 3
+				continue;
+			}
+			Realm won = null;
+			for (Realm r : votes.keySet())
+				if (won == null || better(votes, nearest, r, won))
+					won = r;
+			realm.put(id, won);
+			if (votes.size() > 1) {
+				contested++;
+				System.out.println("  CONTESTED WATER " + id + " " + row.get("name") + " " + votes
+						+ " → " + won);
 			}
 		}
-		if (conflicts != 0)
-			throw new IllegalStateException(conflicts + " water provinces touch more than one realm"
-					+ " — the partition is not clean (docs/realms.md §The ocean splits cleanly)");
+		System.out.println("  " + contested + " water provinces touch more than one realm, resolved by"
+				+ " majority (docs/realms.md §Six realms contest ten seas)");
 
 		// pass 3 — LAKES that rule 3 could not place, by NEAREST LAND.
 		//
@@ -205,15 +241,34 @@ public final class RealmExporter {
 				throw new IllegalStateException("lake " + id(row) + " " + row.get("name")
 						+ " is still realm-less — it would be invisible in every realm view");
 
-		// assertion — portal waypoints resolve to Halcann and agree with their endpoints
+		// assertion — every underground province is Serpentspine, and the realm is the expected size.
+		// Rule 2's failure mode is silent (19 off-continent holds marooned as invisible polygons in a
+		// surface realm), so it is checked rather than trusted.
+		int spine = 0;
+		for (Map<String, Object> row : rows) {
+			int id = id(row);
+			if (isWater(row) || QUIRKS.contains(id))
+				continue;
+			if (realm.get(id) == Realm.SERPENTSPINE)
+				spine++;
+			else if (type(row).isUnderground())
+				throw new IllegalStateException("underground province " + id + " " + row.get("name")
+						+ " resolved to " + realm.get(id) + ", expected SERPENTSPINE"
+						+ " (docs/realms.md §Serpentspine membership is by type, not continent)");
+		}
+		if (spine != SERPENTSPINE_EXPECTED)
+			throw new IllegalStateException("Serpentspine holds " + spine + " land provinces, expected "
+					+ SERPENTSPINE_EXPECTED + " (385 underground + 57 surface walls/passes)");
+
+		// assertion — portal waypoints resolve to Cannor and agree with their endpoints
 		for (int id : PORTAL_WAYPOINTS) {
 			Map<String, Object> row = byId.get(id);
 			if (row == null)
 				continue;
 			Realm r = realm.get(id);
-			if (r != Realm.HALCANN)
+			if (r != Realm.CANNOR)
 				throw new IllegalStateException("portal waypoint " + id + " resolved to " + r
-						+ ", expected HALCANN (docs/realms.md §The model)");
+						+ ", expected CANNOR (docs/realms.md §The model)");
 			for (int nb : neighbors(row)) {
 				Realm nr = realm.get(nb);
 				if (nr != null && nr != Realm.NONE && nr != r)
@@ -239,6 +294,27 @@ public final class RealmExporter {
 
 	private static int id(Map<String, Object> row) {
 		return ((Number) row.get("id")).intValue();
+	}
+
+	/**
+	 * Whether realm {@code a} beats realm {@code b} for a contested water province: more bordering
+	 * land provinces first, then the nearer of the two, then the lower enum ordinal. Total and
+	 * deterministic — every tie has a next tiebreak, and the last one cannot tie.
+	 */
+	private static boolean better(Map<Realm, Integer> votes, Map<Realm, Double> nearest, Realm a,
+			Realm b) {
+		int va = votes.get(a), vb = votes.get(b);
+		if (va != vb)
+			return va > vb;
+		double da = nearest.get(a), db = nearest.get(b);
+		if (da != db)
+			return da < db;
+		return a.ordinal() < b.ordinal();
+	}
+
+	/** A row's {@link ProvinceType}. */
+	private static ProvinceType type(Map<String, Object> row) {
+		return ProvinceType.valueOf((String) row.get("type"));
 	}
 
 	/**

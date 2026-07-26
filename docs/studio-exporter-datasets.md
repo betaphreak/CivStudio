@@ -29,7 +29,7 @@ live under `com.civstudio.{geo,tech,settlement,good}.export`.
 
 Enum value sets (from real data):
 - Province `type` = LAND, CAVERN, DWARVEN_HOLD, DWARVEN_HOLD_SURFACE, DWARVEN_ROAD, ANCIENT_FOREST, GLADEWAY, FEY_GLADEWAY, BLOODGROVES, MUSHROOM_FOREST, SHADOW_SWAMP, GLACIER, SEA, LAKE, IMPASSABLE
-- `realm` = halcann, aelantir, hinuilands (NONE = absent); `continent` = europe, serpentspine, asia, africa, north_america, south_america, oceania
+- `realm` = cannor, serpentspine, haless, sarhal, aelantir, hinuilands (NONE = absent; `halcann` is a RETIRED value kept readable — docs/realms.md §Halcann must be migrated); `continent` = europe, serpentspine, asia, africa, north_america, south_america, oceania
 - `winter`/`monsoon` = mild, normal, severe (NONE); `climate` = arctic, arid, tropical (TEMPERATE = default/absent)
 
 ## B. Tech tree — `generated/*.json`

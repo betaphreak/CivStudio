@@ -35,7 +35,7 @@ console.log('World map page iframe src:', pageSrc);
 await page.screenshot({ path: 'worldmap-page.png', fullPage: false });
 
 // deep link forwarding
-await page.goto(`${base}/admin/civstudio-map?p=${provinceId}&realm=halcann`,
+await page.goto(`${base}/admin/civstudio-map?p=${provinceId}&realm=cannor`,
   { waitUntil: 'domcontentloaded', timeout: 60000 });
 await page.waitForSelector('main iframe', { timeout: 60000 });
 const deepSrc = await (await page.$('main iframe')).getAttribute('src');

@@ -63,14 +63,10 @@ const _forceProps = typeof location !== "undefined"
   ? new URLSearchParams(location.search).get("props") : null;
 export const props3D = () => _forceProps !== "0" && ground3D();
 
-export const ground3D = () =>
-  // The UNDERWORLD keeps the 2D ground at every band. Its plots come through the same drawPlots (called
-  // as drawPlots(isUnderground) by main.drawCavernPlots), so suppressing the blits there without a mesh to
-  // replace them would leave the Serpentspine empty at band 5 — and terrain3d deliberately builds no
-  // meshes for z=-1, which is a second plane with its own veil and rims (docs/underworld.md). z-levels are
-  // P2 territory; until then the plane toggle is also the 3D toggle.
-  S.plane !== "underworld"
-  && _has3D && (_force3D === "1" || atLeast(BAND.LOCALE));
+// (The UNDERWORLD used to be exempt here: with no mesh for z=-1 it had to keep the 2D ground at every
+// band. The Serpentspine is an ordinary realm now — terrain3d meshes its provinces like any other — so
+// the exemption went with the plane. docs/realms.md §The Serpentspine was never a plane.)
+export const ground3D = () => _has3D && (_force3D === "1" || atLeast(BAND.LOCALE));
 // POLITICAL NO LONGER BLOCKS THE 3D GROUND, and that inversion is the whole shape of the current
 // design. It used to: the plot layer was gated `notPolitical`, so in nation/culture/faith mode no
 // province built a texture and a 3D ground would have draped nothing. Now the two are the two ENDS
@@ -105,12 +101,9 @@ const RELEASE_AT = BAND.LOCALE, RESTORE_BELOW = BAND.LOCALE - 0.35;
 /**
  * Reconcile the overlay with the zoom. Called once per frame, from the frame body — draw() is
  * rAF-coalesced and idempotent, so the setOverlay inside simply schedules the next frame.
- *
- * The UNDERWORLD is exempt at every band: it has no 3D ground to hand over to, so its political
- * overlay stays whatever the user chose.
  */
 export function syncOverlayToZoom() {
-  if (!_setOverlay || S.plane === "underworld") return;
+  if (!_setOverlay) return;
   const b = band();
   if (_released === null && b >= RELEASE_AT && isPolitical()) {
     _released = S.overlay;

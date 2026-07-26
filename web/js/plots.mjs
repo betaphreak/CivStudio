@@ -206,8 +206,9 @@ function drawPlots(only) {
   // loadPlots, the per-frame build budget and the bonus overlay are all machinery terrain3d would
   // otherwise have to reimplement; it reads `p._tcanvas`/`_tbox` straight off what this pass keeps.
   //
-  // The UNDERWORLD is the one that still blits. z=−1 has no mesh (terrain3d builds none), so ground3D
-  // is false there at every band and the 2D ground below is the only Serpentspine there is.
+  // The 2D blits below therefore only run when the 3D ground is absent — below band 5, or with 3D
+  // unavailable. (They used to be the Serpentspine's only ground, because z=−1 got no mesh; the
+  // Serpentspine is an ordinary realm now and terrain3d meshes it like any other.)
   const blit = !ground3D();
   // Real textures from band 4 (16×). Flat tiles while panning — but ONLY in 2D, where the flat
   // 1px/plot offscreen is a real stand-in that keeps a pan cheap. Under the 3D ground there is no

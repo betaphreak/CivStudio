@@ -5,7 +5,7 @@
 //
 // The last and largest seam out of panel.mjs (see clock.mjs's header): ~220 lines of the 690 it
 // started at. It depends outward only — core/plots/politics — and nothing here imports panel, so
-// the panel<->techtree and panel<->plotfetch cycles go with it. panel keeps setOverlay/setPlane
+// the panel<->techtree and panel<->plotfetch cycles go with it. panel keeps setOverlay
 // (the mode toggles that DRIVE the rail) and re-exports renderRail/showRail/selectProvince, which
 // plotfetch.mjs, techtree.mjs and advisor-detail.mjs already import from it.
 import { P, provGeo, terrainRgb, TRADE_GOODS, S, isPolitical } from "./core.mjs";

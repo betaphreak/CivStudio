@@ -284,10 +284,14 @@ const map = bakeTerrain(provinces);
 
 // ---- per-realm crops + background bakes (docs/realms.md Phase 3 — Crop and bake) ----
 // Each realm crops to its own provinces' pixel extent, baked at up to 2816px — so it spends the same
-// output budget on ~45% of the world, roughly 2× the detail. The whole-world `map` above stays the
-// DEFAULT view; the client selects a realm's crop via ?realm= (Phase 5 turns that into the dropdown
-// default). Realm.NONE provinces (the 3 quirks + deep ocean) belong to no realm and are not baked.
-const REALM_KEYS = ['halcann', 'aelantir', 'hinuilands'];
+// output budget on ~27-41% of the world, several times the detail. The whole-world `map` above stays
+// the fallback; the client selects a realm's crop via ?realm=, defaulting to Cannor. Realm.NONE
+// provinces (the 3 quirks + deep ocean) belong to no realm and are not baked.
+//
+// SIX realms since the split (docs/realms.md §The six realms): Halcann became Cannor / Serpentspine /
+// Haless / Sarhal. Nothing else in this loop changed — the bake was already generic over a province
+// set, which is what made the split cheap.
+const REALM_KEYS = ['cannor', 'serpentspine', 'haless', 'sarhal', 'aelantir', 'hinuilands'];
 const realms = {};
 for (const rk of REALM_KEYS) {
   const rprovs = provinces.filter(p => p.realm === rk);
@@ -297,9 +301,35 @@ for (const rk of REALM_KEYS) {
   console.log(`  realm ${rk}: ${rprovs.length} provinces, crop ${realms[rk].map.dw}×${realms[rk].map.dh}px`);
 }
 
+// ---- `--realms-only`: rebake the realm crops and nothing else ----
+// A realm split changes which provinces each crop holds, so the six backgrounds and their crop rects
+// have to be rebaked — but nothing ELSE about the assets moved, and a full run would rebuild every
+// Civ4/Civ6-derived asset in the tree. On a machine whose .civ6-cache junction is dangling (the SDK is
+// not a checkout — it is an installed Steam depot) that silently DEGRADES art this change has no
+// business touching. So: bake the realms, patch the two manifest keys that describe them, stop.
+//
+// The whole-world `map` above is rebaked too and written back, deliberately: it is derived from the
+// same two inputs and is deterministic, so it either comes out identical or something upstream moved
+// and we want to know.
+if (process.argv.includes('--realms-only')) {
+  // the bakes only QUEUE their pixels (IMAGE_QUEUE); nothing is on disk until flushImages encodes it,
+  // which the full run does much further down — so this path has to flush its own queue
+  const sizes = await flushImages(path.join(WEB, 'assets'));
+  const mp = path.join(ROOT, 'civstudio-server/src/main/resources/map/web-asset-manifest.json');
+  const prev = JSON.parse(fs.readFileSync(mp, 'utf8'));
+  const dropped = Object.keys(prev.realms || {}).filter(k => !(k in realms));
+  fs.writeFileSync(mp, JSON.stringify({ ...prev, map, realms }));
+  for (const [k, v] of Object.entries(realms))
+    console.log(`  ${k.padEnd(13)} ${v.map.src} ${((sizes[v.map.src.replace('assets/', '')] || 0) / 1024).toFixed(0)} KB`);
+  console.log(`--realms-only: rebaked ${Object.keys(realms).length} realm crops + the whole-world map;`
+    + ` patched map/realms in ${path.relative(ROOT, mp)}`
+    + (dropped.length ? ` (dropped: ${dropped.join(', ')} — delete its stale webp)` : ''));
+  process.exit(0);
+}
+
 // Fail loudly if a realm's provinces straddle the antimeridian (non-contiguous in x). Every realm is
 // contiguous once the three quirks are Realm.NONE (docs/realms.md §Three quirk provinces), and each is
-// ≤46% of the raster wide — so a span past ~70% means a seam-straddling province slipped in. Drop it or
+// ≤41% of the raster wide — so a span past ~70% means a seam-straddling province slipped in. Drop it or
 // fix its continent; the roll does not come back to accommodate it (§Assert the no-roll invariant).
 function assertContiguousX(provs, realmKey) {
   const W = 5632;
@@ -638,11 +668,19 @@ function bakeTerrain(provs, name = 'terrain/terrain', realmKey = null) {
   const idxAt = (x, y) => buf[dataOff + (H - 1 - y) * W + x];  // 8-bit, bottom-up, W is 4-aligned
   // realm fog mask (docs/realms.md §The background is baked): when baking one realm, resolve each land
   // pixel's province→realm from provinces.bmp and DROP the pixels that belong to another realm (the
-  // Atlantic overlap — Brazil's tip in Halcann's crop, Cannor in Aelantir's). A dropped pixel is
+  // Atlantic overlap — Brazil's tip in Cannor's crop, Cannor in Aelantir's). A dropped pixel is
   // treated exactly like a sea sub-pixel below (excluded from colour, lowers alpha), so foreign land
   // reads as the realm's surrounding ocean rather than a stray coastline. Pixel-accurate to the paint,
   // free per frame. The whole-world bake passes realmKey=null and masks nothing.
+  //
+  // ONE EXCEPTION, and it is the only asymmetry in the scheme: a SURFACE realm keeps the Serpentspine's
+  // pixels (docs/realms.md §The Serpentspine is the one exception). Fogging them would carve a ragged
+  // void along Cannor's south-east border and punch 19 holes into the middle of three realms where the
+  // deep holds sit — and it would be a lie, because you can see the mountains. They stay baked ground
+  // with no polygon, no hover and no plots, which is exactly what the old z=0 surface plane showed. The
+  // reverse does NOT hold: inside the Serpentspine there is no sky, so the surface realms fog normally.
   const pr = realmKey ? provinceRealmLookup() : null;
+  const keepSpine = realmKey && realmKey !== 'serpentspine';
   const TINT = terrainTint(terrainRealColors());
   // latitude cooling: terrain.bmp ignores latitude (it paints the far north green), so tint the
   // high-latitude land pixels toward a pale tundra tone by the C2C temperature model — mirrors
@@ -681,7 +719,10 @@ function bakeTerrain(provs, name = 'terrain/terrain', realmKey = null) {
           ntot++;
           const idx = idxAt(xx, yy);
           if (WATER.has(idx)) continue;      // sea sub-pixel: excluded from colour, lowers alpha
-          if (pr && realmAt(pr, xx, yy) !== realmKey) continue;   // foreign land → fogged (see the mask note above)
+          if (pr) {                                  // foreign land → fogged (see the mask note above)
+            const pxRealm = realmAt(pr, xx, yy);
+            if (pxRealm !== realmKey && !(keepSpine && pxRealm === 'serpentspine')) continue;
+          }
           const t = TINT[idx]; r += t[0]; g += t[1]; b += t[2]; nl++;
         }
       const k = j * dw + i, o = k * 3;

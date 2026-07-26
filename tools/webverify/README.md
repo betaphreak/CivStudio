@@ -37,6 +37,16 @@ the given zoom, waits for the terrain to bake, and screenshots the viewport — 
 Use this to eyeball deep-zoom terrain/blend/feature changes instead of hand-rolling a Playwright
 script each time. Needs a bundle server up (local `spring-boot:run`, or the deployed one via `--live=`).
 
+### `realmsplit-verify.mjs` — the six realms, end to end
+```bash
+node realmsplit-verify.mjs [webBase=http://localhost:3000] [serverBase=http://localhost:8080]
+```
+Loads each of the six realms (docs/realms.md §The six realms) and asserts it crops to its own baked
+background with the right province count and no console errors; then checks the retired `?realm=halcann`
+key resolves to Cannor and is rewritten out of the URL, that the Overworld/Underworld toggle is gone,
+and that a deep link to Marrhold lands in the Serpentspine. Exits non-zero on any failure, so it works
+as a gate. Needs the local stack up (`pwsh tools/dev-local.ps1`).
+
 ### `seabed-shot.mjs` — screenshot a shelf (the water-terrain art)
 ```bash
 node seabed-shot.mjs <provId> <zoom> <outPng> [waitMs] [base] [server]

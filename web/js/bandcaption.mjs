@@ -14,7 +14,7 @@
 //      or invented value.
 //
 // See docs/zoom-bands.md §Band caption.
-import { P, VIEW, TRADE_GOODS, provGeo, S, provOnScreen, isUnderground, pll } from "./core.mjs";
+import { P, VIEW, TRADE_GOODS, provGeo, S, provOnScreen, pll } from "./core.mjs";
 import { band, BAND, BAND_NAMES } from "./bands.mjs";
 import { prettyKey } from "./plotlabel.mjs";
 import { landPlots, plotsPending, majorityTerrain, urbanCount } from "./plotstats.mjs";
@@ -38,10 +38,8 @@ export function viewportFocus() {
   _focus = provinceAt(VIEW.w / 2, VIEW.h / 2) || largestVisibleLand();
   return _focus;
 }
-// the underground provinces are only lit on the Underworld plane and the surface only on the
-// Overworld — the caption must not name a cave you cannot see (mirrors the plane gating the layer
-// registry applies via z-levels)
-const planeShows = p => (S.plane === "underworld") === isUnderground(p);
+// (There is no plane filter here any more: `P` holds only the active realm's provinces, so the
+// caption can never name a cave on another map. docs/realms.md §The Serpentspine was never a plane.)
 // fallback subject when the crosshair sits on open ocean: the biggest visible LANDmass. Water bodies
 // are excluded by type as well as by weight — a lake or sea is never "where I am". (landPlots, not
 // p.plots: the raw field counts water and would pick an ocean — see plotstats.mjs.)
@@ -49,7 +47,7 @@ function largestVisibleLand() {
   let best = null, bw = 0;
   for (const p of P) {
     if (p.type === "SEA" || p.type === "LAKE") continue;
-    if (!planeShows(p) || !provOnScreen(p)) continue;
+    if (!provOnScreen(p)) continue;
     const w = landPlots(p);
     if (w > bw) { bw = w; best = p; }
   }

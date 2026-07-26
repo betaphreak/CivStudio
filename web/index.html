@@ -35,7 +35,6 @@
     #advisorToggle .adv-ico{font-size:11px;line-height:1;filter:saturate(.85)}
     /* the Main Map segment doubles as the zoom-band readout (icon + band name, tinted by regime) */
     #advisorToggle .adv-zoom .rg-ico{font-size:12px;line-height:1}
-    #advisorToggle .adv-zoom .rg-plane{opacity:.68;font-weight:500}
     #advisorToggle .adv-zoom[data-regime="atlas"] .rg-name{color:#7fb0ff}
     #advisorToggle .adv-zoom[data-regime="overland"] .rg-name{color:#e8b76a}
     #advisorToggle .adv-zoom[data-regime="ground"] .rg-name{color:#e39a67}
@@ -146,12 +145,6 @@
       <div class="advisor-sub" data-sub="technology" hidden>
         <div id="techEras" class="segToggle tech-eras" role="group" aria-label="Jump to era"></div>
         <button class="advisor-court" hidden></button>
-      </div>
-      <div class="advisor-sub" data-sub="globe" hidden>
-        <div id="planeToggle" class="segToggle" role="group" aria-label="Map plane">
-          <button data-plane="overworld" aria-pressed="true" data-tip="Surface world — the physical terrain map">Overworld</button>
-          <button data-plane="underworld" aria-pressed="false" data-tip="Subterranean world — the underground Serpentspine">Underworld</button>
-        </div>
       </div>
       <!-- Zeitgeist = the live/social/account advisor: LIVE badge + the play/speed transport + the
            sign-in handle/logout (auth.mjs renders into #siteAuth wherever it lives). Relocated here
@@ -729,7 +722,10 @@
     // connect, fetch, then ask. That is also why this cannot simply replace the server picker in
     // place; it is a later step, not a substitute in the same slot.
     var REALM_BLURB = {
-      halcann: "The Old World, and the Serpentspine beneath it",
+      cannor: "The Old World's west — Anbennar's heartland",
+      serpentspine: "The Dwarovar, under the mountains — sunless, and rich",
+      haless: "The far east",
+      sarhal: "The southern continent",
       aelantir: "The New World, across the ocean",
       hinuilands: "A far scattering — viewable only",
     };
@@ -738,7 +734,7 @@
      *
      * No, if the URL already answers — either by naming the realm outright, or by naming a PLACE
      * (?p= / ?z=). A shared link means "look at this", and the place implies its realm: core.mjs
-     * defaults to Halcann and the app crosses to another realm by itself when the province lives
+     * defaults to Cannor and the app crosses to another realm by itself when the province lives
      * there. Asking anyway is the same friction the lobby used to add to a deep link, and worse,
      * because it stops the map from loading at all until someone answers.
      *
@@ -789,8 +785,10 @@
       if (!pick || !list) return Promise.resolve();
       if (bar) bar.hidden = true;
       list.innerHTML = "";
-      var activeRealm = params.get("realm")
-        || (window.BUNDLE && window.BUNDLE.realms && window.BUNDLE.realms.halcann ? "halcann" : null);
+      // `halcann` is the retired Old-World realm key, resolved to Cannor the same way core.mjs does
+      // (docs/realms.md §Halcann must be migrated, not just renamed)
+      var activeRealm = (params.get("realm") === "halcann" ? "cannor" : params.get("realm"))
+        || (realms.cannor ? "cannor" : null);
       return new Promise(function (resolve) {
         keys.forEach(function (k, i) {
           var b = document.createElement("button");
@@ -799,7 +797,9 @@
           b.className = "ld-srv" + (!over && i === 0 ? " is-default" : "") + (current ? " is-current" : "");
           b.setAttribute("role", "option");
           var n = counts[k] || 0;
-          b.innerHTML = '<span class="ld-srv-label">' + k.charAt(0).toUpperCase() + k.slice(1) + "</span>"
+          var nm = (window.BUNDLE.geoNames && window.BUNDLE.geoNames.realm
+            && window.BUNDLE.geoNames.realm[k]) || (k.charAt(0).toUpperCase() + k.slice(1));
+          b.innerHTML = '<span class="ld-srv-label">' + nm + "</span>"
             + '<span class="ld-srv-host">' + (REALM_BLURB[k] || "") + "</span>"
             + '<span class="ld-srv-ver">' + (current ? "here · " : "") + n.toLocaleString("en-US") + " provinces</span>";
           b.addEventListener("click", function () {
@@ -821,7 +821,7 @@
               var u = new URL(location.href);
               u.searchParams.set("realm", k);
               history.replaceState(null, "", u.toString());
-            } catch (e) { /* file:// or a locked-down browser — core.mjs then defaults to halcann */ }
+            } catch (e) { /* file:// or a locked-down browser — core.mjs then defaults to cannor */ }
             openLobbyDuringLoad(base);
             resolve();
           });

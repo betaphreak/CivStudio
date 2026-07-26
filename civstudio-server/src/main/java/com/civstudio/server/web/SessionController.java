@@ -172,11 +172,12 @@ public class SessionController {
 	}
 
 	// The realm a run lives in — the realm of its anchor province. Opening the run switches the client's
-	// map to this realm; defaults to Halcann when the anchor has no realm (or the map is unavailable).
+	// map to this realm; defaults to Cannor when the anchor has no realm (or the map is unavailable) —
+	// the same default a bare URL takes, and the realm the retired `halcann` key resolves to.
 	private static String realmKey(WorldMap map, int provinceId) {
 		com.civstudio.geo.Province p = map == null ? null : map.province(provinceId);
 		com.civstudio.geo.Realm r = p != null ? p.realm() : com.civstudio.geo.Realm.NONE;
-		return r == com.civstudio.geo.Realm.NONE ? "halcann" : r.rawKey();
+		return r == com.civstudio.geo.Realm.NONE ? com.civstudio.geo.Realm.CANNOR.rawKey() : r.rawKey();
 	}
 
 	@PostMapping

@@ -1,12 +1,12 @@
 "use strict";
 // The Privy Council — a Civ4-style advisor-mode selector layered ABOVE the existing render
 // states. Each advisor is a top-bar segment that fills/recolours the canvas and swaps a
-// second-row sub-control strip. Choosing one maps onto the low-level S.overlay / S.plane /
+// second-row sub-control strip. Choosing one maps onto the low-level S.overlay /
 // S.techOpen states the LAYERS registry already gates on (layers.mjs) — the render pipeline is
 // unchanged; this only groups the controls and drives the existing panel.mjs handlers.
 // See docs/privy-council.md.
 import { S, BUNDLE, RELIGIONS, COUNTRIES, ACTIVE_REALM, switchRealm } from "./core.mjs";
-import { setOverlay, setPlane, updateSearchContext } from "./panel.mjs";
+import { setOverlay, updateSearchContext } from "./panel.mjs";
 import { viewportFocus } from "./bandcaption.mjs";
 import { prettyKey } from "./plotlabel.mjs";
 import { openTech, closeTech } from "./techtree.mjs";
@@ -53,7 +53,7 @@ let selectorEl, subbarEl;
 
 /**
  * Switch to advisor `id`, mapping it onto the render states the LAYERS gates honour. Modelled on
- * panel.mjs setOverlay: it drives the existing handlers (setOverlay / setPlane / openTech), so all
+ * panel.mjs setOverlay: it drives the existing handlers (setOverlay / openTech), so all
  * their side effects (live SSE connect/disconnect, clock, search context, rail) are reused.
  */
 export function setAdvisor(id) {
@@ -70,7 +70,7 @@ export function setAdvisor(id) {
     case "foreign":    setOverlay(foreignSub); break;   // nation | culture
     case "religion":   setOverlay("faith"); break;
     case "zeitgeist":  setOverlay("live"); break;
-    case "globe":                                        // Globe = physical map + plane sub-control
+    case "globe":                                        // Globe = the physical map (and the realm chooser)
     case "mainmap":    setOverlay("none"); break;
   }
   paintSelector();
@@ -106,7 +106,7 @@ function buildSelector() {
 }
 
 // The globe segment doubles as the realm dropdown (docs/realms.md §UI): clicking it opens a menu of
-// Lobby + the realms, and still selects the globe advisor so the plane sub-bar shows (Halcann only).
+// Lobby + the six realms, and still selects the globe advisor.
 let _realmMenu = null;
 function realmMenu() {
   if (_realmMenu) return _realmMenu;
@@ -146,7 +146,7 @@ function wireGlobeDropdown(btn) {
   btn.insertAdjacentHTML("beforeend", '<span class="adv-caret">▾</span>');   // signal it opens a chooser
   btn.addEventListener("click", e => {
     e.stopPropagation();
-    setAdvisor("globe");   // still reveal the plane sub-bar (Halcann)
+    setAdvisor("globe");
     if (window.__realms && window.__realms.open) { window.__realms.open(); return; }
     const menu = realmMenu(), open = menu.hidden;
     menu.hidden = true;   // (re)position then reveal, so it tracks the button
@@ -277,8 +277,7 @@ function renderCourt(id) {
     .then(port => { if (S.advisor === id && port) { pic.style.cssText = port.style; pic.hidden = false; } });
 }
 
-// wire the sub-bar's Nation/Culture buttons (Foreign). The Globe plane buttons are the relocated
-// #planeToggle, already wired by panel.mjs; setPlane/setOverlay repaint aria-pressed by data-* attr.
+// wire the sub-bar's Nation/Culture buttons (Foreign). setOverlay repaints aria-pressed by data-* attr.
 function wireSubbar() {
   subbarEl.querySelectorAll('[data-sub="foreign"] [data-ov]').forEach(b =>
     b.addEventListener("click", () => { foreignSub = b.dataset.ov; setOverlay(foreignSub); }));
@@ -288,7 +287,6 @@ function wireSubbar() {
 // second live-feed connect); subsequent user clicks go through setAdvisor.
 function deriveAdvisor() {
   if (S.techOpen) return "technology";
-  if (S.plane === "underworld") return "globe";
   switch (S.overlay) {
     case "live":   return "zeitgeist";
     case "nation":

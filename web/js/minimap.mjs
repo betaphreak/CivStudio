@@ -88,31 +88,26 @@ export function drawMinimap() {
   stage.classList.toggle("mm-on", visible);
   if (!visible) return;
 
-  // on the Underworld plane the surface recedes to a faint ghost, matching main.drawUnderworld's
-  // veil — the caves are the subject there, so the surface thumbnail is dimmed harder and the
-  // framed slice is only half-lit (a ghost, not full brightness), with an amber outline to match.
-  const under = S.plane === "underworld";
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   mctx.clearRect(0, 0, mmW, mmH);
   mctx.imageSmoothingEnabled = true;
   mctx.drawImage(img, 0, 0, mmW, mmH);
-  mctx.fillStyle = under ? "rgba(6,5,11,0.72)" : "rgba(6,9,14,0.22)"; mctx.fillRect(0, 0, mmW, mmH);   // dim the whole thumbnail…
+  mctx.fillStyle = "rgba(6,9,14,0.22)"; mctx.fillRect(0, 0, mmW, mmH);   // dim the whole thumbnail…
 
   const ry = fy0 * mmH, rh = Math.max(2, fh * mmH), rw = fw * mmW, rx = fx0 * mmW;
   // one piece — the map is a finite sheet, so the framed rect never straddles a seam (there is none)
   const pieces = [[rx, rw]];
-  for (const [x, w] of pieces) {                       // re-light the framed slice (undo the dim; kept a ghost underworld)
+  for (const [x, w] of pieces) {                       // re-light the framed slice (undo the dim)
     mctx.save();
     mctx.beginPath(); mctx.rect(x, ry, w, rh); mctx.clip();
-    if (under) mctx.globalAlpha = 0.4;
     mctx.drawImage(img, 0, 0, mmW, mmH);
     mctx.restore();
   }
   for (const [x, w] of pieces) {                       // dark halo + bright/amber outline so it pops
     mctx.lineWidth = 3; mctx.strokeStyle = "rgba(10,14,20,0.9)";
     mctx.strokeRect(x + 0.5, ry + 0.5, Math.max(1, w - 1), Math.max(1, rh - 1));
-    mctx.lineWidth = 1.4; mctx.strokeStyle = under ? "rgba(230,180,120,0.95)" : "rgba(240,244,250,0.95)";
+    mctx.lineWidth = 1.4; mctx.strokeStyle = "rgba(240,244,250,0.95)";
     mctx.strokeRect(x + 0.5, ry + 0.5, Math.max(1, w - 1), Math.max(1, rh - 1));
   }
 }

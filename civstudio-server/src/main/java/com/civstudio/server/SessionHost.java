@@ -504,8 +504,18 @@ public final class SessionHost {
 	private Settlement foundSeat(HostedSession hs) {
 		SimulationConfig cfg = SimulationConfig.DEFAULT;
 		GameSession session = hs.session();
+		com.civstudio.geo.Province anchor = session.getWorldMap().province(hs.spec().provinceId());
 		com.civstudio.geo.Province site = TimelineSites.pick(session.getWorldMap().provinces(),
-				hs.colonies(), session.getWorldMap().province(hs.spec().provinceId()));
+				hs.colonies(), anchor);
+		// A Timeline is one realm's ladder, and the guard for that is HERE — at the founding, not on
+		// the map's edges. Cave mouths are freely walkable (docs/realms.md §Crossing a realm on foot),
+		// so a colony CAN march out of its realm; what it may never do is come into being in another
+		// one. Asserted rather than assumed: `pick` already filters, but this is the invariant, and a
+		// second founding path must not be able to smuggle a colony into a ladder it is not in.
+		if (hs.isTimeline() && anchor != null && !TimelineSites.canFound(site, anchor.realm()))
+			throw new IllegalStateException("Timeline " + hs.id() + " is scoped to " + anchor.realm()
+					+ " but the site " + site.name() + " is in " + site.realm()
+					+ " (docs/realms.md §Ranked is per realm)");
 		Settlement colony = session.newSettlement(site.name(), cfg.startDate(),
 				cfg.meanInitAgeYears(), cfg.targetNStock(), cfg.meanSkillMale(),
 				cfg.meanSkillFemale(), site);

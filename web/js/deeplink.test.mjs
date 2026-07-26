@@ -28,8 +28,8 @@ test('every other parameter survives — realm, session and live are not ours to
   assert.equal(out.searchParams.get('p'), '77');
 });
 
-test('the hash is preserved — it carries the map mode (#none, #underworld)', () => {
-  assert.equal(new URL(selectionUrl(`${BASE}#underworld`, { id: 9 })).hash, '#underworld');
+test('the hash is preserved — it carries the map mode (#none, #nation)', () => {
+  assert.equal(new URL(selectionUrl(`${BASE}#none`, { id: 9 })).hash, '#none');
 });
 
 test('a province without an id is treated as no selection', () => {

@@ -3,7 +3,7 @@
 // coloured by the active dimension (core.polOf / S.overlay), zoom-banded so the map yields to the
 // physical terrain as you dive in, plus the legend/search spotlight. The chrome (legend, entity
 // search, sidebar Politics block) lives in panel.mjs; this module owns only the canvas render.
-import { ctx, cam, P, provPath, provOnScreen, polOf, isPolitical, isUnderground, COUNTRIES, CULTURES, RELIGIONS, K_PLOT, K_TEX, lerp, VIEW, provSrcBox, pxr, pyr, LABEL_FONT, S } from "../core.mjs";
+import { ctx, cam, P, provPath, provOnScreen, polOf, isPolitical, COUNTRIES, CULTURES, RELIGIONS, K_PLOT, K_TEX, lerp, VIEW, provSrcBox, pxr, pyr, LABEL_FONT, S } from "../core.mjs";
 import { draw } from "../repaint.mjs";
 import { loadArt } from "../plotcanvas.mjs";
 import { focusProvinceFit } from "../main.mjs";
@@ -22,20 +22,17 @@ export function hexA(hex, a) {
 // plots appear; past K_TEX only coloured borders remain (plus the hovered province), letting the
 // per-plot terrain read underneath. A province with no value for the dimension never fills.
 export function drawPolitical() {
-  // on the Overworld the underground provinces are hidden, so they take no political colour;
-  // on the Underworld plane they may (they carry owner/culture/faith too)
-  const shown = p => S.plane === "underworld" || !isUnderground(p);
   // Political overlays no longer fade to reveal per-plot terrain (main.renderScene suppresses plots
   // under them), so the fill stays readable at EVERY zoom — a gentle taper past K_PLOT keeps some
   // terrain context — and crisp coloured borders are added once zoomed in for province legibility.
   const a = cam.k < K_PLOT ? 0.58 : lerp(0.52, 0.42, bandAlpha(kBand([K_PLOT, K_TEX])));
-  for (const p of P) if (p.rings && provOnScreen(p) && shown(p)) {
+  for (const p of P) if (p.rings && provOnScreen(p)) {
     const e = polOf(p).e;
     if (e) { ctx.fillStyle = hexA(e.color, a); ctx.fill(provPath(p)); }
   }
   if (cam.k >= K_PLOT) {
     ctx.lineWidth = 1.4;
-    for (const p of P) if (p.rings && provOnScreen(p) && shown(p)) {
+    for (const p of P) if (p.rings && provOnScreen(p)) {
       const e = polOf(p).e;
       if (e) { ctx.strokeStyle = hexA(e.color, 0.9); ctx.stroke(provPath(p)); }
     }
@@ -76,14 +73,15 @@ function flagChipHtml(tag, D = 18) {
 }
 
 // Per-country label anchor: the bbox-area-weighted centroid of the country's owned provinces (source
-// px), cached per plane (ownership is static, so it's built once per plane). Area-weighting sits the
-// label over the country's bulk rather than the midpoint of a sprawling exclave pair.
-let _anchors = { plane: null, map: null };
+// px), built once (ownership is static, and `P` is fixed to the active realm for the page's life).
+// Area-weighting sits the label over the country's bulk rather than the midpoint of a sprawling
+// exclave pair.
+let _anchors = null;
 function countryAnchors() {
-  if (_anchors.plane === S.plane && _anchors.map) return _anchors.map;
+  if (_anchors) return _anchors;
   const acc = new Map();
   for (const p of P) {
-    if (!p.owner || !planeShows(p)) continue;
+    if (!p.owner) continue;
     const box = provSrcBox(p);
     if (!box) continue;
     const area = Math.max(1, (box.x1 - box.x0) * (box.y1 - box.y0));
@@ -94,7 +92,7 @@ function countryAnchors() {
   }
   const map = new Map();
   for (const [tag, a] of acc) map.set(tag, { sx: a.sx / a.area, sy: a.sy / a.area, area: a.area });
-  _anchors = { plane: S.plane, map };
+  _anchors = map;
   return map;
 }
 
@@ -152,20 +150,15 @@ function drawCountryLabels() {
 // import cycle is safe). ----
 const polLegend = document.getElementById("polLegend");
 
-// the active plane restricts which provinces the political panel counts: the Overworld ledger
-// lists only surface polities, the Underworld ledger only underground ones. (Underground provinces
-// share the surface's coordinates — a second map plane — so without this the panel on either plane
-// would include the other's nations.) Matches drawPolitical's per-plane fill.
-const planeShows = p => S.plane === "underworld" ? isUnderground(p) : !isUnderground(p);
-
-// per-overlay province coverage counts (key -> #provinces), cached until the overlay OR plane
-// changes; shared by the legend and the entity search so neither rescans P on every keystroke
-let _cov = { overlay: null, plane: null, map: null };
+// per-overlay province coverage counts (key -> #provinces), cached until the overlay changes;
+// shared by the legend and the entity search so neither rescans P on every keystroke. `P` is the
+// active realm's provinces, so the ledger is already this map's polities and nobody else's.
+let _cov = { overlay: null, map: null };
 export function coverage() {
-  if (_cov.overlay === S.overlay && _cov.plane === S.plane && _cov.map) return _cov.map;
+  if (_cov.overlay === S.overlay && _cov.map) return _cov.map;
   const m = new Map();
-  for (const p of P) { if (!planeShows(p)) continue; const k = polOf(p).key; if (k) m.set(k, (m.get(k) || 0) + 1); }
-  _cov = { overlay: S.overlay, plane: S.plane, map: m };
+  for (const p of P) { const k = polOf(p).key; if (k) m.set(k, (m.get(k) || 0) + 1); }
+  _cov = { overlay: S.overlay, map: m };
   return m;
 }
 const polTable = () => S.overlay === "culture" ? CULTURES : S.overlay === "faith" ? RELIGIONS : COUNTRIES;
@@ -186,7 +179,7 @@ function inViewport(p) {
 // province coverage counts restricted to the current viewport (the ledger lists only what's visible)
 function viewportCoverage() {
   const m = new Map();
-  for (const p of P) { const k = polOf(p).key; if (k && planeShows(p) && inViewport(p)) m.set(k, (m.get(k) || 0) + 1); }
+  for (const p of P) { const k = polOf(p).key; if (k && inViewport(p)) m.set(k, (m.get(k) || 0) + 1); }
   return m;
 }
 
@@ -304,5 +297,6 @@ function applyPolitical(POL) {
     const p = byId.get(r.id); if (!p) continue;
     p.owner = r.o; p.controller = r.ct || r.o; p.culture = r.c; p.religion = r.r;
   }
-  _cov = { overlay: null, plane: null, map: null };   // province keys just changed — invalidate the coverage cache
+  _cov = { overlay: null, map: null };   // province keys just changed — invalidate the coverage cache
+  _anchors = null;                       // ...and the label anchors, which are built from p.owner
 }

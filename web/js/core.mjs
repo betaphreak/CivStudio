@@ -14,13 +14,29 @@ const apiUrl = path => SERVER_BASE + path;
 
 // ---- data prep ----
 // Realm selection (docs/realms.md): the view is cropped to ONE realm — its baked background + minimap
-// (MAP) and its provinces (P). ?realm=<key> picks it; absent or unknown DEFAULTS to Halcann (the Old
-// World). If the server ships no realms block at all (pre-Phase-3), fall back to the whole-world map.
+// (MAP) and its provinces (P). ?realm=<key> picks it; absent or unknown DEFAULTS to Cannor (the Old
+// World's west, and where every legacy link pointed). If the server ships no realms block at all
+// (pre-Phase-3), fall back to the whole-world map.
 // Everything downstream reads MAP/P, so the crop, projection, minimap and province set all follow here.
 const _realmParam = (typeof location !== "undefined"
   ? new URLSearchParams(location.search).get("realm") : "") || "";
-const ACTIVE_REALM = BUNDLE.realms ? (BUNDLE.realms[_realmParam] ? _realmParam : "halcann") : "";
+// `halcann` is the retired Old-World realm, kept as a read-only alias for Cannor so shared links and
+// old session specs keep working (docs/realms.md §Halcann must be migrated, not just renamed). It is
+// resolved here and never written back — switchRealm always emits the real key.
+const LEGACY_REALMS = { halcann: "cannor" };
+const _realmWanted = LEGACY_REALMS[_realmParam] || _realmParam;
+const DEFAULT_REALM = "cannor";
+const ACTIVE_REALM = BUNDLE.realms
+  ? (BUNDLE.realms[_realmWanted] ? _realmWanted : DEFAULT_REALM) : "";
 const _realmActive = !!(BUNDLE.realms && BUNDLE.realms[ACTIVE_REALM]);
+// rewrite a legacy key out of the address bar, so the link the user copies next is the real one
+if (_realmActive && LEGACY_REALMS[_realmParam] && typeof history !== "undefined") {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set("realm", ACTIVE_REALM);
+    history.replaceState(history.state, "", u.toString());
+  } catch { /* file:// or a locked-down browser — the alias still resolved, only the URL lags */ }
+}
 // A realm renders ONLY its provinces: foreign land at the crop edge (outlines, dots, labels) drops out,
 // and cross-realm neighbour/adjacency lines suppress for free (their far endpoint is no longer in P).
 // Also the per-frame perf lever — the cull/hit-test loops shrink to the realm's share.
@@ -201,15 +217,13 @@ function isPolitical() {
   return S.overlay === "nation" || S.overlay === "culture" || S.overlay === "faith";
 }
 // the four underground Dwarovar province types (open caves, holds, roads) — matches
-// ProvinceType.isUnderground(). They are lit only on the Underworld plane and hidden on the
-// Overworld (there is nothing to see of them from the surface). See docs/underworld.md.
+// ProvinceType.isUnderground(). They are the SERPENTSPINE REALM (docs/realms.md §Serpentspine
+// membership is by type, not continent), so `P` already holds them or not according to the active
+// realm; this predicate survives only to mark a cave mouth on a surface realm's map. There is no
+// plane toggle and no z axis: the Dwarovar provinces have their own pixels, so they were never a
+// plane at the same coordinates (docs/realms.md §The Serpentspine was never a plane).
 const UNDERGROUND_TYPES = new Set(["CAVERN", "DWARVEN_HOLD", "DWARVEN_HOLD_SURFACE", "DWARVEN_ROAD"]);
 const isUnderground = p => UNDERGROUND_TYPES.has(p.type);
-// the active z-level being viewed — the vertical axis (docs/zoom-bands.md §Z-levels). Today derived
-// from the binary plane toggle (surface 0, Underworld/Serpentspine −1); when the z-selector + real
-// per-province z land it reads a true active level (Dwarovrod −2, holds −1, …). The layer registry
-// (layers.mjs) skips any layer whose z-set excludes this.
-const activeZ = () => S.plane === "underworld" ? -1 : 0;
 // the active political dimension for a province under the current overlay: its raw key + the
 // {name, color} table entry, or a null entry when the overlay isn't political / the province has none
 function polOf(p) {
@@ -404,8 +418,9 @@ export const S = {
   showHeat: true,
   showCost: false,
   pov: "god",            // camera POV: "god" (free look) | "timeline" (coming soon)
-  // the map plane (exclusive base) and the overlay (one at a time), from the URL hash for deep links
-  plane: /underworld/.test(location.hash) ? "underworld" : "overworld",
+  // the overlay (one at a time), from the URL hash for deep links. There is no `plane`: the
+  // Serpentspine is a REALM now, not a second plane over this one (docs/realms.md §The Serpentspine
+  // was never a plane), so `?realm=serpentspine` is what `#underworld` used to be.
   // DEFAULT TO POLITICAL, because 2D is now the political view and 3D is the terrain one. Out here
   // the map answers "who holds this", and the ground answers it only from band 5 up, where the 3D
   // terrain takes over and bands.releasePolitical drops this overlay. A hash deep-link still forces
@@ -423,8 +438,8 @@ export const S = {
   techOpen: false,       // the tech-tree modal is up — paint() pauses map rendering behind it
   cityOpen: false,       // the city screen is up (same deal: a full-canvas modal over the stage)
   // the active Civ4-style advisor mode (see js/advisors.mjs) — a thin grouping ABOVE the
-  // overlay/plane/techOpen render states it maps onto. Derived from those at init, then owned
-  // by setAdvisor(); the render layer still keys off overlay/plane/techOpen, never this.
+  // overlay/techOpen render states it maps onto. Derived from those at init, then owned
+  // by setAdvisor(); the render layer still keys off overlay/techOpen, never this.
   advisor: "mainmap",
   // Screen-space glyph hit-targets (cave entrances, teleporters), rebuilt by main.paint() each frame
   // and hit-tested by the hover handler. Declared here — not conjured by the first paint — so the
@@ -435,4 +450,4 @@ export const S = {
 };
 
 export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, pll,
-  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, IMPROVEMENT_OVERLAYS, SEA_BANDS, BEACH, FOAM, COAST_MASK, COAST_TILES, HILL_WASH, LAND_BLEND, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, activeZ, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };
+  project, unproject, projectOn, pllOn, setProjector, setGroundHeight, separable, plotPxAt, affineUnproject, TCOL, LABEL_FONT, K_PLOT, K_TEX, K_MAX, TT, RIVER, SEA, SHORE, ICE_ART, BONUS_ICONS, TREES, ROUTES, IMPROVEMENT_OVERLAYS, SEA_BANDS, BEACH, FOAM, COAST_MASK, COAST_TILES, HILL_WASH, LAND_BLEND, TRADE_GOODS, COUNTRIES, CULTURES, RELIGIONS, provGeo, polOf, isPolitical, isUnderground, latAtScreenY, latAtSourceY, LY, NB4, terrainRgb, provSrcBox, provOnScreen, provBoxHas, lerp, provPath, cv, ctx, stage, cssVar, clampAxis, clampPan, BUNDLE, ACTIVE_REALM, switchRealm };

@@ -23,9 +23,15 @@ import com.civstudio.settlement.Settlement;
  * <p>
  * <b>Scoped to one {@link Realm}.</b> A Timeline is a single realm's ranked ladder (docs/realms.md
  * §Ranked is per realm): the realm is the anchor's, and every joiner founds within it — so the
- * royale never spans a boundary the UI cannot see across, and {@link Realm#NONE realm-less} land is
- * never a site. (Start-scoping is only half of it; the cross-realm fey portals are gated closed —
- * docs/realms.md §Crossing a realm on foot is gated — so no colony walks into another ladder.)
+ * royale never spans a boundary the UI cannot see across, and neither {@link Realm#NONE realm-less}
+ * land nor a {@linkplain Realm#isPlayable() view-only} realm is ever a site.
+ * <p>
+ * <b>The scope is the founding, not the road.</b> Under three realms the other half of this was a
+ * closed edge: the only way out of a realm was a fey portal, gated shut, so no colony could walk into
+ * another ladder. The six-realm split ends that — the Serpentspine's 49 cave mouths are ordinary
+ * walkable ground (docs/realms.md §Crossing a realm on foot) — so the invariant moved here, to where
+ * a colony comes into being. Travel between realms is free; <em>founding</em> outside the Timeline's
+ * realm is refused, which no future road, portal or boat can leak.
  */
 public final class TimelineSites {
 
@@ -67,11 +73,25 @@ public final class TimelineSites {
 	}
 
 	/**
-	 * A province worth founding into: settleable land in this Timeline's realm (never {@link
-	 * Realm#NONE}) with room for a colony to grow.
+	 * Whether {@code p} may be founded into for a Timeline scoped to {@code realm} — the check the
+	 * picker filters on, exposed so the founding seam can assert the same thing about a site it did
+	 * not pick (docs/realms.md §Ranked is per realm).
+	 *
+	 * @param p     the candidate province, or {@code null}
+	 * @param realm the Timeline's realm
+	 * @return whether a colony may be founded there
+	 */
+	public static boolean canFound(Province p, Realm realm) {
+		return viable(p, realm);
+	}
+
+	/**
+	 * A province worth founding into: settleable land in this Timeline's realm — which must be a real,
+	 * {@linkplain Realm#isPlayable() playable} map, so never {@link Realm#NONE} and never the
+	 * view-only Hinuilands — with room for a colony to grow.
 	 */
 	private static boolean viable(Province p, Realm realm) {
-		return p != null && p.realm() == realm && p.realm() != Realm.NONE
+		return p != null && p.realm() == realm && realm.isPlayable()
 				&& p.isSettleable() && p.plots() >= Settlement.MIN_FOUNDING_PLOTS;
 	}
 

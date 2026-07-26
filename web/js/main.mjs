@@ -1,7 +1,7 @@
 import { BUNDLE, MAP, VIEW, cam, ctx, cv, stage, P, provPath, provOnScreen, px, clampPan, centerOn, sxSrc, sySrc, baseXr, baseYr, fitView, provSrcBox, K_PLOT, K_TEX, K_MAX, isPolitical, isUnderground, cssVar, S, ACTIVE_REALM, LABEL_FONT, switchRealm, pll, project, pllOn } from "./core.mjs";
 import { bandAlpha, kBand, band, bandName, regime, REGIME_INFO, ground3D, syncOverlayToZoom, BAND } from "./bands.mjs";
 import { renderTerrain3D } from "./terrain3d.mjs";   // the 3D ground, band 5 and deeper
-import { drawPlots } from "./plots.mjs";                       // still used directly by drawCavernPlots
+import { drawPlots } from "./plots.mjs";
 import { scheduleLegendRefresh } from "./overlays/political.mjs";
 import { ensureTiers } from "./overlays/tiers.mjs";
 import { renderLayers, renderScreenLayers } from "./layers.mjs";   // the ordered scene registries (draw order + gating)
@@ -82,7 +82,7 @@ function resize() {
   paint();
 }
 const regimePulseEl = document.getElementById("regimePulse");
-let _sigRegime = null, _sigBand = null, _sigPlane = null, _sigEl = null, _sigCtx = null;
+let _sigRegime = null, _sigBand = null, _sigEl = null, _sigCtx = null;
 // The top-bar readout shows the current BAND NAME (nearest band) tinted + iconed by the interaction
 // REGIME, followed by the live viewport CONTEXT for that band ("Terrain · Sea Tropical" —
 // bandcaption.mjs). It doubles as the mode signal: it stamps the regime on #stage (→ the regime
@@ -99,15 +99,13 @@ function updateRegimeSignal() {
   // the Main Map advisor segment doubles as the zoom-band readout (advisors.mjs builds it as
   // #zoomLevel after this module loads, so resolve it lazily and re-render when it first appears)
   const zoomLabelEl = document.getElementById("zoomLevel");
-  if (r === _sigRegime && bn === _sigBand && S.plane === _sigPlane && zoomLabelEl === _sigEl
-      && ctxText === _sigCtx) return;
+  if (r === _sigRegime && bn === _sigBand && zoomLabelEl === _sigEl && ctxText === _sigCtx) return;
   const info = REGIME_INFO[r];
   if (zoomLabelEl) {
     zoomLabelEl.dataset.regime = r;
-    const plane = S.plane === "underworld" ? ` <span class="rg-plane">· Underworld</span>` : "";
     // the caption is external data (province/plot/colony names) — escape it, never interpolate raw
     const ctx = ctxText ? ` <span class="rg-ctx">· ${escHtml(ctxText)}</span>` : "";
-    zoomLabelEl.innerHTML = `<span class="rg-ico">${info.icon}</span><span class="rg-name">${bn}</span>${ctx}${plane}`;
+    zoomLabelEl.innerHTML = `<span class="rg-ico">${info.icon}</span><span class="rg-name">${bn}</span>${ctx}`;
     zoomLabelEl.dataset.tip = `${info.name} regime · ${bn} band · ${Math.round(cam.k)}×`
       + (ctxText ? ` — ${ctxText}` : "");
   }
@@ -117,7 +115,7 @@ function updateRegimeSignal() {
     void regimePulseEl.offsetWidth;                // reflow so the animation restarts on repeat crossings
     regimePulseEl.classList.add("pulsing");
   }
-  _sigRegime = r; _sigBand = bn; _sigPlane = S.plane; _sigEl = zoomLabelEl; _sigCtx = ctxText;
+  _sigRegime = r; _sigBand = bn; _sigEl = zoomLabelEl; _sigCtx = ctxText;
 }
 // What one frame does. The SCHEDULING of frames (coalescing + the fps cap) lives in repaint.mjs,
 // which owns draw(); this is only the body it runs. The split is what lets the six modules that want
@@ -298,17 +296,19 @@ function drawLakes() {
   for (const p of P) if (p.type === "LAKE" && p.rings && provOnScreen(p)) ctx.fill(provPath(p));
   ctx.restore();
 }
-// surface plots only — underground provinces are relit by drawUnderworld on the Underworld plane.
-function drawSurfacePlots() { drawPlots(isSurface); }
-// province outlines (surface only; underground gets its lit rim from drawUnderworld). They FADE OUT
-// below the province zoom so the coarser tier boundaries take over: gone below ~7.5×, full by ~10×.
+// every province of the active realm — the Serpentspine's cave floors come through here now, like
+// any other ground, rather than through a separate z=-1 blit (docs/realms.md §The Serpentspine was
+// never a plane).
+function drawSurfacePlots() { drawPlots(); }
+// province outlines. They FADE OUT below the province zoom so the coarser tier boundaries take over:
+// gone below ~7.5×, full by ~10×.
 function drawProvinceBorders() {
   const pbA = bandAlpha(kBand([7.5, 10]));
   if (pbA <= 0.01) return;
   ctx.save();
   ctx.globalAlpha = pbA;
   ctx.strokeStyle = "rgba(190,205,230,.18)"; ctx.lineWidth = 0.8;
-  for (const p of P) if (isSurface(p) && p.rings && provOnScreen(p)) ctx.stroke(provPath(p));
+  for (const p of P) if (p.rings && provOnScreen(p)) ctx.stroke(provPath(p));
   ctx.restore();
 }
 // selection/hover stroke thins as you dive — a 2px slab reads heavy against a city block; full ≤ band 3
@@ -357,65 +357,63 @@ function renderScene() {
   renderLayers();
 }
 
-// The Underworld plane (docs/underworld.md), folded into the z=−1 layer set (docs/zoom-bands.md
-// §Z-levels): each of these is a first-class registry entry gated z:[-1] in layers.mjs, so the
-// underground gets the same reorder/regate seam as the surface. Order preserved from the old
-// monolithic drawUnderworld: veil → cave floors → per-plot cave terrain → amber rims. Per
-// world-copy, the veil is the raster's own rect, so adjacent copies abut (no double-darkening).
-
-// veil this copy's map extent so the surface above recedes to a faint ghost
-function drawUnderworldVeil() {
-  ctx.save();
-  ctx.fillStyle = "rgba(6,5,11,0.72)";
-  ctx.fillRect(cam.x + cam.k*VIEW.dx, cam.y + cam.k*VIEW.dy, cam.k*VIEW.dw, cam.k*VIEW.dh);
-  ctx.restore();
-}
-// a warm flat cave floor on every underground polygon — the overview look, and the fallback beneath
-// the per-plot layer for provinces whose plots haven't streamed in yet
-function drawCavernFloors() {
-  ctx.save();
-  ctx.fillStyle = "rgba(60,46,40,0.92)";
-  for (const p of P) if (isUnderground(p) && p.rings && provOnScreen(p)) ctx.fill(provPath(p));
-  ctx.restore();
-}
-// zoomed in: relight the underground provinces' real per-plot cave terrain over the veil (physical
-// view only — the political overlays suppress plots, same as the surface)
-function drawCavernPlots() {
-  if (cam.k >= K_PLOT && !isPolitical()) drawPlots(isUnderground);
-}
-// an amber rim on every underground province, at all zooms, so the caves read as lit
-function drawCavernRims() {
-  ctx.save();
-  ctx.strokeStyle = "rgba(230,180,120,0.6)"; ctx.lineWidth = 1.0;
-  for (const p of P) if (isUnderground(p) && p.rings && provOnScreen(p)) ctx.stroke(provPath(p));
-  ctx.restore();
-}
-const isSurface = p => !isUnderground(p);
-
-// On the Overworld, underground provinces are hidden — so mark the cave entrances: where a
-// surface province borders a hidden underground one (a descent point / gate-hold like Marrhold),
-// draw a small amber cave-mouth glyph on their shared border. Lets you see, from the surface,
-// that a neighbour lies underground. See docs/underworld.md.
+// ---- cave mouths: the way between a surface realm and the Serpentspine ----
+// The Serpentspine is a REALM (docs/realms.md §Serpentspine membership is by type, not continent), so
+// its provinces are simply absent from `P` on a surface map — and the four layers that used to veil the
+// surface, relight the cave floors and rim them in amber went with the z axis they were gated on
+// (§The Serpentspine was never a plane). What survives is the glyph, unchanged: an amber disc with a
+// dark mouth on the shared border, where a province of the active realm touches one of another realm's
+// underground provinces.
+//
+// It draws on BOTH sides — a door on Cannor's map, the way out on the Serpentspine's — and it is
+// deliberately NOT the red realm arrow: an arrow means "this map cannot show you what is over there",
+// and a mountain you are standing next to is not fogged. docs/realms.md §A cave mouth is not an arrow.
+//
 // cave entrance/exit glyph: an outer disc with a dark mouth. The teleporter marker reuses these
 // radii at TELEPORT_SCALE× so a portal reads as a much larger version of the same cave-mouth motif.
 const CAVE_MOUTH_R = 4.5, CAVE_MOUTH_IN = 1.9, TELEPORT_SCALE = 4;
+// A mouth is a border between THIS realm and the Serpentspine, in whichever direction: from the
+// surface it is the NEIGHBOUR that is underground, from inside it is the province you stand on. The
+// underground test is what keeps it from firing on the range's IMPASSABLE surface walls — those are
+// a realm boundary too, and a wall is not a door.
+const isMouth = (p, nb) => nb && nb.realm !== p.realm && (isUnderground(nb) || isUnderground(p));
+function drawMouth(p, nb) {
+  // the shared border is ~midway between the two centroids; bias toward the far side
+  const [ax0, ay0] = pll(p.lon, p.lat), [bx0, by0] = pll(nb.lon, nb.lat);
+  const mx = ax0 * 0.45 + bx0 * 0.55, my = ay0 * 0.45 + by0 * 0.55;
+  if (mx < -20 || mx > VIEW.w + 20 || my < -20 || my > VIEW.h + 20) return;
+  ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_R, 0, 7);
+  ctx.fillStyle = "rgba(232,183,106,0.9)"; ctx.fill();
+  ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_IN, 0, 7);
+  ctx.fillStyle = "rgba(18,10,6,0.92)"; ctx.fill();   // the dark cave mouth
+  // clicking a mouth crosses realms and lands on the far province, at this zoom — the same
+  // switch-realm action the realm arrow fires (maptip.mjs), with a different destination
+  S.markers.push({ x: mx, y: my, r: CAVE_MOUTH_R + 4, realm: nb.realm, prov: nb.id,
+    label: `<b>Cave mouth</b><br><span class="r">${isUnderground(nb) ? "↧" : "↥"} `
+      + `${nb.name} · ${realmNameOf(nb.realm)}</span>` });
+}
 function drawCaveEntrances() {
+  if (!provAllById) return;   // whole-world view: nothing is off-realm, so no crossing to mark
   ctx.save();
+  // 47 of the 49 mouths are ordinary RASTER adjacency — the caves are painted right beside the
+  // ground above them, so a shared border is all a door needs to be
   for (const p of P) {
-    if (isUnderground(p) || !p.nb || !p.rings || !provOnScreen(p)) continue;
+    if (!p.nb || !p.rings || !provOnScreen(p)) continue;
     for (const nbId of p.nb) {
-      const nb = Pby.get(nbId);
-      if (!nb || !isUnderground(nb)) continue;
-      // the shared border is ~midway between the two centroids; bias toward the cave side
-      const [ax0, ay0] = pll(p.lon, p.lat), [bx0, by0] = pll(nb.lon, nb.lat);
-      const mx = ax0 * 0.45 + bx0 * 0.55, my = ay0 * 0.45 + by0 * 0.55;
-      ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_R, 0, 7);
-      ctx.fillStyle = "rgba(232,183,106,0.9)"; ctx.fill();
-      ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_IN, 0, 7);
-      ctx.fillStyle = "rgba(18,10,6,0.92)"; ctx.fill();   // the dark cave mouth
-      S.markers.push({ x: mx, y: my, r: CAVE_MOUTH_R + 4,
-        label: `<b>Cave entrance</b><br><span class="r">↧ ${nb.name}</span>` });
+      const nb = provAllById.get(nbId);
+      if (isMouth(p, nb)) drawMouth(p, nb);
     }
+  }
+  // ...and 2 are AUTHORED rows in adjacencies.csv rather than shared pixels: Nooks Cranny→Noms10
+  // (Anbennar's own comment: "Dwarovar>Valley") and Ovdal Tungr→Kaproya-Telen. drawAdjacencies drops
+  // them — their far endpoint is not in this realm — so they would otherwise be the only two doors
+  // with no glyph. They are not `teleport` rows, so the realm arrow never sees them either.
+  for (const [fromId, toId, , teleport] of (BUNDLE.adjacencies || [])) {
+    if (teleport) continue;                       // a fey portal is an arrow, not a mouth
+    const a = Pby.get(fromId) || Pby.get(toId);   // the in-realm end (Pby holds only this realm)
+    if (!a) continue;
+    const nb = provAllById.get(a.id === fromId ? toId : fromId);
+    if (isMouth(a, nb) && a.rings && provOnScreen(a)) drawMouth(a, nb);
   }
   ctx.restore();
 }
@@ -450,7 +448,6 @@ function drawAdjacencies() {
   if (!adj || !adj.length) return;
   const aA = bandAlpha(kBand([ADJ_MIN_ZOOM - 2, ADJ_MIN_ZOOM + 2]));   // fade in around ~10× (was a hard pop)
   if (aA <= 0.01) return;
-  const under = S.plane === "underworld";
   ctx.save();
   ctx.globalAlpha = aA;
   ctx.lineWidth = 1.4;
@@ -458,8 +455,10 @@ function drawAdjacencies() {
   for (const [fromId, toId, , teleport] of adj) {
     const a = Pby.get(fromId), b = Pby.get(toId);
     if (!a || !b) continue;
-    const tunnel = isUnderground(a) || isUnderground(b);
-    if (under ? !tunnel : tunnel) continue;   // show tunnels only underground, straits only above
+    // no plane filter any more: an adjacency draws when BOTH endpoints are in the active realm, which
+    // Pby already decides. A Dwarovar tunnel is an ordinary row on the Serpentspine's map; a
+    // cross-realm one (Nooks Cranny→Noms10) has no far endpoint here and is dropped, then redrawn as a
+    // cave mouth or a realm arrow. docs/realms.md §A cave mouth is not an arrow.
     if (teleport) {
       // too far for a sensible line — a teleporter: mark each endpoint instead (cave-entrance style),
       // each labelled with the province it warps to
@@ -657,6 +656,5 @@ export { zoomAt, resize, focusProvince, focusProvinceFit, applyHash, hasDeepLink
 // scene-layer draw fns, consumed by the LAYERS registry in layers.mjs (they stay here because they
 // close over main's raster/camera state and the Pby/hatch helpers)
 export { drawRaster, drawLakes, drawSeaCells, drawImpassable, drawSurfacePlots,
-         drawProvinceBorders, drawUnderworldVeil, drawCavernFloors, drawCavernPlots, drawCavernRims,
-         drawCaveEntrances, drawAdjacencies, drawRealmArrows,
+         drawProvinceBorders, drawCaveEntrances, drawAdjacencies, drawRealmArrows,
          drawHoverHighlight, drawSelectedHighlight };

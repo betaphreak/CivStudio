@@ -58,7 +58,9 @@ const ENUMS = {
   provinceType: ['LAND', 'CAVERN', 'DWARVEN_HOLD', 'DWARVEN_HOLD_SURFACE',
     'DWARVEN_ROAD', 'ANCIENT_FOREST', 'GLADEWAY', 'FEY_GLADEWAY', 'BLOODGROVES',
     'MUSHROOM_FOREST', 'SHADOW_SWAMP', 'GLACIER', 'SEA', 'LAKE', 'IMPASSABLE'],
-  realm: ['halcann', 'aelantir', 'hinuilands'],
+  // six realms since the split (docs/realms.md §The six realms). `halcann` is RETAINED as a legacy
+  // value: rows seeded before the split still carry it, and Realm.fromKey resolves it to `cannor`.
+  realm: ['cannor', 'serpentspine', 'haless', 'sarhal', 'aelantir', 'hinuilands', 'halcann'],
   continent: ['europe', 'serpentspine', 'asia', 'africa', 'north_america',
     'south_america', 'oceania'],
   severity: ['mild', 'normal', 'severe'], // winter / monsoon

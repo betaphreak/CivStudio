@@ -1625,7 +1625,17 @@ export interface ApiProvinceProvince extends Struct.CollectionTypeSchema {
         number
       >;
     publishedAt: Schema.Attribute.DateTime;
-    realm: Schema.Attribute.Enumeration<['halcann', 'aelantir', 'hinuilands']> &
+    realm: Schema.Attribute.Enumeration<
+      [
+        'cannor',
+        'serpentspine',
+        'haless',
+        'sarhal',
+        'aelantir',
+        'hinuilands',
+        'halcann',
+      ]
+    > &
       Schema.Attribute.SetPluginOptions<{
         i18n: {
           localized: false;
