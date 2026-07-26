@@ -65,20 +65,39 @@ function checker() {
  *                 being realm-less and leave a real hole in the map when they are.
  *   no-plots    — the province declares plots but the server served an empty array. Only detectable
  *                 after a load has been attempted, so this one lights up as you pan onto it.
+ *
+ * A WRINKLE on that second class, deliberately not fixed here: `plotfetch.loadPlots` calls `draw()`
+ * only `if (p._plots.length)`, so a province that serves NOTHING never triggers the repaint that
+ * would run this layer. The flag is therefore correct but late — it appears on the next pan or zoom,
+ * not the moment the empty response lands. Forcing a redraw on every empty load would also repaint
+ * for the ~176 deep-ocean provinces that are legitimately empty, which is a real cost for a debug
+ * affordance, so the lateness is accepted and recorded instead.
  */
 export function holeReason(p) {
+  if (QUIRKS.has(p.id)) return null;
   if (!p.realm && ACTIVE_REALM && p.type !== "SEA") return "no realm";
   if (p._plots && p._plots.length === 0 && p.plots > 0) return "no plots";
   return null;
 }
 
-let logged = false;
+/**
+ * The three provinces RealmExporter drops from their realm ON PURPOSE (its own `QUIRKS` set): the two
+ * antimeridian projection artifacts and the Antarctic ice shelf. They are realm-less by design, so
+ * flagging them would leave this tool permanently crying wolf over three provinces that are working
+ * as intended — and a debug marker that is always on is a debug marker nobody reads.
+ */
+const QUIRKS = new Set([6237, 6238, 1808]);
+
+let lastKey = null;
 export function drawDebugHoles() {
   if (!DEBUG_HOLES) return;
   const all = (BUNDLE && BUNDLE.provinces) || [];
-  if (!logged) {
-    logged = true;
-    const found = all.filter(holeReason);
+  // Log whenever the SET changes, not once. "no plots" is only knowable after a load has been
+  // attempted, so a one-shot log fires before the interesting cases exist and reports a clean map.
+  const found = all.filter(holeReason);
+  const key = found.map(p => p.id + holeReason(p)).join(",");
+  if (key !== lastKey) {
+    lastKey = key;
     console.warn(`[debug=holes] ${found.length} province(s) flagged:`,
       found.map(p => `${p.id} ${p.name} (${p.type}, ${holeReason(p)})`));
   }

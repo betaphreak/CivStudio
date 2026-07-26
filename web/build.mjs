@@ -978,11 +978,18 @@ function bakeTerrainTiles(colorsHex) {
   const manifest = bundleResourceOpt('/map/terrain-art.json');
   if (!manifest.length) return null;
   const hexRgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
-  // Multi-LoD: one horizontal-strip atlas per tile size. Width = terrains × T must stay under WebP's
-  // 16383px cap, so the tiers are small→deep [128, 256] (a bigger deep tier would need a 2D grid).
+  // ONE tier. This was multi-LoD — a horizontal-strip atlas per tile size, [128, 256] — but the
+  // second tier was never wired up: `plots.mjs` reads TT.src/TT.cols/TT.tile, which are the DEEP
+  // tier, and nothing in web/ or the server has ever read `lods`. So the 128px strip was baked,
+  // shipped and downloaded on every page load (151 KB) without a single pixel of it being drawn.
+  // Dropped rather than finished, because a shallower ground tile buys little: the tile is a
+  // REPEATING pattern stretched over ~8 plots, so even the deep tier is only ~32 px/plot on screen.
+  // The `lods` list is kept in the manifest as the seam if a tier is ever genuinely wanted.
+  //
+  // Width = terrains × T must stay under WebP's 16383px cap (a bigger tier would need a 2D grid).
   // Source per terrain: the C2C detail texture — recoloured to the
   // terrain's display colour either way, so only the ground *pattern* changes, not the map's palette.
-  const LODS = [128, 256];
+  const LODS = [256];
   const cols = {};
   const lods = [];
   let c2cCount = 0, anyDecoded = false, authored = 0;
