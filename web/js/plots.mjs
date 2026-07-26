@@ -82,6 +82,9 @@ const MAX_TEX_PLOTS = 20000;
 // (r*0.55+42, g*0.55+60, b*0.55+76) resolved to, kept so only the STRENGTH now varies
 const RIVER_TINT = [93, 133, 169];
 
+/** Sea/lake province — its plots are all water, which changes how they are sampled and coloured. */
+const isWater = p => p.type === "SEA" || p.type === "LAKE";
+
 // A water plot's colour, interpolated by DEPTH rather than taken flat from its terrain key.
 //
 // The keys are only two-valued (TERRAIN_COAST touching land, TERRAIN_SEA beyond), so a flat fill
@@ -190,7 +193,7 @@ function drawPlots(only) {
       if (!p._tcanvas) {
         if (performance.now() >= buildDeadline) {   // out of frame budget — flat placeholder now, texture next frame
           deferred = true;
-          if (blit && p._pcanvas) { ctx.imageSmoothingEnabled = false; blitProvinceCanvas(p._pcanvas, p._pbox); }
+          if (blit && p._pcanvas) { ctx.imageSmoothingEnabled = isWater(p); blitProvinceCanvas(p._pcanvas, p._pbox); }
           continue;
         }
         buildPlotTexCanvas(p);                       // textured offscreen, built once
@@ -206,8 +209,15 @@ function drawPlots(only) {
       buildPlotCanvas(p, p._plots);                  // flat-colour offscreen, built once
     }
     if (!blit) continue;
-    // the flat offscreen is one pixel PER PLOT → NEAREST sampling; smoothing would smear it to mush
-    ctx.imageSmoothingEnabled = false;
+    // The flat offscreen is one pixel PER PLOT, so LAND takes NEAREST sampling — smoothing would
+    // smear its real ground texture to mush.
+    //
+    // WATER takes the opposite, and this is the coastline staircase in one line. A water plot has no
+    // texture to protect, so nearest-sampling it blows every plot up into a hard square and a run of
+    // them along a diagonal coast IS the staircase — which is why nothing done inside the canvases
+    // ever moved it. Smoothing interpolates between plot centres instead, turning shelfRgb's
+    // shallow→deep ramp into a genuine gradient.
+    ctx.imageSmoothingEnabled = isWater(p);
     blitProvinceCanvas(p._pcanvas, p._pbox);
   }
   ctx.globalAlpha = 1;
@@ -275,26 +285,51 @@ function buildPlotTexCanvas(p) {
   // land-only snow/coast-shallows/feature/river stages (3-4). LAND and wasteland build the full ground.
   const water = p.type === "SEA" || p.type === "LAKE";
   // 1) base terrain as continuous repeating patterns (no per-plot tile seam)
+  //
+  // WATER IS RASTERISED, NOT TILED, and that is the whole fix for the coastline staircase. A water
+  // plot has no texture, so it used to be a flat `fillRect` per plot — which is a hard-edged square,
+  // and a run of them along a diagonal coast is a staircase by construction. Depth-ramping the colour
+  // does not help while each plot is still a square: it only makes the squares differ more gently.
+  //
+  // So water is drawn at ONE PIXEL PER PLOT into a small canvas and blitted back upscaled with
+  // smoothing — the trick the snow cap already uses. The bilinear filter interpolates between plot
+  // centres, so shelfRgb's shallow→deep ramp becomes a genuine gradient and the squares disappear.
+  // Land keeps its per-plot tiling: it HAS texture, and smoothing it would blur the ground.
+  if (water) {
+    const wc = document.createElement("canvas"); wc.width = w; wc.height = h;
+    const wx = wc.getContext("2d"), im = wx.createImageData(w, h);
+    for (const q of p._plots) {
+      const g = q.landDist ? shelfRgb(q) : terrainRgb(q.terrain);
+      const k = ((q.y - y0) * w + (q.x - x0)) * 4;
+      im.data[k] = g[0]; im.data[k + 1] = g[1]; im.data[k + 2] = g[2]; im.data[k + 3] = 255;
+    }
+    wx.putImageData(im, 0, 0);
+    o.imageSmoothingEnabled = true;
+    o.drawImage(wc, 0, 0, w, h, 0, 0, w * tpp, h * tpp);
+  }
   const pat = {};
-  for (const q of p._plots) {
+  if (!water) for (const q of p._plots) {
     const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp;
-    // Shelf water gets a CONTINUOUS colour by depth rather than its terrain key's flat fill. The keys
-    // only carry two values across the shelf — TERRAIN_COAST for the ring touching land, TERRAIN_SEA
-    // beyond it — and painting them as flat squares puts a hard colour step through the middle of the
-    // shelf, which is most of what read as a staircase. landDist (MAP_VERSION 12) gives the real
-    // depth, so the ring boundary becomes a ramp. Land is untouched.
-    if (water && q.landDist) { const g = shelfRgb(q); o.fillStyle = `rgb(${g[0]},${g[1]},${g[2]})`; o.fillRect(cx, cy, tpp, tpp); continue; }
     let pp = pat[q.terrain];
     if (pp === undefined) { const tc = ttTiles && ttTiles[q.terrain]; pp = pat[q.terrain] = tc ? o.createPattern(tc, "repeat") : null; }
     if (pp) { o.fillStyle = pp; o.fillRect(cx, cy, tpp, tpp); }
     else { const g = terrainRgb(q.terrain); o.fillStyle = `rgb(${g[0]},${g[1]},${g[2]})`; o.fillRect(cx, cy, tpp, tpp); }
   }
-  // 2) edge blend: a neighbour's colour feathers over this plot across the shared edge (Civ4 §6.1,
+  // 2) edge blend — LAND ONLY. This is THE coastline staircase, and it hid behind every other
+  // suspect: it feathers a neighbour's terrain colour across each shared edge by drawing per-plot
+  // RECTS (plus a diagonal corner pass), so on a water province it repainted hard plot squares
+  // straight over the smooth rasterised water underneath. Every fix aimed at the water fill was
+  // therefore invisible — the fill was correct, and this drew on top of it. Water needs no edge
+  // blend at all: its 1px/plot rasterisation IS the blend, interpolated by the bilinear upscale.
+  // Found by painting the water fill magenta and seeing the blue squares survive on top of it.
+  //
+  // (original note) a neighbour's colour feathers over this plot across the shared edge (Civ4 §6.1,
   // adapted to the raster — a colour bleed, not a tile swap). A HIGHER-LayerOrder neighbour bleeds
   // strongly; EQUAL-order neighbours bleed mutually at half strength (each side blends the other) so
   // same-layer terrain boundaries — grass/plains/tundra etc. — soften instead of meeting at a hard
   // seam; a LOWER neighbour is skipped here and handled when ITS cell bleeds this one back.
   const f = tpp * 0.85;
+  if (!water) {
   // When a plot is big enough to read its texture (deep/city zoom), feather the neighbour's REAL
   // terrain tile across the edge instead of a flat colour: draw the tile into a per-plot temp,
   // mask it to a soft edge ramp with `destination-in`, and composite it over this plot's base. That
@@ -375,6 +410,7 @@ function buildPlotTexCanvas(p) {
       }
     }
   }
+  }   // end land-only edge/corner blend
   if (!water) {
   // 3) snow on the highest ground. (The elevation-normal hillshade that used to sit here was
   // removed: with EXAG amplifying the gentle continental heightmap, near-flat provinces — most of
