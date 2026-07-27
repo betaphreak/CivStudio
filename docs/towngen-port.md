@@ -647,10 +647,30 @@ off**; T7 is the first user-visible change.
       geometry (integer corners, so coincident vertices compare exactly and no floating-point union
       is needed), while T2 keeps the rules that decide *which* loops to keep — largest component,
       fill land holes, leave lakes.
-- [ ] **T2 — Footprint.** 1444 starting core ∪ built plots (§2.1) → largest connected component →
-      **water-aware** hole-fill (land filled, lakes kept — §7a) → outline asserted as one outer loop
-      plus zero or more water holes. **Ships §5.2.** Testable against a canonical colony without any
-      geometry beyond the outline.
+- [x] **T2 — Footprint.** ✅ **Shipped 2026-07-27.** `Footprint` (pure: cells + a land predicate in,
+      cleaned cells + boundary loops + diagnostics out) and `ColonyFootprint` (the engine adapter),
+      18 tests. 1444 starting core ∪ built plots (§2.1) → largest 4-connected component → water-aware
+      pocket fill (land filled, lakes kept, a mixed pocket kept whole) → outline as one outer loop
+      plus zero or more water holes. **Ships §5.2.**
+
+      **The single-loop check is a reported diagnostic, not an assert** — consistent with T3 and
+      §5.1: `Diagnostics.singleOuterLoop()` travels with the footprint for the caller to log, and
+      nothing throws. `Footprint.nearest()` is `district-plots.mjs nearestPlots()` moved server-side
+      with its `(y, x)` tie-break preserved (§8b), and it now answers both questions that must never
+      diverge — which urban plots form the starting core, and which fall inside T4's walled-core cap.
+
+      **Verified on Dhenijansar** (the §9 canonical site): the sim has claimed exactly one plot, and
+      the footprint is nonetheless a **30-plot town with a 20-vertex outline**, one loop, no holes —
+      §2.1's argument holding in practice rather than on paper. That number is now a regression
+      assertion, so dropping the starting core from the union would fail loudly instead of quietly
+      walling a hut. Note the site founds at `METROPOLIS` already, so the big-city path is the one
+      under test by default.
+
+      **For T3:** cells come back sorted by `(y, x)`, not in claim order. Sorting is stable under
+      re-derivation (a ruin re-read from disk has no claim order), but it means a new plot can land
+      in the middle of the list — so T3 must **derive each cell's jitter from a hash of (seed, x, y)
+      rather than from draw order**, or growth reshuffles every seed after the insertion point. That
+      also retires §10's order-sensitivity worry for the mesh entirely.
 - [ ] **T3 — Mesh.** One seed per plot centre, **jittered and clamped to `r < 0.5` plot widths**, one
       Lloyd pass, re-clamped, clipped (§4.1). The bijection (every patch contains exactly one plot
       centre; every footprint plot has a patch) holds **by construction under the clamp**, and the
