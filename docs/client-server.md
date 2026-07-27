@@ -377,10 +377,45 @@ map silently break:
    reach for the manual path (`npx @azure/static-web-apps-cli deploy ./web --env production` with
    the deployment token) if that run failed or CI is unavailable.
 
+5. **Reseed the content store** — *only if the change touched world CONTENT* (anything the
+   committed `world-bundle.json.gz` carries: provinces, terrains, techs, buildings, balance…).
+   Run the **Seed Studio** workflow, then **`pwsh tools/refresh-content.ps1`**.
+
+   **The seed alone changes nothing anyone can see**, and this is the step that bit hardest
+   (2026-07-27). The bundle is cached *twice* on the way out, and both caches are process-scoped:
+
+   - **Strapi** caches the assembled projection **keyed by `contentVersion`**
+     (`studio/src/api/world-bundle/services/world-bundle.ts`). A reseed whose *data* changed but
+     whose `contentVersion` did not leaves it serving the old bytes — an identical
+     `Content-Length` across reseeds is the tell.
+   - **civstudio-server** caches the bundle in a static field ("static per deploy" — `WorldBundle`),
+     so it re-reads upstream only at boot.
+
+   `refresh-content.ps1` restarts both revisions **in that order** (server-first only makes it
+   re-fetch the bytes Strapi is still serving) and then re-runs the world invariants. The Seed
+   Studio workflow cannot do this itself — the subscription is reached by a guest identity with no
+   CI service principal — so it checks the live world and writes the command into its job summary
+   when the caches are still stale.
+
+   > **Bump `meta.contentVersion` whenever bundle data changes.** The version string *is* the cache
+   > key, so leaving it untouched makes a data change undetectable by construction. The six-realm
+   > split changed every province's `realm` and left it at `seed-2026-07-23`; a clean reseed
+   > (5,268 provinces, 0 errors) then changed nothing, and prod served "Cannor: 0 provinces".
+
+**Identity is not health.** Every gate above proves the right *bits* landed — `/actuator/info`
+serves the expected commit, the seed wrote the expected rows. None of that says the world is
+usable, and on 2026-07-27 all of them passed green while the live map was unreachable.
+**`tools/verify-world.mjs`** closes that gap: it reads `/api/bundle` and asserts the world
+invariants (`tools/world-invariants.mjs`, unit-tested) — every province names a realm that exists,
+no realm the picker offers is empty, the province count clears its floor, realm-less provinces stay
+a small minority. `deploy-server.ps1` runs it after the build-identity verify (`-SkipWorldCheck` to
+bypass), `refresh-content.ps1` runs it after dropping the caches, and Seed Studio runs it to decide
+what to tell you. Run it by hand any time: `node tools/verify-world.mjs https://dev.civstudio.com`.
+
 **Rule of thumb:** a **generation** change → bump `MAP_VERSION` → **CI rebake, then the server
 roll** (never a cache delete — see step 2); a plain engine-resource / server-code change → **server
 deploy** alone; a `web/` change → **SWA deploy** (automatic); a bundle/terrain change → **rebake the
-bundle first, then the server**.
+bundle first, then the server**; a **content** change → **seed, then `refresh-content.ps1`**.
 
 **Custom domain (`dev.civstudio.com`).** `civstudio.com` DNS is **not** in Azure DNS
 (no zone in the subscription), so the two validation records are added at the external DNS

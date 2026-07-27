@@ -62,6 +62,50 @@ jobs:
         working-directory: studio
         run: npm ci
 
+      # Guard the guard. This job's only safety net is the world check below; if its logic is
+      # broken, a bad seed sails through looking green — which is the exact failure mode the check
+      # was written for. Pure and fast (~200 ms), so it runs BEFORE anything touches the database.
+      - name: Unit-test the world invariants
+        run: node --test tools/*.test.mjs
+
       - name: Seed
         working-directory: studio
         run: node scripts/seed.js --bulk
+
+      # A seed writes ROWS. It does not change what anybody sees, because the bundle is cached twice
+      # downstream — Strapi's projection cache (module-scoped, keyed by contentVersion) and
+      # civstudio-server's static one. On 2026-07-27 a clean reseed reported success while prod kept
+      # serving the pre-realm-split world and the live map read "Cannor: 0 provinces". "Seed
+      # succeeded" was true and useless.
+      #
+      # This job cannot fix that itself: the subscription is reached by a guest identity that cannot
+      # create role assignments, so there is no CI service principal to restart the container apps
+      # with (the same reason deploys are local). What it CAN do is check, and say so loudly.
+      - name: Does the live world reflect this seed?
+        id: worldcheck
+        continue-on-error: true   # the caches are expected stale here; the summary below is the point
+        run: node tools/verify-world.mjs https://dev.civstudio.com
+
+      - name: Next steps
+        if: always()
+        run: |
+          {
+            echo "## Seed complete"
+            echo
+            if [ "${{ steps.worldcheck.outcome }}" = "success" ]; then
+              echo "The live world already reflects this seed — nothing further to do."
+            else
+              echo "**The live world does NOT reflect this seed yet.** Expected: the bundle is cached"
+              echo "by Strapi (keyed by \`contentVersion\`) and again by the server (static per boot)."
+              echo "Both are process-scoped, so both need a restart — **Strapi first**, or the server"
+              echo "just re-fetches the stale bytes."
+              echo
+              echo 'Run this from a box with an authenticated `az` session:'
+              echo
+              echo '```powershell'
+              echo 'pwsh tools/refresh-content.ps1'
+              echo '```'
+              echo
+              echo "It restarts both revisions in order and re-runs the world invariants."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

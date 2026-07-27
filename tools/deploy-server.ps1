@@ -41,7 +41,10 @@ param(
   [switch]$ForceBuild,
   # Skip the pre-roll plot-cache check. Only for a deploy that genuinely does not depend on the
   # map cache, or when the storage check itself is broken — see Assert-PlotCacheBaked.
-  [switch]$SkipCacheCheck
+  [switch]$SkipCacheCheck,
+  # Skip the post-roll WORLD check (tools/verify-world.mjs). For a box with no node, or to push a
+  # deploy through while the world is knowingly broken and the fix is the next deploy.
+  [switch]$SkipWorldCheck
 )
 $ErrorActionPreference = 'Stop'
 
@@ -50,7 +53,8 @@ $APP      = 'civstudio-server'
 $LOGIN    = 'ghcr.io'                          # registry login server
 $OWNER    = 'betaphreak'                       # ghcr namespace (GitHub owner, lowercase)
 $REPO     = 'civstudio-server'
-$HEALTH   = 'https://dev.civstudio.com/actuator/info'   # where we confirm the roll landed
+$SITE     = 'https://dev.civstudio.com'                 # the deployed server
+$HEALTH   = "$SITE/actuator/info"                       # where we confirm the roll landed
 # The Azure Files share the Container App mounts at /mnt/anbennar (PLOT_CACHE_DIR=/mnt/anbennar/map),
 # i.e. where the regenerate-map workflow uploads the baked plot cache. Kept as constants alongside
 # $RG/$APP; they are verifiable with
@@ -225,6 +229,24 @@ try {
     throw ("POST-ROLL VERIFY FAILED: $HEALTH is not serving this build (commit $buildCommit) after ~5 min — " +
       "the new revision did not take over (stale image, unhealthy revision, or traffic still on the old one). " +
       "Inspect: az containerapp revision list -n $APP -g $RG")
+  }
+
+  # WORLD VERIFY — the check above proves the right BITS are serving; it says nothing about whether
+  # they serve a usable world. On 2026-07-27 it passed green while 3,609 provinces sat stranded under
+  # the retired `halcann` realm key, so the live realm picker read "Cannor: 0 provinces" and the demo
+  # could not be reached. Identity is not health. See tools/world-invariants.mjs.
+  if (-not $SkipWorldCheck) {
+    Write-Host "==> verifying the served WORLD ($SITE/api/bundle)" -ForegroundColor Cyan
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+      throw ("node is required for the post-roll world check (tools/verify-world.mjs). " +
+        "Install node, or re-run with -SkipWorldCheck to deploy without it.")
+    }
+    node (Join-Path $PSScriptRoot 'verify-world.mjs') $SITE
+    if ($LASTEXITCODE -ne 0) {
+      throw ("WORLD VERIFY FAILED: $SITE serves build $buildCommit, but the world it serves is broken " +
+        "(see the failed invariants above). The deploy landed; the map is not usable. " +
+        "Roll back with: pwsh tools/deploy-server.ps1 -SkipBuild -Tag <previous-tag>")
+    }
   }
 
   # HOUSEKEEPING — only now that the new build is verified live: drop old LOCAL images. The registry
