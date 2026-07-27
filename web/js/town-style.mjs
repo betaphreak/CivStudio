@@ -9,13 +9,27 @@
 // Nathalaire comes out 20 quay to 5 curtain because its plots say they front water, and a glance at
 // the map should show that without anyone having to be told.
 
-/** The fortification kinds, and how each reads. */
+/** The fortification kinds, and how each reads. Widths are fractions of a plot. */
 export const WALL_STYLE = {
-  CURTAIN:    { stroke: "#d9cdb4", width: 0.055, label: "wall" },
-  QUAY:       { stroke: "#7fb8d4", width: 0.045, label: "quay" },
-  ROAD_GATE:  { stroke: "#e8c05a", width: 0.075, label: "gate" },
-  RIVER_GATE: { stroke: "#8fd3c7", width: 0.065, label: "water gate" },
+  CURTAIN:    { stroke: "#f2e8d0", width: 0.13, label: "wall" },
+  QUAY:       { stroke: "#6fc4ea", width: 0.11, label: "quay" },
+  ROAD_GATE:  { stroke: "#ffcf5c", width: 0.20, label: "gate" },
+  RIVER_GATE: { stroke: "#79e3cf", width: 0.17, label: "water gate" },
 };
+
+/**
+ * The dark casing drawn under every wall segment, a little wider than the segment itself.
+ * <p>
+ * A single stroke has to read against pale sand, dark forest and open water, and no one colour
+ * does. Casing it in near-black first gives every kind its own edge and lets the colour stay bright
+ * — the same trick a road atlas uses, and the difference between a wall you can see and a wall you
+ * have to look for.
+ */
+export const WALL_CASING = "rgba(24, 20, 14, 0.85)";
+export const CASING_EXTRA = 0.055;   // plot-fractions added to the segment's width
+
+/** The narrowest a wall may draw, in screen px, so it survives being zoomed away from. */
+export const MIN_WALL_PX = 2.5;
 
 const FALLBACK = WALL_STYLE.CURTAIN;
 

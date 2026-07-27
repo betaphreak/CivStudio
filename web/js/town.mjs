@@ -15,7 +15,8 @@ import { P, ctx, projectOn, isPolitical, plotPxAt, provOnScreen } from "./core.m
 import { bandAlpha } from "./bands.mjs";
 import { liveColony } from "./overlays/live.mjs";
 import { townOf, ensureTown } from "./townfetch.mjs";
-import { patchFill, patchStroke, wallStyle, TOWN_ENV } from "./town-style.mjs";
+import { patchFill, patchStroke, wallStyle, TOWN_ENV, WALL_CASING, CASING_EXTRA, MIN_WALL_PX }
+  from "./town-style.mjs";
 
 // draw a ring of [x, y] plot-space points as a path. The layout is served in the same source
 // coordinates the plot grid uses, so projectOn — which carries the homography and the 3D ground
@@ -75,28 +76,41 @@ export function drawTown() {
       }
     }
 
-    // 3. the fortification, one piece per plot edge, coloured by what lies beyond it
+    // 3. the fortification, one piece per plot edge, coloured by what lies beyond it.
+    // TWO PASSES, and the order is the point: every casing first, then every colour on top. Per
+    // segment it would work too, but neighbouring segments overlap at the corners and a later
+    // casing would cut a dark notch through the colour its neighbour already laid.
     ctx.lineCap = "round";
-    for (const seg of town.wall || []) {
-      const st = wallStyle(seg.kind);
+    ctx.lineJoin = "round";
+    ctx.globalAlpha = a;
+    const line = (seg, style, width) => {
       const [fx, fy] = projectOn(seg.line[0][0], seg.line[0][1]);
       const [tx, ty] = projectOn(seg.line[1][0], seg.line[1][1]);
-      ctx.globalAlpha = a;
-      ctx.strokeStyle = st.stroke;
-      ctx.lineWidth = Math.max(1, px * st.width);
+      ctx.strokeStyle = style;
+      ctx.lineWidth = width;
       ctx.beginPath();
       ctx.moveTo(fx, fy);
       ctx.lineTo(tx, ty);
       ctx.stroke();
-    }
+    };
+    for (const seg of town.wall || [])
+      line(seg, WALL_CASING,
+           Math.max(MIN_WALL_PX + 1.5, px * (wallStyle(seg.kind).width + CASING_EXTRA)));
+    for (const seg of town.wall || [])
+      line(seg, wallStyle(seg.kind).stroke,
+           Math.max(MIN_WALL_PX, px * wallStyle(seg.kind).width));
 
     // 4. the gates, as a mark on the line — the roads that actually leave town (§6)
     for (const gate of town.gates || []) {
       const [ax, ay] = projectOn(gate.at[0], gate.at[1]);
-      ctx.globalAlpha = a;
+      const r = Math.max(MIN_WALL_PX + 1, px * 0.13);
+      ctx.fillStyle = WALL_CASING;
+      ctx.beginPath();
+      ctx.arc(ax, ay, r, 0, Math.PI * 2);
+      ctx.fill();
       ctx.fillStyle = wallStyle("ROAD_GATE").stroke;
       ctx.beginPath();
-      ctx.arc(ax, ay, Math.max(1.5, px * 0.09), 0, Math.PI * 2);
+      ctx.arc(ax, ay, r * 0.62, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
