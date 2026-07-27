@@ -310,6 +310,12 @@ az containerapp update -n civstudio-server -g civstudio \
   --image ghcr.io/betaphreak/civstudio-server:<tag>
 ```
 
+**One command: `pwsh tools/deploy-all.ps1`.** It measures what changed against the *running* server,
+runs only those steps in the order below, and verifies prod at the end. `-WhatIf` prints the plan.
+Content is opt-in (`-Seed`) because seeding wipes the production content store, and a command called
+"deploy" must not do that just because the world-bundle moved. Everything below is what it does — and
+is still the manual path when you want one step on its own.
+
 **Deployment runbook — the correct order and actions.** A change can touch three surfaces
 (the static site, the server bundle baked into the image, and the plots the server *generates*).
 Do them in this order so they stay in sync — skipping a step makes the surfaces drift and the
@@ -352,7 +358,10 @@ map silently break:
 
    Skip this step entirely for a pure server-code or web-JS change (generation unchanged).
 
-3. **Deploy the server** — `pwsh tools/deploy-server.ps1` (Docker build → push to
+3. **Deploy the server** — `pwsh tools/deploy-server.ps1`. Bump the reactor version first for a
+   server-visible change (`node tools/bump-version.mjs` — all three POMs from one anchor; `mvn
+   versions:set` cannot be used here, it resolves its plugin from the network and this box deploys
+   offline). (Docker build → push to
    `ghcr.io/betaphreak/civstudio-server` → `az containerapp update` → poll `/actuator/info`). Picks up new
    engine resources, server code, and the rebaked manifest. Do it **after** the bake (step 2),
    never before: the image serves `v<MAP_VERSION>`, so rolling it while `map/v<new>` is still
