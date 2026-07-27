@@ -27,6 +27,11 @@ public record ScenarioDef(String key, String label, String blurb, String balance
 		flags = flags == null ? Map.of() : Map.copyOf(flags);
 	}
 
+	/** A flag read as an int, defaulting when absent or non-numeric — the same forgiving read. */
+	public int flag(String name, int fallback) {
+		return flags.get(name) instanceof Number n ? n.intValue() : fallback;
+	}
+
 	/** A flag read as a boolean, defaulting when absent or non-boolean — the forgiving read a host wants. */
 	public boolean flag(String name, boolean fallback) {
 		return flags.get(name) instanceof Boolean b ? b : fallback;

@@ -19,6 +19,7 @@ import com.civstudio.server.registry.SessionRecord;
 import com.civstudio.server.registry.SessionRegistry;
 import com.civstudio.balance.BalanceProfiles;
 import com.civstudio.scenario.FoundingShape;
+import com.civstudio.scenario.LeagueFlavor;
 import com.civstudio.scenario.ScenarioDef;
 import com.civstudio.scenario.ScenarioRegistry;
 import com.civstudio.simulation.SimulationConfig;
@@ -409,6 +410,8 @@ public final class SessionHost {
 				.buildEconomy(def.flag("buildEconomy", cfg.buildEconomy())).build();
 		if (def.shape() == FoundingShape.TIMELINE)
 			return buildTimeline(id, owner, kind, mode, difficulty, spec, cfg);
+		if (def.shape() == FoundingShape.LEAGUE)
+			return buildLeague(id, owner, kind, mode, difficulty, spec, cfg, def);
 		// a CAMP scenario founds low and climbs the tier ladder; its flags carry the subsistence
 		// home-plot economy the camp survives on (docs/settlement-tier-ladder-plan.md D4) and,
 		// since B1, the build economy's occupation choice (docs/build-queue-plan.md)
@@ -441,6 +444,108 @@ public final class SessionHost {
 		for (GameCommand cmd : commandStore.load(id))
 			hs.replay(cmd);
 		return hs;
+	}
+
+	// A LEAGUE founds several peer cities into ONE province: the lead city and its vassal mayors.
+	//
+	// This is what a large historical city is, and docs/city-and-league.md settles the taxonomy —
+	// several settlements under one name are NOT quarters of one city (that was the first sketch's
+	// error), they are cities in a Rank.LEAGUE, the way the Hansa literally was. Nathalaire is the
+	// worked case: the hand-drawn map (docs/towngen-port.md §2c) shows ten named quarters around one
+	// bay, and the map data says they cannot be neighbouring provinces — province 451 has three land
+	// neighbours, all rural. So they are ten cities sharing one province.
+	//
+	// Each vassal's ruler takes the lead city's ruler as its LIEGE, which is the existing feudal link
+	// (docs/estate-system.md P3) applied across colonies rather than within one.
+	private HostedSession buildLeague(String id, String owner, SessionKind kind, String mode,
+			String difficulty, SessionSpec spec, SimulationConfig cfg, ScenarioDef def) {
+		SimulationHarness lead = SimulationHarness.create(cfg, spec.seed(), spec.provinceId());
+		lead.setBalanceProfile(BalanceProfiles.get().get(def.balanceProfile()));
+		lead.foundStandardColony();
+		Settlement first = lead.getColony();
+		first.setAutoBuildDistricts(true);
+		GameSession session = first.getSession();
+		List<Settlement> colonies = new ArrayList<>();
+		colonies.add(first);
+
+		int size = Math.max(1, def.flag("leagueSize", 1));
+		com.civstudio.geo.Province province = session.getWorldMap().province(spec.provinceId());
+		// THE SITE BELONGS TO THE LEAD CITY; THE VASSALS FOUND AROUND IT (owner, 2026-07-28).
+		// Nathalaire proper has all 63 of province 451's plots to itself — which is also what the
+		// engine assumes, since it caps a settlement at its province's plot count and the cities
+		// share one pool: a second city in 451 has nowhere to seat a firm. So the nine vassal
+		// mayors found into the site's land neighbours, staying adjacent to it, which is what makes
+		// this a conurbation rather than a scattered league.
+		List<Integer> sites = leagueSites(session, spec.provinceId());
+		// the site says what kind of league it grows: ADM development a conurbation, DIP a maritime
+		// league of ports, MIL a war camp (LeagueFlavor). Only the contiguous forms are built —
+		// a DIP league needs its cities scattered along a coast and tied by shipping, which is a
+		// founding problem of its own, so it founds as a conurbation for now and says so.
+		LeagueFlavor flavor = LeagueFlavor.named(def.flags().get("leagueFlavor") instanceof String s
+				? s : null, LeagueFlavor.of(province));
+		if (!flavor.isContiguous())
+			log.info(() -> "league " + id + " is " + flavor + "-flavoured (" + province.name()
+					+ "): founding it contiguously until scattered leagues are built");
+		LeagueNames.Pool names = LeagueNames.pool(session, sites);
+		for (int i = 1; i < size; i++) {
+			Settlement vassal = null;
+			for (int attempt = 0; attempt < sites.size() && vassal == null; attempt++) {
+				int siteId = sites.get((i + attempt) % sites.size());
+				com.civstudio.geo.Province at = session.getWorldMap().province(siteId);
+				if (at == null)
+					continue;
+				try {
+					Settlement c = session.newSettlement(names.next(siteId), cfg.startDate(),
+							cfg.meanInitAgeYears(), cfg.targetNStock(), cfg.meanSkillMale(),
+							cfg.meanSkillFemale(), at);
+					com.civstudio.io.SimLog.bind(c);
+					SimulationHarness h = new SimulationHarness(cfg, c);
+					h.setBalanceProfile(BalanceProfiles.get().get(def.balanceProfile()));
+					h.foundStandardColony();
+					c.setAutoBuildDistricts(true);
+					// the feudal link, across colonies: this city's crown answers to the league's
+					if (c.getRuler() != null && first.getRuler() != null)
+						c.getRuler().setLiege(first.getRuler());
+					vassal = c;
+				} catch (RuntimeException e) {
+					// that province is full: try the next site rather than giving up on the city
+					log.fine(() -> "league " + id + ": no room in " + siteId + " (" + e.getMessage()
+							+ ")");
+				}
+			}
+			if (vassal == null) {
+				// every site is full — a league of what fits is a perfectly good league, and a demo
+				// must not fail to boot over its tenth city
+				int founded = colonies.size();
+				log.warning(() -> "league " + id + " stopped at " + founded + " cities: its sites "
+						+ sites + " are full");
+				break;
+			}
+			colonies.add(vassal);
+		}
+		log.info(() -> "founded " + flavor + " league " + id + " — " + colonies.size() + " cities in "
+				+ (province == null ? String.valueOf(spec.provinceId()) : province.name()));
+		HostedSession hs = new HostedSession(id, owner, kind, mode, difficulty, spec, session,
+				List.copyOf(colonies), cfg.startDate(), commandStore, chatStore);
+		for (GameCommand cmd : commandStore.load(id))
+			hs.replay(cmd);
+		return hs;
+	}
+
+	/**
+	 * The provinces a league's <b>vassal</b> cities may found into: the site's settleable land
+	 * neighbours, in a stable order. The site itself is not among them — it belongs to the lead
+	 * city, whose plot cap is the province. A conurbation grows over a border as readily as up to
+	 * one; Nathalaire's bay is where four provinces meet.
+	 */
+	private static List<Integer> leagueSites(GameSession session, int siteId) {
+		List<Integer> sites = new ArrayList<>();
+		for (int nb : session.getWorldMap().neighbors(siteId)) {
+			com.civstudio.geo.Province p = session.getWorldMap().province(nb);
+			if (p != null && p.type() != null && p.type().isLand() && p.isSettleable())
+				sites.add(nb);
+		}
+		return List.copyOf(sites);
 	}
 
 	// A ranked Timeline is born EMPTY: it founds no colony of its own and fills as players join

@@ -16,7 +16,16 @@ public enum FoundingShape {
 	CAMP,
 
 	/** A ranked Timeline: born empty, filled by joining players — {@code SessionHost.buildTimeline}. */
-	TIMELINE;
+	TIMELINE,
+
+	/**
+	 * A <b>league</b> of cities founded together into one province — {@code SessionHost.buildLeague}.
+	 * Several peer settlements around a shared site, which is what a large historical city actually
+	 * is: {@code docs/city-and-league.md} settles that several settlements under one name are not
+	 * quarters of one city but a {@code Rank.LEAGUE}, and {@code docs/towngen-port.md} §2c shows the
+	 * case that motivated it — Nathalaire's ten named quarters around one bay.
+	 */
+	LEAGUE;
 
 	/**
 	 * Whether a headless calibration run can found and run this to a collapse horizon. Only {@link

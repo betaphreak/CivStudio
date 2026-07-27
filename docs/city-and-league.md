@@ -1,5 +1,11 @@
 # Design note: CITY (a permanent settlement) and LEAGUE (a bloc of cities)
 
+> **2026-07-28 — the league is partly built, and the live demo is one.** `FoundingShape.LEAGUE` +
+> the `league-demo` scenario found several cities together (`SessionHost.buildLeague`), and the
+> deployed demo is now the **League of Nathalaire** rather than a lone colony. Three additions to
+> the design below, all from the owner, and two blockers found in the building. See
+> §Founding a league, added at the end.
+
 **Status:** proposed (design only — not yet implemented)
 **Date:** 2026-06-18
 **Supersedes:** the earlier `docs/city-rank.md` (which modelled CITY as a federation
@@ -337,3 +343,59 @@ history:
   goods/buildings) beyond permanence, or stay a permanent village for now.
 - Ordering of federal taxation against a member city whose Mayor is itself being
   succeeded/demoted in the same step (against the end-of-step reform sweep).
+
+---
+
+## Founding a league (2026-07-28, partly built)
+
+The live demo is now the **League of Nathalaire** — the lead city and its vassal mayors around one
+bay, modelled on the hand-drawn `tools/samples/nathalaire.png` (`docs/towngen-port.md` §2c). Built:
+`FoundingShape.LEAGUE`, the `league-demo` scenario (`leagueSize` 10), `SessionHost.buildLeague`,
+`LeagueNames`, and the footprint partition that keeps the cities off each other's ground.
+
+### Three flavours, read off the site (owner)
+
+A league forms around whatever the place is good at, and EU4 development already says what that is —
+`base_tax` / `base_production` / `base_manpower`. `LeagueFlavor.of(province)` reads it:
+
+| Flavour | What it is | What its members share |
+| --- | --- | --- |
+| **ADM** | a **conurbation** — adjacent cities growing into one another | the road cost, in time, from every member to every other **by land** |
+| **DIP** | a **maritime league** — distant cities tied by sea ports (the Hansa, literally) | the same, **by boat** |
+| **MIL** | a **war camp** — the encampment of allied armies | precalculated **march timing and arrival to battle** |
+
+**The league's substance is an all-pairs travel-time matrix in its own medium** (owner). That is the
+thing a league *is*, mechanically: not a label over some cities but a precomputed answer to "how long
+from here to there", which is what makes a bloc act as one. Not built yet; the land case has the
+machinery already (`ProvincePlotPool.corridor`, the Tobler slope cost the movement overlay draws),
+the sea case needs shipping routes, the war case needs the march model.
+
+Nathalaire is 10/10/7 → **ADM**, so it founds as a conurbation. Ties break toward the more settled
+form: a place equally administrative and productive is a city before it is a port.
+
+### What the map afforded, and two blockers
+
+The picture's ten named quarters cannot be ten neighbouring provinces — **province 451 has three land
+neighbours and all three are rural** (Jorathur Fields, New Corveld, Dostanesck, development 3 each,
+229–272 plots). None of the quarter names exists in Anbennar localisation; they are the mapmaker's.
+So the league is cities *sharing a site*, and **Nathalaire proper keeps province 451's 63 plots to
+itself** (owner) while the vassals found into the neighbours, staying adjacent.
+
+Two things stop it reaching ten cities, and neither should be worked around quietly:
+
+1. **A settlement is capped at its province's plot count, and the cities share one pool.** The lead
+   city can drain Nathalaire's 63 plots by itself, so a second city there has nowhere to seat a firm.
+   Today that means roughly one city per province — four in all. Seating ten needs a per-settlement
+   allowance (a province's plots divided among the settlements in it) rather than a per-province cap.
+2. **A crown cannot hold a liege.** `Ruler.isSovereign()` is hardcoded `true`, so the household liege
+   link — which models ruler → nobles → peasants *within* a colony (`docs/estate-system.md` P3) —
+   cannot express a Legate over Mayors. The league founds asking for the link and it does not take;
+   a test pins that as a known gap rather than faking it. This is the rank-ladder work above.
+
+### The footprint partition (built)
+
+`getStartingDistrictCount()` is derived from the **province's** development, so without a rule every
+city of a league claims the whole site and their towns draw on top of one another. The rule needs no
+new state: **a plot belongs to the city whose centre is nearest it** (`ColonyFootprint.of(colony,
+pool, siblings)`). The cities carve the ground up between them and the total never exceeds the
+province's own development.

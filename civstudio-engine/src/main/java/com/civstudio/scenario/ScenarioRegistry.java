@@ -64,6 +64,11 @@ public final class ScenarioRegistry {
 							+ " between wage labor and working their plot for hammers + commerce.",
 					"default", FoundingShape.CAMP,
 					Map.of("homePlots", true, "buildEconomy", true)),
+			new ScenarioDef("league-demo", "City League",
+					"A league of cities founded together into one province: the lead city and nine"
+							+ " vassal mayors around a shared site, which is what a large historical"
+							+ " city actually is (docs/city-and-league.md, towngen-port.md §2c).",
+					"default", FoundingShape.LEAGUE, Map.of("leagueSize", 10)),
 			new ScenarioDef("timeline", "Ranked Timeline",
 					"One shared world many players found into, run in lockstep until one colony"
 							+ " stands.",

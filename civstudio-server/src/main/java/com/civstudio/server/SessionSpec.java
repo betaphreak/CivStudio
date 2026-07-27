@@ -19,6 +19,14 @@ public record SessionSpec(long seed, String scenario, int provinceId) {
 	public static final String CARAVAN_DEMO = "caravan-demo";
 
 	/**
+	 * The <b>league demo</b>: several peer cities founded into one province — the lead city and its
+	 * vassal mayors, whose rulers take the lead's ruler as liege. See {@code docs/city-and-league.md}
+	 * for why several settlements under one name are a {@code Rank.LEAGUE} rather than quarters of
+	 * one city, and {@code docs/towngen-port.md} §2c for the case that motivated it.
+	 */
+	public static final String LEAGUE_DEMO = "league-demo";
+
+	/**
 	 * The ranked <b>Timeline</b>: one shared world many players found into, ticking in lockstep,
 	 * last colony standing (see {@code docs/spectator-lobby.md}). Unlike every other scenario it
 	 * founds <b>no colony</b> — a Timeline is born empty and fills as players join, which is why
@@ -63,5 +71,18 @@ public record SessionSpec(long seed, String scenario, int provinceId) {
 	/** The Phase-A caravan demo spec at the given seed and founding province. */
 	public static SessionSpec caravanDemo(long seed, int provinceId) {
 		return new SessionSpec(seed, CARAVAN_DEMO, provinceId);
+	}
+
+	/**
+	 * The <b>league demo</b>: the lead city and its vassal mayors founded together into one
+	 * province — what a large historical city actually is (docs/city-and-league.md). This is what
+	 * the live demo deals, at Nathalaire.
+	 *
+	 * @param seed       the run's seed
+	 * @param provinceId the province the league founds into
+	 * @return the league spec
+	 */
+	public static SessionSpec leagueDemo(long seed, int provinceId) {
+		return new SessionSpec(seed, LEAGUE_DEMO, provinceId);
 	}
 }

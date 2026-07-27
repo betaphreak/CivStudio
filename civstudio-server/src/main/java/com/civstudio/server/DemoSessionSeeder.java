@@ -78,7 +78,7 @@ public class DemoSessionSeeder implements ApplicationRunner {
 	 */
 	private HostedSession seed(boolean force) {
 		CivStudioProperties.Demo demo = props.getDemo();
-		SessionSpec spec = SessionSpec.caravanDemo(demo.getSeed(), demo.getProvinceId());
+		SessionSpec spec = SessionSpec.leagueDemo(demo.getSeed(), demo.getProvinceId());
 		if (force)
 			host.forget(spec.id());   // stops it too — forget() removes before erasing the record
 		HostedSession hs;
@@ -92,8 +92,8 @@ public class DemoSessionSeeder implements ApplicationRunner {
 		}
 		hs.setTickRateMillis(demo.getTickRateMillis());
 		hs.kind().begin(hs);   // the demo (DEMO kind) runs immediately (docs/session-management.md)
-		log.info("seeded demo session {} (6 caravans, ~{}ms/tick)", hs.id(),
-				demo.getTickRateMillis());
+		log.info("seeded demo session {} ({} cities in a league, ~{}ms/tick)", hs.id(),
+				hs.colonies().size(), demo.getTickRateMillis());
 		return hs;
 	}
 }

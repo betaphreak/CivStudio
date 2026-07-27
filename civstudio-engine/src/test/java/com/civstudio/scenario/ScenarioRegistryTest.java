@@ -90,8 +90,9 @@ class ScenarioRegistryTest {
 	@Test
 	void anAbsentResourceLeavesTheBuiltInsAlone() {
 		ScenarioRegistry reg = ScenarioRegistry.load(EMPTY_SOURCE);
-		assertEquals(6, reg.all().size());
+		assertEquals(7, reg.all().size());
 		assertNotNull(reg.resolve("timeline"));
+		assertNotNull(reg.resolve("league-demo"), "the league the live demo founds");
 	}
 
 	@Test
