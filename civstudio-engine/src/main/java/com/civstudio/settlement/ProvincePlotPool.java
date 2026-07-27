@@ -63,10 +63,21 @@ public final class ProvincePlotPool {
 	// since you last fetched" signal the render snapshot advertises.
 	private final Set<Plot> routedPlots = new LinkedHashSet<>();
 	private int routeRev;
+	// The neighbour ring — cells just OUTSIDE the province, carried only so the web feed can ship
+	// them for border blending. NEVER claimable, never counted, never settled: they are not this
+	// province's land. Empty on the persisted path (the ring lives in the cached bytes, and the sim
+	// has no use for it) — see ProvincePlotStore.
+	private final List<ProvincePlotField.EdgeCell> edge;
 
 	private ProvincePlotPool(Province province, List<Plot> plots) {
+		this(province, plots, List.of());
+	}
+
+	private ProvincePlotPool(Province province, List<Plot> plots,
+			List<ProvincePlotField.EdgeCell> edge) {
 		this.province = province;
 		this.plots = plots;
+		this.edge = edge;
 		this.freeCount = plots.size();
 		long sx = 0, sy = 0;
 		for (Plot p : plots) {
@@ -104,7 +115,7 @@ public final class ProvincePlotPool {
 		for (ProvincePlot pp : field.plots())
 			plots.add(toPlot(pp));
 		trailUrbanPlots(plots, registry);
-		return new ProvincePlotPool(province, plots);
+		return new ProvincePlotPool(province, plots, field.edge());
 	}
 
 	// a generated province plot -> a free runtime Plot, carrying the built-up `urban` overlay
@@ -137,7 +148,7 @@ public final class ProvincePlotPool {
 			plots = new ArrayList<>(field.size());
 			for (ProvincePlot pp : field.plots())
 				plots.add(toPlot(pp));
-			ProvincePlotStore.save(province.id(), plots);
+			ProvincePlotStore.save(province.id(), plots, field.edge());
 		}
 		trailUrbanPlots(plots, registry);
 		return new ProvincePlotPool(province, plots);
@@ -228,6 +239,15 @@ public final class ProvincePlotPool {
 	/** All plots of the province (free and claimed), an unmodifiable view. */
 	public List<Plot> plots() {
 		return Collections.unmodifiableList(plots);
+	}
+
+	/**
+	 * The neighbour ring — cells just OUTSIDE the province, for the web feed's border blending only
+	 * (see {@link ProvincePlotField.EdgeCell}). Not plots: nothing may claim, settle or count these.
+	 * Empty when the pool was restored from the persisted field, which the sim reads plots-only.
+	 */
+	public List<ProvincePlotField.EdgeCell> edge() {
+		return edge;
 	}
 
 	/** The total number of plots (== {@code province.plots()}). */

@@ -16,6 +16,7 @@ import com.civstudio.geo.PlotGeo;
 import com.civstudio.geo.PlotType;
 import com.civstudio.geo.TerrainRegistry;
 import tools.jackson.core.type.TypeReference;
+import com.civstudio.geo.ProvincePlotField;
 import tools.jackson.databind.ObjectMapper;
 
 /**
@@ -59,7 +60,7 @@ public final class ProvincePlotStore {
 	 * The web bundle ships it as {@code mapVersion} (also an MCP tool, {@code get_map_version}). See
 	 * {@code docs/plot-serving.md}.
 	 */
-	public static final int MAP_VERSION = 15; // 15: the seven ISLAND provinces the flooding auto-correct mislabelled LAKE are LAND in the world data too (6068, 6087, 6511, 6512, 6559, 6592, 6762 Humacs Island) — the code fix in 14 stopped the raster calling them water, but their TYPE still said LAKE, so generateWater ran and emitted nothing: they need land generation, which is a different plot field and therefore a new cache; 14: the flooding auto-correct needs BOTH rasters to agree, and the raster agrees with the exporter about which provinces are WATER — rivers.bmp is not a river map (254 grey is EU4's water MASK, 255 white its land marker), so "no dry pixels" was also true of every small ISLAND, and 53 islands were classified LAKE: they then generated no plots and rendered as holes (6762 Humacs Island the reported one). terrain.bmp now has to call the province ocean too, which leaves 15 genuinely-flooded provinces (the contiguous 4002–4017 block) as LAKE and returns the other 53 to LAND; the raster's waterColors mirrors the same test so the two can no longer diverge (ProvinceExporter.classify, ProvinceRaster.addFloodedProvinces); 13: a sea province generates a plot for EVERY water cell it owns, not just a 3px coastal shelf — the shelf's outer edge was a plot-square boundary between two different renderings of water, i.e. the coastline staircase, and continuous water has no such boundary; sea BONUSES stay near-shore (docs/civ4-texture-inventory.md §4 P3); 12: water plots carry landDist (Chebyshev pixels to dry land, 1..SHELF_MAX across the shelf) so the web client can FADE the shelf's outer ring instead of ending it in a staircase of squares — the value is global, so unlike anything derived per-province it prints no seam (docs/civ4-texture-inventory.md §4 P3); 11: seamless generation — world-coordinate terrain patches + a continuous WorldClimate field + a neighbour-land halo on the mask, and one recalibrated temperature model (authored climate authoritative, Mercator latitude demoted) that ends the map-wide over-snowing (docs/plot-generator.md §Seamless generation/§Temperature); 10: urban is a PURE overlay — city cells keep their full natural yield stack (terrain/relief/feature/bonus), only peaks clamped to hills; no more gen-time flatten/feature-strip/bonus-strip (docs/city-of-hamlets-plan.md §8); 9: sea-rooted river drainage — flow points seaward + a render width class per plot (docs/river-rendering.md §3/§4); 8: urban is an overlay flag on natural terrain (retired TERRAIN_URBAN ground — docs/urban-plots.md); 7: real-world plot place names (GeoNames); 6: water-dominant urban-core siting
+	public static final int MAP_VERSION = 16; // 16: each province ships its NEIGHBOUR RING — the halo cells just outside it (8-neighbourhood, ground only), with terrain+relief, so a client blends the border correctly on its FIRST bake instead of against a partial picture that a re-bake corrects when the neighbour province happens to load; the envelope became an object {plots, edge} so the ring can never be mistaken for the province's own land (docs/plot-generator.md §The neighbour ring); 15: the seven ISLAND provinces the flooding auto-correct mislabelled LAKE are LAND in the world data too (6068, 6087, 6511, 6512, 6559, 6592, 6762 Humacs Island) — the code fix in 14 stopped the raster calling them water, but their TYPE still said LAKE, so generateWater ran and emitted nothing: they need land generation, which is a different plot field and therefore a new cache; 14: the flooding auto-correct needs BOTH rasters to agree, and the raster agrees with the exporter about which provinces are WATER — rivers.bmp is not a river map (254 grey is EU4's water MASK, 255 white its land marker), so "no dry pixels" was also true of every small ISLAND, and 53 islands were classified LAKE: they then generated no plots and rendered as holes (6762 Humacs Island the reported one). terrain.bmp now has to call the province ocean too, which leaves 15 genuinely-flooded provinces (the contiguous 4002–4017 block) as LAKE and returns the other 53 to LAND; the raster's waterColors mirrors the same test so the two can no longer diverge (ProvinceExporter.classify, ProvinceRaster.addFloodedProvinces); 13: a sea province generates a plot for EVERY water cell it owns, not just a 3px coastal shelf — the shelf's outer edge was a plot-square boundary between two different renderings of water, i.e. the coastline staircase, and continuous water has no such boundary; sea BONUSES stay near-shore (docs/civ4-texture-inventory.md §4 P3); 12: water plots carry landDist (Chebyshev pixels to dry land, 1..SHELF_MAX across the shelf) so the web client can FADE the shelf's outer ring instead of ending it in a staircase of squares — the value is global, so unlike anything derived per-province it prints no seam (docs/civ4-texture-inventory.md §4 P3); 11: seamless generation — world-coordinate terrain patches + a continuous WorldClimate field + a neighbour-land halo on the mask, and one recalibrated temperature model (authored climate authoritative, Mercator latitude demoted) that ends the map-wide over-snowing (docs/plot-generator.md §Seamless generation/§Temperature); 10: urban is a PURE overlay — city cells keep their full natural yield stack (terrain/relief/feature/bonus), only peaks clamped to hills; no more gen-time flatten/feature-strip/bonus-strip (docs/city-of-hamlets-plan.md §8); 9: sea-rooted river drainage — flow points seaward + a render width class per plot (docs/river-rendering.md §3/§4); 8: urban is an overlay flag on natural terrain (retired TERRAIN_URBAN ground — docs/urban-plots.md); 7: real-world plot place names (GeoNames); 6: water-dominant urban-core siting
 
 	// The cache root — a working-dir/volume folder, NOT the source tree. Defaults to .map
 	// (matching PlotService's civstudio.plots.cache-dir default) and is overridden by the server via
@@ -133,6 +134,32 @@ public final class ProvincePlotStore {
 	}
 
 	/**
+	 * One cell of the province's <b>neighbour ring</b> — a cell just OUTSIDE it, carried so a client
+	 * can blend the border correctly on its FIRST bake ({@link
+	 * com.civstudio.geo.ProvincePlotField.EdgeCell}). Four fields, because all a terrain blend asks of
+	 * a neighbour is which terrain owns a corner.
+	 * <p>
+	 * It is a sibling of the plot list, never a member of it: {@link #load} does not return these and
+	 * {@link ProvincePlotPool} never claims one. Nothing in the sim may treat a neighbouring
+	 * province's ground as this province's land.
+	 */
+	private record StoredEdge(int x, int y, String terrain, String plotType) {
+
+		static StoredEdge of(ProvincePlotField.EdgeCell e) {
+			return new StoredEdge(e.x(), e.y(), e.terrain().type(), e.plotType().name());
+		}
+	}
+
+	/**
+	 * The persisted envelope. It was a bare {@code [plot, …]} array until {@code MAP_VERSION} 16 added
+	 * the ring; an OBJECT is what keeps the ring a sibling of the plots rather than an entry among
+	 * them, which is the whole safety property — a marker flag on one flat list would have put ring
+	 * cells one forgotten filter away from the sim.
+	 */
+	private record StoredField(List<StoredPlot> plots, List<StoredEdge> edge) {
+	}
+
+	/**
 	 * Load a province's persisted plot field, or {@code null} if none is stored yet.
 	 *
 	 * @param provinceId the province id
@@ -143,9 +170,10 @@ public final class ProvincePlotStore {
 		try (InputStream in = open(provinceId)) {
 			if (in == null)
 				return null;
-			List<StoredPlot> stored = MAPPER.readValue(in,
-					new TypeReference<List<StoredPlot>>() {
-					});
+			// PLOTS ONLY. The envelope also carries the neighbour ring, and the sim must never see it:
+			// those cells belong to other provinces and nothing here may settle, farm or own them.
+			StoredField field = MAPPER.readValue(in, StoredField.class);
+			List<StoredPlot> stored = field.plots();
 			List<Plot> plots = new ArrayList<>(stored.size());
 			for (StoredPlot sp : stored)
 				plots.add(sp.toPlot(registry));
@@ -165,17 +193,12 @@ public final class ProvincePlotStore {
 	 * @param plots the generated plots to serialize
 	 * @return the gzipped-JSON bytes
 	 */
-	public static byte[] toGzBytes(List<Plot> plots) {
-		List<StoredPlot> stored = new ArrayList<>(plots.size());
-		for (Plot p : plots)
-			stored.add(StoredPlot.of(p));
-		ByteArrayOutputStream bos = new ByteArrayOutputStream();
-		try (OutputStream out = new GZIPOutputStream(bos)) {
-			MAPPER.writeValue(out, stored);
-		} catch (IOException e) {
-			throw new UncheckedIOException("failed to serialize plot field", e);
-		}
-		return bos.toByteArray();
+	public static byte[] toGzBytes(List<Plot> plots, List<ProvincePlotField.EdgeCell> edge) {
+		List<StoredEdge> ring = new ArrayList<>(edge == null ? 0 : edge.size());
+		if (edge != null)
+			for (ProvincePlotField.EdgeCell e : edge)
+				ring.add(StoredEdge.of(e));
+		return gz(new StoredField(storedPlots(plots), ring));
 	}
 
 	/**
@@ -185,16 +208,61 @@ public final class ProvincePlotStore {
 	 *
 	 * @param provinceId the province id
 	 * @param plots      the generated plots to store
+	 * @param edge       the province's neighbour ring (see {@link StoredEdge}); may be empty
 	 */
-	public static void save(int provinceId, List<Plot> plots) {
+	/**
+	 * Re-save a province's plots while <b>keeping its stored neighbour ring</b>. For passes that load
+	 * a field, change the plots and write them back — the place-naming pass is the one that does —
+	 * because {@link #load} deliberately returns plots only, so a plain {@code save} of what it gave
+	 * back would erase the ring from the cache and leave that province's borders blending against a
+	 * partial picture again. The ring is copied through as raw JSON: it needs no registry and nothing
+	 * here has any business interpreting it.
+	 */
+	public static void saveKeepingEdge(int provinceId, List<Plot> plots) {
+		List<StoredEdge> ring = List.of();
+		try (InputStream in = open(provinceId)) {
+			if (in != null)
+				ring = MAPPER.readValue(in, StoredField.class).edge();
+		} catch (IOException e) {
+			throw new UncheckedIOException("failed to read the stored ring for province " + provinceId, e);
+		}
+		writeStored(provinceId, storedPlots(plots), ring == null ? List.of() : ring);
+	}
+
+	public static void save(int provinceId, List<Plot> plots, List<ProvincePlotField.EdgeCell> edge) {
+		List<StoredEdge> ring = new ArrayList<>(edge == null ? 0 : edge.size());
+		if (edge != null)
+			for (ProvincePlotField.EdgeCell e : edge)
+				ring.add(StoredEdge.of(e));
+		writeStored(provinceId, storedPlots(plots), ring);
+	}
+
+	private static List<StoredPlot> storedPlots(List<Plot> plots) {
+		List<StoredPlot> stored = new ArrayList<>(plots.size());
+		for (Plot p : plots)
+			stored.add(StoredPlot.of(p));
+		return stored;
+	}
+
+	private static void writeStored(int provinceId, List<StoredPlot> plots, List<StoredEdge> edge) {
 		try {
 			File dir = writeDir();
 			dir.mkdirs();
-			Files.write(new File(dir, fileName(provinceId)).toPath(), toGzBytes(plots));
+			Files.write(new File(dir, fileName(provinceId)).toPath(), gz(new StoredField(plots, edge)));
 		} catch (IOException e) {
 			throw new UncheckedIOException(
 					"failed to persist plot field for province " + provinceId, e);
 		}
+	}
+
+	private static byte[] gz(StoredField field) {
+		ByteArrayOutputStream bos = new ByteArrayOutputStream();
+		try (OutputStream out = new GZIPOutputStream(bos)) {
+			MAPPER.writeValue(out, field);
+		} catch (IOException e) {
+			throw new UncheckedIOException("failed to serialize plot field", e);
+		}
+		return bos.toByteArray();
 	}
 
 	// the persisted field's decompressed stream from the shared cache, or null if not cached yet.

@@ -69,6 +69,36 @@ export function indexTerrain(index, plots) {
   return n;
 }
 
+// THE NEIGHBOUR RING is provisional, and lives in its own map for that reason. A province ships the
+// halo cells just outside it (MAP_VERSION 16) so its border blends correctly on the FIRST bake rather
+// than against whichever neighbours happened to have loaded. But a ring cell carries the WORLD
+// ground — the pure function of position every province agrees on — while the province that owns
+// that cell may then apply its own membership overrides (a special province type, the barren
+// wasteland pass, de-speckle). So the ring is a very good guess, not the answer.
+//
+// Keeping it in a second map is what makes "real always wins" free: no overwrite rules, no ordering
+// subtleties, and `index.has(k)` keeps meaning exactly "a real plot is loaded" — which is what
+// cornerResolved needs to stay trustworthy, and therefore what keeps the existing re-bake correcting
+// the rare disagreement. The ring changes what the first bake LOOKS like, never what is true.
+const ring = new Map();
+
+/** Add a province's neighbour-ring cells. Provisional: a real plot at the same cell always wins. */
+export function indexRing(index, cells) {
+  let n = 0;
+  for (const c of cells) {
+    const k = pkey(c.x, c.y);
+    if (ring.has(k)) continue;
+    ring.set(k, c.terrain);
+    n++;
+  }
+  return n;
+}
+
+/** Drop the ring — paired with whatever clears the real index (a realm switch). */
+export function clearRing() {
+  ring.clear();
+}
+
 /**
  * The terrain owning corner (cx, cy): the highest-LayerOrder terrain among the four plots touching
  * it, or null when none of them has loaded yet.
@@ -82,15 +112,27 @@ export function indexTerrain(index, plots) {
 export function cornerOwner(index, cx, cy, LY) {
   let best = null, bestLy = -Infinity;
   for (const [dx, dy] of TOUCHING) {
-    const t = index.get(pkey(cx + dx, cy + dy));
-    if (t === undefined) continue;          // not loaded — the one thing that cannot own a corner
+    const k = pkey(cx + dx, cy + dy);
+    // a real plot first, then the neighbour ring's provisional answer for a cell we have not
+    // fetched. Only "neither" is genuinely unknown, and unknown cannot own a corner.
+    const t = index.has(k) ? index.get(k) : ring.get(k);
+    if (t === undefined) continue;
     const ly = LY[t] || 0;
     if (ly > bestLy || (ly === bestLy && t < best)) { bestLy = ly; best = t; }
   }
   return best;
 }
 
-/** True when every plot touching corner (cx, cy) is known — i.e. its owner cannot still change. */
+/**
+ * True when every plot touching corner (cx, cy) is known FROM A REAL PLOT — i.e. its owner cannot
+ * still change.
+ *
+ * Deliberately blind to the ring. The ring makes the first bake look right; it does not make it
+ * final, because a province may override the world ground on its own cells. Counting a ring-covered
+ * corner as resolved would stop recording it as a gap, and the re-bake that corrects the rare
+ * disagreement would never fire — trading a visible-and-self-correcting error for an invisible
+ * permanent one.
+ */
 export function cornerResolved(index, cx, cy) {
   for (const [dx, dy] of TOUCHING) if (!index.has(pkey(cx + dx, cy + dy))) return false;
   return true;

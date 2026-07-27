@@ -2,7 +2,7 @@
 // node --test web/js/terrain-corners.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { pkey, indexTerrain, cornerOwner, cornerResolved, blendConfigs } from "./terrain-corners.mjs";
+import { pkey, indexTerrain, indexRing, clearRing, cornerOwner, cornerResolved, blendConfigs } from "./terrain-corners.mjs";
 
 // real LayerOrders, off terrain-art.json — the 16 land terrains are all distinct, and the synthetic
 // ones share the layer of the source they borrow (CAVERN and URBAN both sit on ROCKY's 13)
@@ -148,4 +148,49 @@ test("gaps name the unresolved corners, and close as the neighbours land", () =>
   const filled = blendConfigs(m, 5, 5, LY);
   assert.deepEqual(filled.gaps, []);
   assert.deepEqual(filled.configs, [["TERRAIN_DUNES", 15]]);
+});
+
+// ---- the neighbour ring (MAP_VERSION 16) ----
+// A province ships the halo cells just outside it, so its border blends on the FIRST bake instead of
+// against whichever neighbours had loaded. The ring is a very good guess, not the answer: it carries
+// the world ground, which a province may override on its own cells. These pin that distinction.
+
+test("a ring cell owns a corner no real plot has claimed", () => {
+  clearRing();
+  const m = built(plot(5, 5, "TERRAIN_GRASSLAND"));
+  assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_GRASSLAND", "only our own plot touches it yet");
+  indexRing(m, [{ x: 4, y: 4, terrain: "TERRAIN_DUNES" }]);
+  assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_DUNES", "the ring answers for the unfetched cell");
+});
+
+test("a real plot always beats the ring at the same cell", () => {
+  clearRing();
+  const m = built(plot(5, 5, "TERRAIN_GRASSLAND"));
+  indexRing(m, [{ x: 4, y: 4, terrain: "TERRAIN_DUNES" }]);
+  assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_DUNES");
+  // the neighbour province arrives and disagrees — it applied its own override to that cell. TUNDRA
+  // ranks BELOW our own grassland, so the corner reverts to grassland: the point is not that the new
+  // key wins the corner (ownership is by LayerOrder, not recency) but that the ring's DUNES is gone.
+  indexTerrain(m, [{ x: 4, y: 4, terrain: "TERRAIN_TUNDRA" }]);
+  assert.equal(cornerOwner(m, 5, 5, LY), "TERRAIN_GRASSLAND", "real data wins, provisional yields");
+});
+
+test("the ring does NOT resolve a corner — or the re-bake would never correct it", () => {
+  clearRing();
+  const m = built(plot(5, 5, "TERRAIN_GRASSLAND"));
+  indexRing(m, block(4, 4, 3, 3, "TERRAIN_DUNES").map(q => ({ x: q.x, y: q.y, terrain: q.terrain })));
+  assert.equal(cornerResolved(m, 5, 5), false,
+    "ring-covered is drawable, not final: cornerResolved stays blind to it");
+  assert.deepEqual(blendConfigs(m, 5, 5, LY).gaps.length, 4, "so the corners are still recorded as gaps");
+  indexTerrain(m, block(4, 4, 3, 3, "TERRAIN_DUNES"));
+  assert.equal(cornerResolved(m, 5, 5), true, "…and only real plots close them");
+});
+
+test("the ring draws the RIGHT blend before any neighbour has loaded", () => {
+  clearRing();
+  const m = built(plot(5, 5, "TERRAIN_GRASSLAND"));
+  assert.deepEqual(blendConfigs(m, 5, 5, LY).configs, [], "with nothing around it, it guesses nothing");
+  indexRing(m, block(4, 4, 3, 3, "TERRAIN_DUNES").map(q => ({ x: q.x, y: q.y, terrain: q.terrain })));
+  assert.deepEqual(blendConfigs(m, 5, 5, LY).configs, [["TERRAIN_DUNES", 15]],
+    "the ring gives the same answer the loaded neighbours eventually do");
 });

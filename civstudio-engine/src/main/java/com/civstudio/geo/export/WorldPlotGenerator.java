@@ -99,7 +99,7 @@ public final class WorldPlotGenerator {
 					plot.setUrban(pp.urban());   // built-up overlay on natural terrain (retired TERRAIN_URBAN)
 					plots.add(plot);
 				}
-				ProvincePlotStore.save(p.id(), plots);
+				ProvincePlotStore.save(p.id(), plots, field.edge());
 				gen++;
 				if (gen % 200 == 0)
 					System.out.printf("  generated %d (skipped %d, empty %d) of %d, %ds elapsed%n",

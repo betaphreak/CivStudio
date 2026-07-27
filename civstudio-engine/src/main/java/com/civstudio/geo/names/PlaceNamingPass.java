@@ -116,7 +116,7 @@ public final class PlaceNamingPass {
 				continue; // region not warmed in the cache yet
 			PlaceNamer namer = nameRegion(boxOf(provinces), country, provinces);
 			for (ProvincePlots pp : provinces) {
-				ProvincePlotStore.save(pp.provinceId(), pp.plots());
+				ProvincePlotStore.saveKeepingEdge(pp.provinceId(), pp.plots());
 				provincesNamed++;
 			}
 			regionsNamed++;

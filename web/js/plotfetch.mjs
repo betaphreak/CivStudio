@@ -20,7 +20,7 @@ import { BUNDLE, apiUrl, S } from "./core.mjs";
 import { draw } from "./repaint.mjs";
 import { renderRail } from "./rail.mjs";
 import { indexLand } from "./shore-index.mjs";
-import { indexTerrain } from "./terrain-corners.mjs";
+import { indexTerrain, indexRing } from "./terrain-corners.mjs";
 import { shelf } from "./water-terrain.mjs";
 
 // ---- the shore index (js/shore-index.mjs) ----
@@ -72,10 +72,20 @@ export async function loadPlots(p) {
     const res = await fetch(apiUrl("/api/plots/" + p.id) + "?v=" + (BUNDLE.mapVersion || 0), { signal: ctl.signal });
     if (!res.ok) throw new Error("plots " + res.status);   // 404 off-map, 5xx, …
     const stream = res.body.pipeThrough(new DecompressionStream("gzip"));
-    const arr = JSON.parse(await new Response(stream).text());
+    const body = JSON.parse(await new Response(stream).text());
+    // The payload is `{plots, edge}` since MAP_VERSION 16 (it was a bare array before, and a cache or
+    // a build one version behind still sends one — hence the shape test rather than a field read).
+    // `edge` is the NEIGHBOUR RING: cells just outside this province, shipped so the border blends
+    // correctly on the FIRST bake instead of against whatever had loaded.
+    const arr = Array.isArray(body) ? body : (body.plots || []);
+    const ring = Array.isArray(body) ? [] : (body.edge || []);
     // mark as loaded even when empty (deep ocean), so the draw loop and panel stop re-requesting
     p._plots = arr || [];
     p._retryAt = 0;
+    // THE RING IS NEVER IN _plots. Everything downstream counts that array — hover, the hamlet
+    // grouping, foliage placement, the city screen, the "N urban plots" caption — so a neighbour's
+    // ground in it would quietly inflate every one of them. It goes only into the blend index.
+    if (ring.length) indexRing(TERRAIN, ring.map(e => ({ x: e.x, y: e.y, terrain: layerOf(e) })));
     // Index this province's LAND before anything draws, so a water province baked in the same frame
     // already sees it. `shelf(t)` is the water test — the eight water keys and nothing else.
     if (p._plots.length) indexLand(LAND, p._plots, t => !!shelf(t));

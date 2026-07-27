@@ -32,7 +32,7 @@ class PlotPlaceNameStoreTest {
 
 		try {
 			ProvincePlotStore.configure(tmp.toString());
-			ProvincePlotStore.save(999_001, List.of(named, unnamed));
+			ProvincePlotStore.save(999_001, List.of(named, unnamed), List.of());
 			List<Plot> loaded = ProvincePlotStore.load(999_001, reg);
 
 			assertEquals(2, loaded.size());

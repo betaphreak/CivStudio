@@ -268,6 +268,45 @@ to **own cells only**, so the halo keeps real neighbouring ground for the stages
 Cost: generation is ~1.8× slower per province (the halo enlarges every grid). The whole-world CI
 rebake goes from ~24 min to ~45 min, inside its 120-minute budget.
 
+### The neighbour ring (MAP_VERSION 16)
+
+The halo above is a *generation* device — it is discarded at emission, so the served payload has
+always been the province's own land and nothing else (verified: across 16 adjacent provinces, **zero
+shared cells**). That left one thing wrong at the seam, on the CLIENT rather than in the data.
+
+A terrain blend asks "which terrain owns this corner", and a corner of a border plot is touched by
+plots in another province. The web answers that from a global index keyed by source pixel
+(`js/terrain-corners.mjs`), which is correct but only *eventually*: a province baked before its
+neighbour loaded blends its border against a partial picture, records the corners it could not
+resolve as `_tblendGaps`, and re-bakes when one of them resolves. Right after the neighbour arrives —
+and, because fetching is viewport-bounded, possibly not until you pan.
+
+So each province now also ships its **neighbour ring**: the halo cells immediately outside it, with
+their terrain and relief. Four facts about it:
+
+- **Eight neighbours, not four.** A corner is shared by up to four plots, so the diagonal neighbour
+  owns one too; a 4-neighbourhood ring would leave every province's corner-most vertices unresolved,
+  which is exactly where a seam shows.
+- **Ground only.** A halo cell that is not ground belongs to a neighbouring *water* province, whose
+  terrain variant is that province's own generation and is not computed here. Water keeps the
+  eventual-consistency path; this closes the land-to-land case, which is the one that shows.
+- **It is not plots.** The persisted envelope became an object, `{plots, edge}` — the ring is a
+  SIBLING of the plot list, never an entry in it. `ProvincePlotStore.load` returns plots only, so the
+  sim cannot see a neighbour's ground as this province's land, and on the client the ring never
+  enters `p._plots` (which everything downstream counts: hover, the hamlet grouping, foliage, the
+  city screen, the "N urban plots" caption).
+- **It is provisional.** A ring cell carries the *world ground* — the pure function of position every
+  province agrees on — while the province that owns it may then apply its own membership overrides.
+  So the client keeps the ring in a second map that a real plot always beats, and `cornerResolved`
+  stays blind to it: the ring changes what the first bake LOOKS like, never what is true, and the
+  existing re-bake still corrects the rare disagreement. (Measured on 4411↔4412: 15 ring cells land
+  on the neighbour's plots and **all 15 agree** with what it emits.)
+
+Cost, measured on the demo neighbourhood: province 4411 gains 42 ring cells against 74 plots, and the
+gzipped payload averages **2.0 KB** across sixteen provinces. `saveKeepingEdge` exists because the
+place-naming pass loads a field, renames plots and writes it back — a plain save of what `load`
+returned would silently erase the ring.
+
 Covered by `SeamlessGenerationTest` (the four invariants above) and `WorldClimateTest` (field
 continuity + determinism). `TerrainPreviewExporter` renders a whole region to a PNG and prints the
 seam score and border profile — the fastest way to eyeball a generation change without a rebake.

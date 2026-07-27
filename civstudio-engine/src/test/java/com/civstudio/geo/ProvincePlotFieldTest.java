@@ -1,6 +1,7 @@
 package com.civstudio.geo;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -51,6 +52,47 @@ class ProvincePlotFieldTest {
 			assertNotNull(p.terrain(), "terrain");
 			assertNotNull(p.plotType(), "relief");
 			assertTrue(seen.add(((long) p.x() << 20) | (p.y() & 0xFFFFF)), "distinct position");
+		}
+	}
+
+	/**
+	 * The neighbour ring (MAP_VERSION 16): the halo cells just outside the province, shipped so a
+	 * client blends the border on its FIRST bake. Its two load-bearing properties are that it is
+	 * DISJOINT from the plots — nothing in the sim may read a neighbour's ground as this province's
+	 * land — and that it actually touches the province, since a ring that missed would be pure payload.
+	 */
+	@Test
+	void theNeighbourRingIsAdjacentGroundAndNeverThisProvincesLand() throws Exception {
+		Province dh = kaashesh();
+		ProvincePlotField field = ProvincePlotField.generate(
+				dh, TerrainRegistry.load(), ProvinceRaster.load(), new Rng(42));
+
+		assertFalse(field.edge().isEmpty(), "an inland province has neighbouring land to blend against");
+		assertEquals(dh.plots(), field.size(), "the ring is NOT counted as plots");
+
+		Set<Long> own = new HashSet<>();
+		for (ProvincePlot p : field.plots())
+			own.add(((long) p.x() << 20) | (p.y() & 0xFFFFF));
+
+		Set<Long> ring = new HashSet<>();
+		for (ProvincePlotField.EdgeCell e : field.edge()) {
+			long k = ((long) e.x() << 20) | (e.y() & 0xFFFFF);
+			assertFalse(own.contains(k), "a ring cell is never one of the province's own plots");
+			assertTrue(ring.add(k), "ring cells are distinct");
+			assertNotNull(e.terrain(), "a ring cell carries the terrain the blend asks it for");
+			assertNotNull(e.plotType(), "…and its relief, because PEAK outranks every terrain");
+		}
+
+		// EIGHT-neighbourhood: a corner is shared by four plots, so the diagonal neighbour owns one
+		// too. Every ring cell must touch own land, or it is payload nobody can use.
+		for (ProvincePlotField.EdgeCell e : field.edge()) {
+			boolean touches = false;
+			for (int dy = -1; dy <= 1 && !touches; dy++)
+				for (int dx = -1; dx <= 1 && !touches; dx++)
+					if (!(dx == 0 && dy == 0)
+							&& own.contains(((long) (e.x() + dx) << 20) | ((e.y() + dy) & 0xFFFFF)))
+						touches = true;
+			assertTrue(touches, "ring cell " + e.x() + "," + e.y() + " touches the province");
 		}
 	}
 

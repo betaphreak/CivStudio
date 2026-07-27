@@ -110,7 +110,7 @@ public final class PlotService {
 				try {
 					ProvincePlotPool pool = ProvincePlotPool.generate(p, registry, raster(),
 							rngSeed.forProvinceCanonical(RngSeed.Stream.TERRAIN, provinceId));
-					return ProvincePlotStore.toGzBytes(pool.plots());
+					return ProvincePlotStore.toGzBytes(pool.plots(), pool.edge());
 				} catch (IOException e) {
 					throw new UncheckedIOException("failed to generate plots for province " + provinceId, e);
 				}
