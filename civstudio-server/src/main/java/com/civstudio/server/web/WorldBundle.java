@@ -215,10 +215,25 @@ public final class WorldBundle {
 		Map<String, String> areaDisplayName = keyName(load("/map/areas.json"));
 
 		// ---- geo: plot-weighted label-tier centroids over the land-like provinces ----
+		// Each tier bucket carries the realm it belongs to, and its centroid is that realm's alone
+		// (majorityRealm). The client draws a tier label only on its own realm's map.
 		ObjectNode geo = NODES.objectNode();
-		geo.set("continents", rollupTier(sub, p -> CONTINENT_NAME.get(text(p, "continent"))));
-		geo.set("superRegions", rollupTier(sub, p -> srNameByRegion.get(text(p, "region"))));
-		geo.set("regions", rollupTier(sub, p -> regionDisplayName.get(text(p, "region"))));
+		TierName contName = p -> CONTINENT_NAME.get(text(p, "continent"));
+		TierName srName = p -> srNameByRegion.get(text(p, "region"));
+		TierName regName = p -> regionDisplayName.get(text(p, "region"));
+		geo.set("continents", rollupTier(sub, contName, majorityRealm(sub, contName)));
+		geo.set("superRegions", rollupTier(sub, srName, majorityRealm(sub, srName)));
+		geo.set("regions", rollupTier(sub, regName, majorityRealm(sub, regName)));
+
+		// ---- tierRealm: the same ownership, keyed by RAW KEY for the boundary rings ----
+		// The dissolved tier outlines (GET /api/tiers, from tierborders.json) are keyed by raw key, not
+		// display name, so the client needs the ownership in that shape too. Same majority rule, one
+		// computation away — NOT a second copy: both call majorityRealm, only the bucket function
+		// differs. Without it a realm draws every neighbouring continent's outline across its own fog.
+		ObjectNode tierRealm = NODES.objectNode();
+		tierRealm.set("continents", asObject(majorityRealm(sub, p -> text(p, "continent"))));
+		tierRealm.set("superRegions", asObject(majorityRealm(sub, p -> srKeyByRegion.get(text(p, "region")))));
+		tierRealm.set("regions", asObject(majorityRealm(sub, p -> text(p, "region"))));
 
 		// ---- geoNames: the display-name dictionaries trimmed to the keys shipped provinces use ----
 		Set<String> usedRegions = usedKeys(shipped, "region");
@@ -257,7 +272,9 @@ public final class WorldBundle {
 		ObjectNode meta = root.putObject("meta");
 		meta.set("seed", manifest.get("seed"));
 		root.set("provinces", provinces);
-		// featureOverlays / fow are GONE with the Civ6 depot: the feature overlays always had a C2C
+		// `fow` is BACK, and authored rather than ported: the realm fog's parchment is generated in
+		// web/build.mjs (there is no Civ4 fog-of-war texture — Civ4 fogs in the engine — and the Civ6
+		// tiles went with the depot). featureOverlays is still GONE: the feature overlays always had a C2C
 		// billboard path underneath them, and Civ4 has no fog-of-war texture at all (it fogs in the
 		// engine), so there was nothing to port and nothing rendered them. districtTiles ships as null
 		// for the same reason — districts are a Civ6 concept with no Civ4 art.
@@ -268,9 +285,11 @@ public final class WorldBundle {
 		for (String k : List.of("map", "realms", "terrainColors", "terrainLayer", "terrainTiles",
 				"landBlend", "hillWash", "river",
 				"sea", "shore", "ice", "bonusIcons", "trees", "routes", "improvementOverlays",
-				"districtTiles", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading"))
+				"districtTiles", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading",
+				"fow"))
 			root.set(k, manifest.get(k));
 		root.set("geo", geo);
+		root.set("tierRealm", tierRealm);
 		root.set("adjacencies", adjacencies);
 		root.set("geoNames", geoNames);
 		// the map version — the plot-generation version of the imported world. The client appends it
@@ -326,6 +345,13 @@ public final class WorldBundle {
 		return s;
 	}
 
+	/** A string map as a JSON object, in iteration order. */
+	private static ObjectNode asObject(Map<String, String> m) {
+		ObjectNode o = NODES.objectNode();
+		m.forEach(o::put);
+		return o;
+	}
+
 	// {k: src[k]} for the requested keys that resolve to a value (build.mjs pickKeys)
 	private static ObjectNode pickKeys(Map<String, String> src, Set<String> keys) {
 		ObjectNode o = NODES.objectNode();
@@ -348,17 +374,74 @@ public final class WorldBundle {
 		String of(JsonNode province);
 	}
 
+	/**
+	 * The realm each bucket <em>belongs to</em>: the one holding the greatest share of the bucket's
+	 * plots, ties broken on the realm key so the answer is stable. Buckets are whatever {@code bucketFn}
+	 * returns — a tier's display name (for the labels) or its raw key (for the boundary rings).
+	 *
+	 * <p>Realms and the geographic tiers are <b>not nested</b>, so "which realm is this region in" has
+	 * no exact answer: the Serpentspine holds 19 holds under {@code europe}, and a region can straddle
+	 * the Cannor/Sarhal seam. Majority-by-plots gives every bucket exactly one realm, which is the
+	 * property the viewer needs — a continent outline or a label drawn in two realms is drawn in the
+	 * wrong one at least once (docs/realms.md §Phase 4).
+	 *
+	 * @param landlike the shipped land-like provinces
+	 * @param bucketFn the bucket a province falls in, or {@code null} to skip it
+	 * @return bucket → realm raw key (never {@code null}-valued; buckets whose provinces are all
+	 *         realm-less are omitted)
+	 */
+	private static Map<String, String> majorityRealm(List<JsonNode> landlike, TierName bucketFn) {
+		Map<String, Map<String, Double>> weights = new LinkedHashMap<>(); // bucket -> realm -> plots
+		for (JsonNode p : landlike) {
+			String bucket = bucketFn.of(p);
+			String realm = text(p, "realm");
+			if (bucket == null || realm == null)
+				continue;
+			weights.computeIfAbsent(bucket, k -> new LinkedHashMap<>()).merge(realm, plotWeight(p),
+					Double::sum);
+		}
+		Map<String, String> out = new LinkedHashMap<>();
+		for (Map.Entry<String, Map<String, Double>> e : weights.entrySet()) {
+			String best = null;
+			double bestW = -1;
+			for (Map.Entry<String, Double> r : e.getValue().entrySet())
+				if (r.getValue() > bestW || (r.getValue() == bestW && r.getKey().compareTo(best) < 0)) {
+					bestW = r.getValue();
+					best = r.getKey();
+				}
+			out.put(e.getKey(), best);
+		}
+		return out;
+	}
+
+	// build.mjs `p.plots || 1` — a province with no plots still counts as one, so a bucket of them
+	// is not weightless
+	private static double plotWeight(JsonNode p) {
+		double w = p.has("plots") ? Math.max(0, p.get("plots").asInt()) : 0;
+		return w == 0 ? 1 : w;
+	}
+
 	// plot-weighted lon/lat centroid of the land-like provinces a nameFn buckets together, sorted
 	// largest-first (label priority). Mirrors web/build.mjs rollupTier.
-	private static ArrayNode rollupTier(List<JsonNode> landlike, TierName nameFn) {
+	//
+	// Each bucket also carries the REALM it belongs to (majorityRealm), and its centroid is computed
+	// from THAT REALM'S provinces alone. Both halves matter, and for different reasons: the realm key
+	// is what lets the client draw a label on one map only, and the realm-local centroid is what keeps
+	// it in the right place — a bucket averaged over every realm lands in the sea between them, which
+	// is precisely the "labels in the void" docs/realms.md §The work warned about.
+	private static ArrayNode rollupTier(List<JsonNode> landlike, TierName nameFn,
+			Map<String, String> bucketRealm) {
 		Map<String, double[]> acc = new LinkedHashMap<>(); // name -> {sx, sy, w}
 		for (JsonNode p : landlike) {
 			String name = nameFn.of(p);
 			if (name == null)
 				continue;
-			double w = p.has("plots") ? Math.max(0, p.get("plots").asInt()) : 0;
-			if (w == 0)
-				w = 1; // build.mjs `p.plots || 1`
+			String owner = bucketRealm.get(name);
+			// contribute to the centroid only from the owning realm; a bucket with no realm at all
+			// (every province realm-less) keeps its old whole-world centroid rather than vanishing
+			if (owner != null && !owner.equals(text(p, "realm")))
+				continue;
+			double w = plotWeight(p);
 			double[] a = acc.computeIfAbsent(name, k -> new double[3]);
 			a[0] += p.get("lon").asDouble() * w;
 			a[1] += p.get("lat").asDouble() * w;
@@ -374,6 +457,9 @@ public final class WorldBundle {
 			t.put("lon", round3(a[0] / a[2]));
 			t.put("lat", round3(a[1] / a[2]));
 			t.put("w", (long) a[2]);
+			String owner = bucketRealm.get(e.getKey());
+			if (owner != null)
+				t.put("realm", owner);
 		}
 		return out;
 	}

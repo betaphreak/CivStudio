@@ -1,4 +1,4 @@
-import { P, BUNDLE, px, cam, VIEW, ctx, LABEL_FONT, pll, project, pllOn } from "./core.mjs";
+import { P, BUNDLE, px, cam, VIEW, ctx, LABEL_FONT, pll, project, pllOn, ACTIVE_REALM } from "./core.mjs";
 import { bandAlpha, kBand, GEO_TIER_ENV } from "./bands.mjs";
 
 // Stellaris-style map lettering: the shared bundled geometric sans (see core.LABEL_FONT).
@@ -234,6 +234,10 @@ function drawGeoLabels() {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
     for (const g of items) {         // pre-sorted largest-first = priority
+      // a tier label belongs to ONE realm — the one holding most of its plots — and its lon/lat is
+      // that realm's centroid (WorldBundle.rollupTier). So the Serpentspine's map is not captioned
+      // CANNOR across ground it does not own. docs/realms.md §Phase 4.
+      if (ACTIVE_REALM && g.realm && g.realm !== ACTIVE_REALM) continue;
       const name = t.upper ? g.name.toUpperCase() : g.name;
       const [cx, cy] = pll(g.lon, g.lat), tw = ctx.measureText(name).width;
       const box = { x: cx - tw/2, y: cy - t.size/2 - 1, w: tw, h: t.size + 2 };

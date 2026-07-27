@@ -6,7 +6,7 @@
 // (province → region → super-region → continent), and province borders fade out under them (see
 // main.renderScene). Rings are absolute source pixels, so they reuse the province projection
 // (pxr/pyr) and pin to the terrain 1:1.
-import { ctx, pxr, pyr, S, VIEW, apiUrl } from "../core.mjs";
+import { ctx, pxr, pyr, S, VIEW, apiUrl, BUNDLE, ACTIVE_REALM } from "../core.mjs";
 import { bandAlpha, GEO_TIER_ENV } from "../bands.mjs";
 import { indexTierRings, tierRingVisible } from "../tier-geom.mjs";
 
@@ -33,6 +33,22 @@ const TIER_BANDS = [
 /** True once the tier geometry is loaded (so a caller can decide to draw). */
 export function tiersReady() { return TIERS !== null; }
 
+// A tier's rings, filtered to the ones this realm OWNS (docs/realms.md §Phase 4). The tier hierarchy
+// and the realm partition do not nest — the Serpentspine holds 19 dwarven holds under `europe`, and a
+// region can straddle the Cannor/Sarhal seam — so the server assigns each tier key to the realm with
+// the greatest share of its plots (`BUNDLE.tierRealm`, WorldBundle.majorityRealm) and every key is
+// drawn on exactly one map. Without this a realm strokes its neighbours' continent outlines straight
+// across its own fog, captioned with their names.
+//
+// Whole-world view (no ACTIVE_REALM) or an older server with no tierRealm block: keep everything.
+function ownedByRealm(tier, groups) {
+  const owner = ACTIVE_REALM && BUNDLE.tierRealm && BUNDLE.tierRealm[tier];
+  if (!owner) return groups;
+  const kept = {};
+  for (const key in groups) if (owner[key] === ACTIVE_REALM) kept[key] = groups[key];
+  return kept;
+}
+
 /** Lazily fetch the tier geometry (idempotent); calls redraw() once it arrives. */
 export function ensureTiers(redraw) {
   if (TIERS || loading) return;
@@ -42,7 +58,8 @@ export function ensureTiers(redraw) {
     .then(d => {
       TIERS = d;
       RINGS = {};
-      for (const tier in d) RINGS[tier] = indexTierRings(d[tier]);   // box every ring once, here
+      // filter BEFORE indexing, so a foreign tier's rings are never boxed, never culled, never drawn
+      for (const tier in d) RINGS[tier] = indexTierRings(ownedByRealm(tier, d[tier]));
       loading = false;
       if (redraw) redraw();
     })

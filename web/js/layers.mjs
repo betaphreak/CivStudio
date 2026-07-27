@@ -14,6 +14,7 @@ import { drawRaster, drawLakes, drawSeaCells, drawImpassable, drawSurfacePlots,
          drawProvinceBorders, drawCaveEntrances, drawAdjacencies, drawRealmArrows,
          drawHoverHighlight, drawSelectedHighlight } from "./main.mjs";
 import { drawSeaBase } from "./sea.mjs";
+import { drawRealmRim } from "./realmrim.mjs";
 import { drawCostOverlay } from "./cost.mjs";
 import { drawTradeGoodIcons } from "./bonusicons.mjs";
 import { drawRoutes } from "./routes.mjs";
@@ -71,9 +72,10 @@ export const LAYERS = [
   { id: "political",      band: "self-fade", gate: isPolitical, draw: drawPolitical },
   { id: "tiers",          band: "WORLD–PROVINCE, self-fade", draw: drawTiers },
   { id: "provBorders",    band: "PROVINCE (7.5→10×)",      draw: drawProvinceBorders },
-  // the way into the Serpentspine: an amber cave-mouth glyph where a surface province borders one of
-  // the realm's provinces. Self-gates — on a surface realm it marks the doors, in the Serpentspine it
-  // marks the way out. docs/realms.md §A cave mouth is not an arrow.
+  // ---- the realm boundary, and the ways through it (docs/realms.md §The fog must not be mute) ----
+  // rim first (it is the edge), then the crossings drawn ON it: a cave mouth / mountain pass where the
+  // far side is visible ground you cannot enter, a labelled arrow where the far side is fog.
+  { id: "realmRim",       band: "all",                     draw: drawRealmRim },
   { id: "caveEntrances",  band: "all",                     draw: drawCaveEntrances },
   { id: "adjacencies",    band: "≥3.3 (10×)",              draw: drawAdjacencies },
   { id: "realmArrows",    band: "all",                     draw: drawRealmArrows },   // cross-realm teleporter → "to <Realm>" arrow (self-gates on ?realm=)

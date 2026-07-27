@@ -1,8 +1,8 @@
 # Realms
 
-**Status:** Phases 0–5 shipped against a three-realm split; **Phase 7 — the six-realm split — is
-SHIPPED** (2026-07-27): Halcann is retired, the z axis is deleted, and the Serpentspine is a realm.
-Not yet deployed (§Cost). Phase 4 (fog rim + tier filtering) remains the open one. 2026-07-27.
+**Status:** **all phases shipped** (0–7) as of 2026-07-27 — Halcann is retired, the z axis is deleted,
+the Serpentspine is a realm, and the fog has a rim, a texture and marked crossings. **Not yet deployed**,
+and the Strapi rows are not re-seeded (§Cost). 2026-07-27.
 
 A **Realm** is a map. CivStudio began with exactly one — the whole cylindrical world, 5264 provinces,
 wrapping horizontally at 360° of longitude. This doc splits it into six, each cropped to its own
@@ -354,7 +354,9 @@ The only three cross-*continent* adjacencies that are ordinary geography all sta
 > mundane short links out of the caves — Anbennar even comments the first `Dwarovar>Valley`. They are
 > **cave mouths that happen to be authored rows rather than raster adjacencies**, and they take the
 > cave-mouth treatment (§A cave mouth is not an arrow), not the arrow: walkable, amber glyph. So the
-> full crossing inventory is **47 raster mouths + 2 authored mouths + 6 gated fey portals.**
+> full crossing inventory is **47 raster mouths + 2 authored mouths + 6 gated fey portals** — plus the
+> ~30 walkable land borders between the surface realms, which are not portals at all and are marked
+> with the fog arrow instead (Phase 4).
 
 ### The ocean splits cleanly — by adjacency, not by reachability
 
@@ -1410,11 +1412,57 @@ out of the same bake. Verify per realm with `tools/webverify`.
 > realm" work (also the modest per-frame perf lever), which sits with the rest of the fog (rim, arrow,
 > cross-realm line suppression).
 
-**Phase 4 — Fog the void.** The runtime half of the fog, on top of Phase 3's baked mask: sea X-clip;
-per-realm `rollupTier` label centroids; **suppress cross-realm adjacency lines** (§The fog must not be
-mute — one bundle ships both endpoints, so the Venail↔Lastsight line draws into the fog unless stopped).
-Plus the **realm rim + red teleport arrow** as its own layer entry, modelled on `drawCavernRims` — this is
-what makes the other realms discoverable, so it is not cosmetic polish to be cut.
+**Phase 4 — Fog the void. SHIPPED.** The runtime half of the fog, on top of Phase 3's baked mask: sea
+X-clip; per-realm `rollupTier` label centroids; **suppress cross-realm adjacency lines** (§The fog must
+not be mute — one bundle ships both endpoints, so the Venail↔Lastsight line draws into the fog unless
+stopped). Plus the **realm rim + arrow** as its own layer entry — this is what makes the other realms
+discoverable, so it is not cosmetic polish to be cut.
+
+> **As built. SHIPPED 2026-07-27, after Phase 7.** Two of the four items were already done: the sea
+> X-clip landed in Phase 3 (the scene clip bounds both axes), and cross-realm adjacency lines suppress
+> for free once `P` is realm-filtered. The other two, plus three things the phase did not anticipate:
+>
+> **Tier ownership.** Region / super-region / continent outlines and labels were drawn on every realm,
+> so the Serpentspine's map was captioned CANNOR and HALESS across ground it does not own. Realms and
+> the geographic tiers **do not nest** — the Serpentspine holds 19 holds under `europe`, and a region can
+> straddle the Cannor/Sarhal seam — so "which realm is this region in" has no exact answer. It is now
+> decided by **majority of plots** (`WorldBundle.majorityRealm`), giving every tier bucket exactly one
+> realm; its label's centroid is computed from **that realm's provinces alone**, which is what stops a
+> bucket averaged across realms landing in the sea between them. Shipped two ways from one computation:
+> a `realm` key on each `geo` entry (for the labels) and a `tierRealm` map keyed by **raw key** (for the
+> `/api/tiers` rings). `overlays/tiers.mjs` filters before indexing, so a foreign ring is never boxed,
+> culled or drawn.
+>
+> **The rim** (`js/realmrim.mjs`) is a silhouette, not a geometry walk: stroke the union of the realm's
+> province paths on an offscreen, then `destination-out` fill the same union — the interior bands vanish
+> and only the outer boundary survives. Two path ops, cached on `S.viewVersion`. The one subtlety is
+> `GAP`: neighbouring provinces' outlines are simplified *independently*, so the union has a hairline
+> gap along every internal edge, and the rim survives in it — the realm draws as a fine amber mesh, one
+> cell per province. Erasing 2.5px to each side closes them. It fades out by band 5.4 rather than being
+> painted over the 3D terrain (§Cost).
+>
+> **The walkable land borders — not in the original design, and the most important part.** The
+> three-realm split was ocean-separated, so every crossing was a portal. Carving Cannor, Haless and
+> Sarhal out of ONE landmass creates **~30 passable land borders**: 18 Cannor↔Sarhal, 24 Haless↔Sarhal
+> (counting directed pairs), and **0 Cannor↔Haless** — Anbennar's impassable Serpentspine wall runs the
+> whole way, which makes that one an honest frontier and Sarhal's two the mute ones. Unmarked, a player
+> walking south out of Cannor meets fog where nothing about the world changed. They now draw a warm
+> chevron labelled `to Sarhal`, anchored halfway to the neighbour so it sits on the rim, clickable like
+> every other crossing. Distinct art from the teal fey portal on purpose: one is a place you teleport
+> from, the other a line you step across.
+>
+> The rule that decides which marker a crossing gets is the one §A cave mouth is not an arrow already
+> states, applied consistently: **arrow iff the far side is fog; glyph iff it is visible ground you
+> cannot enter.** So Serpentspine crossings — mouths and the ten `northern_pass` mountain passes — are
+> glyphs on both sides, and only fogged-neighbour borders get arrows.
+>
+> **The fog finally has a texture, and it is authored here.** `BUNDLE.fow` had been *absent* — the
+> tiles `main.mjs`'s `drawRealmFogUnder`/`drawRealmFog` were written against came from the Civ6 art that
+> was removed from the project, so those two layers had never drawn a pixel. **Civ4 has no fog-of-war
+> texture to port** (it fogs in the engine) and Anbennar ships none either — both verified against the
+> caches. So `build.mjs` generates a tileable 256px aged-parchment tile: wrapping value noise for the
+> stain and fibre, a whisper of 45° cross-hatch to read as cartographic rather than dirty. Same call
+> `?debug=holes` makes for its checkerboard, for the same licensing and offline-loop reasons.
 
 **Phase 5 — The dropdown.** Realm selector + Lobby entry; brand loses "Anbennar"; plane button hides
 outside Halcann; deep links gain a realm; **preload other realms' backgrounds on idle** (§The background is

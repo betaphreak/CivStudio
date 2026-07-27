@@ -29,10 +29,12 @@ mvn -pl civstudio-server spring-boot:run            # run the spectator server �
 
 **Studio (`studio/`)** — a **Strapi 5** headless CMS (Node/TypeScript, its own `studio/CLAUDE.md`; **not** a Maven reactor module) copied in from a standalone repo: the content/admin backend the `web/` viewer + server consume, slated to become the **unified admin dashboard** (absorbing the server admin console, embedding the map viewer). Deploy mirrors the server: `tools/deploy-studio.ps1` builds→pushes→rolls the `civstudio-backend-app` Container App (served at **civstudio.com**) from a local Docker + authed `az` session, with `.github/workflows/strapi-deploy.yml` as a build-only CI backup. See `studio/CLAUDE.md`. The roadmap for turning it into the control plane — balance configs + scenario definitions as content, a session detail page, and the map↔province link — is [`docs/studio-control-plane-plan.md`](docs/studio-control-plane-plan.md).
 
-**Local source caches (dev speed-up).** The on-demand Anbennar/C2C fetches (`data.AnbennarFiles`/`web/anbennar.mjs`, `data.Civ4Files`/`web/civ4.mjs`) and the Civ6 art each resolve through a per-source cache dir. On this machine those are **directory junctions** to local clones / the Steam SDK, so bakes read from disk with no network:
+**Local source caches (dev speed-up).** The on-demand Anbennar/C2C fetches (`data.AnbennarFiles`/`web/anbennar.mjs`, `data.Civ4Files`/`web/civ4.mjs`) each resolve through a per-source cache dir. On this machine those are **directory junctions** to local clones, so bakes read from disk with no network:
 - `.anbennar-cache/<ref>` → `C:\Code\anbennar-eu4-dev` (ref = `civstudio-engine/src/main/resources/anbennar-source.lock`; GitLab `new-master`)
 - `.civ4-cache/<ref>` → `C:\Code\Caveman2Cosmos` (ref = `.../civ4-source.lock`)
-- `.civ6-cache` → the Steam **Civ VI SDK Assets** (`…/steamapps/common/Sid Meier's Civilization VI SDK Assets`)
+- `.civ4-fpk` → art unpacked from the installed game's **FPK archives** by `tools/fpk/unpack.mjs`, checked *first* by `civ4.resolveArt`. The only source for anything Civ4/C2C ships packed — `Art/Terrain/Textures/**` (every ground and water texture), peaks, building models — none of which is in C2C's `UnpackedArt` tree. Gitignored (publisher art), so a bake depending on it must commit its output.
+
+**Civ6 art was removed** — there is no `civ6.mjs` and nothing resolves a Civ6 cache; `docs/civ6-art-replacement.md` and scattered comments are historical. `featureOverlays`/`districtTiles` went with it.
 
 Keep each clone on the locked ref (both match today). Delete a junction to fall back to on-demand fetch. Git Bash `find`/glob can't traverse a junction — use PowerShell or Node `fs`.
 

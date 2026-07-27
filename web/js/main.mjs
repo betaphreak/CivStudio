@@ -228,6 +228,7 @@ const pjit = id => ((Math.imul(id | 0, 2654435761) >>> 0) % 1000) / 1000;
 // seas read as distinct cells over the climate gradient (the deep-ocean provinces now ship outlines,
 // so the whole ocean tessellates). Kept low-alpha so the gradient still shows through.
 function drawSeaCells() {
+  if (ground3D()) return;   // the 3D sea owns the water from band 5 — see drawLakes
   ctx.save();
   for (const p of P) {
     if (p.type !== "SEA" || !p.rings || !provOnScreen(p)) continue;
@@ -241,6 +242,7 @@ function drawSeaCells() {
 // wasteland reads as a slightly distinct "you can't settle here" cell — without the busy diagonal
 // hatch it used to carry (removed: the hashing over these unused areas read as clutter at deep zoom).
 function drawImpassable() {
+  if (ground3D()) return;   // the 3D ground draws this wasteland as real terrain — see drawLakes
   ctx.save();
   for (const p of P) {
     if (p.type !== "IMPASSABLE" || !p.rings || !provOnScreen(p)) continue;
@@ -291,7 +293,15 @@ function drawRaster() {
 }
 // freshwater lakes: EU4 paints them with the ocean indices, so the raster leaves them the blue sea
 // gradient — tint each lake polygon a distinct green-teal so lakes read as fresh water, not ocean.
+//
+// 2D ONLY, like drawRaster and drawSeaBase above it. These three polygon washes are corrections to the
+// BAKED RASTER — a flat image that cannot tell a lake from the sea, an ocean cell from its neighbour,
+// or wasteland from steppe. From band 5 the raster is gone and the 3D terrain draws all three as real
+// meshes with their own materials, so the wash stops being a correction and becomes a coloured film
+// over a landscape: a lake got its mesh AND a 42%-opacity teal sheet on top. They were never gated
+// because they predate the 3D ground and are cheap enough never to have shown up in a profile.
 function drawLakes() {
+  if (ground3D()) return;
   ctx.save(); ctx.fillStyle = "rgba(74,150,128,0.42)";
   for (const p of P) if (p.type === "LAKE" && p.rings && provOnScreen(p)) ctx.fill(provPath(p));
   ctx.restore();
@@ -372,11 +382,20 @@ function renderScene() {
 // cave entrance/exit glyph: an outer disc with a dark mouth. The teleporter marker reuses these
 // radii at TELEPORT_SCALE× so a portal reads as a much larger version of the same cave-mouth motif.
 const CAVE_MOUTH_R = 4.5, CAVE_MOUTH_IN = 1.9, TELEPORT_SCALE = 4;
-// A mouth is a border between THIS realm and the Serpentspine, in whichever direction: from the
-// surface it is the NEIGHBOUR that is underground, from inside it is the province you stand on. The
-// underground test is what keeps it from firing on the range's IMPASSABLE surface walls — those are
-// a realm boundary too, and a wall is not a door.
-const isMouth = (p, nb) => nb && nb.realm !== p.realm && (isUnderground(nb) || isUnderground(p));
+// A GLYPH crossing: a border between this realm and the Serpentspine, in either direction. Two kinds,
+// one motif — a cave mouth where either side is underground (Marrhold, Ovdal Tungr, the Deepwoods
+// caves) and a mountain pass where neither is (the ten walkable northern_pass valleys). Both are
+// physical doors you can see, which is why they are a glyph and not the fog arrow: the Serpentspine
+// is drawn as real terrain on a surface realm's map (docs/realms.md §The Serpentspine is the one
+// exception), so there is no fog here to point across.
+//
+// It is deliberately SYMMETRIC — the same glyph on both sides — so a crossing reads as one thing with
+// two ends rather than a door from outside and a signpost from within.
+//
+// IMPASSABLE is excluded: the range's rock walls are a realm boundary too, and a wall is not a door.
+const passable = q => q && q.type !== "IMPASSABLE" && q.type !== "SEA" && q.type !== "LAKE";
+const isGlyphCrossing = (p, nb) => nb && nb.realm !== p.realm && passable(p) && passable(nb)
+  && (nb.realm === "serpentspine" || p.realm === "serpentspine");
 function drawMouth(p, nb) {
   // the shared border is ~midway between the two centroids; bias toward the far side
   const [ax0, ay0] = pll(p.lon, p.lat), [bx0, by0] = pll(nb.lon, nb.lat);
@@ -386,10 +405,12 @@ function drawMouth(p, nb) {
   ctx.fillStyle = "rgba(232,183,106,0.9)"; ctx.fill();
   ctx.beginPath(); ctx.arc(mx, my, CAVE_MOUTH_IN, 0, 7);
   ctx.fillStyle = "rgba(18,10,6,0.92)"; ctx.fill();   // the dark cave mouth
-  // clicking a mouth crosses realms and lands on the far province, at this zoom — the same
+  // clicking a crossing switches realm and lands on the far province, at this zoom — the same
   // switch-realm action the realm arrow fires (maptip.mjs), with a different destination
+  const deep = isUnderground(nb) || isUnderground(p);
   S.markers.push({ x: mx, y: my, r: CAVE_MOUTH_R + 4, realm: nb.realm, prov: nb.id,
-    label: `<b>Cave mouth</b><br><span class="r">${isUnderground(nb) ? "↧" : "↥"} `
+    label: `<b>${deep ? "Cave mouth" : "Mountain pass"}</b><br><span class="r">`
+      + `${isUnderground(nb) ? "↧" : isUnderground(p) ? "↥" : "→"} `
       + `${nb.name} · ${realmNameOf(nb.realm)}</span>` });
 }
 function drawCaveEntrances() {
@@ -401,7 +422,7 @@ function drawCaveEntrances() {
     if (!p.nb || !p.rings || !provOnScreen(p)) continue;
     for (const nbId of p.nb) {
       const nb = provAllById.get(nbId);
-      if (isMouth(p, nb)) drawMouth(p, nb);
+      if (isGlyphCrossing(p, nb)) drawMouth(p, nb);
     }
   }
   // ...and 2 are AUTHORED rows in adjacencies.csv rather than shared pixels: Nooks Cranny→Noms10
@@ -413,7 +434,7 @@ function drawCaveEntrances() {
     const a = Pby.get(fromId) || Pby.get(toId);   // the in-realm end (Pby holds only this realm)
     if (!a) continue;
     const nb = provAllById.get(a.id === fromId ? toId : fromId);
-    if (isMouth(a, nb) && a.rings && provOnScreen(a)) drawMouth(a, nb);
+    if (isGlyphCrossing(a, nb) && a.rings && provOnScreen(a)) drawMouth(a, nb);
   }
   ctx.restore();
 }
@@ -490,60 +511,122 @@ function teleportMark(x, y, dest) {
   if (dest) S.markers.push({ x, y, r: R, label: `<b>Portal</b><br><span class="r">⇄ ${dest}</span>` });
 }
 
-// ---- realm arrows: a cross-realm teleporter, promoted to a labelled arrow into the fog ----
+// ---- realm arrows: a crossing whose far side is FOG, promoted to a labelled arrow ----
 // docs/realms.md §The fog must not be mute. With P filtered to the active realm, drawAdjacencies drops
-// a cross-realm teleporter (its far endpoint is gone from Pby); we redraw it here as a red arrow at the
-// in-realm endpoint, pointing the way to the realm on the other side and naming it — so the fog is a
-// signpost, not an absence. Only on a cropped realm; the whole-world view has no "elsewhere" to point
-// at. The click that actually crosses realms is Phase 5 (this is the marker, not yet the affordance).
+// a cross-realm link (its far endpoint is gone from Pby); we redraw it here as an arrow at the in-realm
+// end, pointing the way to the realm on the other side and naming it — so the fog is a signpost, not an
+// absence. Clicking one crosses (maptip.mjs). Only on a cropped realm; the whole-world view has no
+// "elsewhere" to point at.
+//
+// TWO KINDS of crossing arrive here, and the second was not in the original design:
+//
+//   1. the six DOMANDROD FEY PORTALS — Cannor↔Aelantir, an ocean apart, gated to a season. Teal
+//      portal art, because that is what they are.
+//   2. the ~30 WALKABLE LAND BORDERS the six-realm split created. Cannor, Haless and Sarhal were
+//      carved out of one landmass, so their seams are ground, not water: 18 passable borders between
+//      Cannor and Sarhal, 24 between Haless and Sarhal (Cannor↔Haless has none — the Serpentspine's
+//      impassable wall runs the whole way). A player walking south out of Cannor otherwise meets fog
+//      at a place where nothing about the world changed, which is the mutest edge on the map.
+//
+// Crossings with the SERPENTSPINE are not here at all: its ground is drawn as real terrain on a
+// surface realm's map, so there is no fog to point across and they get the cave-mouth/pass glyph
+// instead (§A cave mouth is not an arrow).
 const provAllById = BUNDLE.realms ? new Map(BUNDLE.provinces.map(p => [p.id, p])) : null;
 const realmNameOf = key => (BUNDLE.geoNames && BUNDLE.geoNames.realm && BUNDLE.geoNames.realm[key]) || key;
 
+// accumulate one arrow per in-realm province, averaging the direction to every far endpoint it links
+// to — Domancadh's six portals collapse to one arrow on Aelantir, and a province with three border
+// neighbours in Sarhal gets one arrow pointing at their mean, not three overlapping ones
+function addArrow(arrows, near, far, fey) {
+  let a = arrows.get(near.id);
+  if (!a) { a = { p: near, otherRealm: far.realm, farId: far.id, fx: 0, fy: 0, n: 0, fey }; arrows.set(near.id, a); }
+  a.fey = a.fey || fey;
+  const [fx0, fy0] = pll(far.lon, far.lat);
+  a.fx += fx0; a.fy += fy0; a.n++;
+}
+
 function drawRealmArrows() {
   if (!ACTIVE_REALM || !provAllById) return;
-  const adj = BUNDLE.adjacencies;
-  if (!adj || !adj.length) return;
-  // group cross-realm teleporters by their in-realm endpoint, averaging the direction to the far side —
-  // Domancadh has six portals to Halcann, so on Aelantir they collapse to one arrow, not six.
   const arrows = new Map();
-  for (const [fromId, toId, , teleport] of adj) {
+  // (1) the fey portals — flagged `teleport` from the source comment, so this is data, not distance
+  for (const [fromId, toId, , teleport] of (BUNDLE.adjacencies || [])) {
     if (!teleport) continue;
     const pf = provAllById.get(fromId), pt = provAllById.get(toId);
     if (!pf || !pt) continue;
-    let near, far;
-    if (pf.realm === ACTIVE_REALM && pt.realm && pt.realm !== ACTIVE_REALM) { near = pf; far = pt; }
-    else if (pt.realm === ACTIVE_REALM && pf.realm && pf.realm !== ACTIVE_REALM) { near = pt; far = pf; }
-    else continue;   // both in this realm (the 86 Deepwoods rows) — not a crossing
-    let a = arrows.get(near.id);
-    if (!a) { a = { p: near, otherRealm: far.realm, farId: far.id, fx: 0, fy: 0, n: 0 }; arrows.set(near.id, a); }
-    const [fx0, fy0] = pll(far.lon, far.lat);          // far endpoint projects off-crop → a direction
-    a.fx += fx0; a.fy += fy0; a.n++;
+    if (pf.realm === ACTIVE_REALM && pt.realm && pt.realm !== ACTIVE_REALM) addArrow(arrows, pf, pt, true);
+    else if (pt.realm === ACTIVE_REALM && pf.realm && pf.realm !== ACTIVE_REALM) addArrow(arrows, pt, pf, true);
+    // else: both endpoints in this realm (the 86 Deepwoods rows) — not a crossing
+  }
+  // (2) the walkable land borders — a passable province of this realm touching a passable province of
+  // another FOGGED realm. The Serpentspine is excluded on both sides: it is visible ground here, and
+  // drawCaveEntrances already marks those crossings with the glyph they deserve.
+  for (const p of P) {
+    if (!p.nb || !passable(p) || p.realm === "serpentspine" || !provOnScreen(p)) continue;
+    for (const nbId of p.nb) {
+      const nb = provAllById.get(nbId);
+      if (!nb || !nb.realm || nb.realm === ACTIVE_REALM || nb.realm === "serpentspine") continue;
+      if (passable(nb)) addArrow(arrows, p, nb, false);
+    }
   }
   if (!arrows.size) return;
   ctx.save();
   ctx.font = "700 12px " + LABEL_FONT;   // set once, for measureText and the labels
   const placed = [];                      // label rects already drawn — de-clutters the Deepwoods cluster
   for (const a of arrows.values()) {
-    const [ox, oy] = pll(a.p.lon, a.p.lat);
-    if (ox < -40 || ox > VIEW.w + 40 || oy < -40 || oy > VIEW.h + 40) continue;
-    let dx = a.fx / a.n - ox, dy = a.fy / a.n - oy;
+    const [nx0, ny0] = pll(a.p.lon, a.p.lat);
+    const fx = a.fx / a.n, fy = a.fy / a.n;
+    let dx = fx - nx0, dy = fy - ny0;
     const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    // A FEY PORTAL sits where it is — it is a place, an ocean from its far end, so the in-realm
+    // province's own centre is the right anchor. A LAND BORDER has no such point: the crossing is the
+    // seam itself, so anchor it halfway to the neighbour, which puts the arrow on the rim rather than
+    // floating in the middle of a province that merely happens to touch one.
+    const ox = a.fey ? nx0 : (nx0 + fx) / 2, oy = a.fey ? ny0 : (ny0 + fy) / 2;
+    if (ox < -40 || ox > VIEW.w + 40 || oy < -40 || oy > VIEW.h + 40) continue;
     const label = "to " + realmNameOf(a.otherRealm);
     // every crossing gets an arrow, but a label only if it clears the ones already placed — so the six
-    // clustered Deepwoods portals read as one "to Aelantir" at world zoom, separating as you zoom in.
+    // clustered Deepwoods portals read as one "to Aelantir" at world zoom, and a long frontier reads as
+    // a few named gates rather than a picket fence of repeated text, separating as you zoom in.
     const lx0 = ox + dx * 22, ly0 = oy + dy * 22, w = ctx.measureText(label).width;   // label sits past the glyph
     const rx = dx >= 0 ? lx0 : lx0 - w;
     const rect = { x0: rx, y0: ly0 - 8, x1: rx + w, y1: ly0 + 8 };
     const show = !placed.some(r => rect.x0 < r.x1 && rect.x1 > r.x0 && rect.y0 < r.y1 && rect.y1 > r.y0);
     if (show) placed.push(rect);
-    drawRealmPortal(ox, oy, dx, dy, show ? label : null);
-    // a click target over the portal glyph — maptip.mjs turns a hit into switchRealm(otherRealm, far
-    // portal), so clicking crosses and lands on the far end (docs/realms.md §The fog... one switch-realm
-    // action). `realm`/`prov` mark it; `label` gives the hover affordance.
-    S.markers.push({ x: ox, y: oy, r: 16,
-      label: `<b>⇄ Cross to ${realmNameOf(a.otherRealm)}</b>`, realm: a.otherRealm, prov: a.farId });
+    if (a.fey) drawRealmPortal(ox, oy, dx, dy, show ? label : null);
+    else drawBorderArrow(ox, oy, dx, dy, show ? label : null);
+    // a click target over the glyph — maptip.mjs turns a hit into switchRealm(otherRealm, far province),
+    // so clicking crosses and lands on the far end (docs/realms.md §The fog... one switch-realm action).
+    // `realm`/`prov` mark it; `label` gives the hover affordance.
+    S.markers.push({ x: ox, y: oy, r: 16, realm: a.otherRealm, prov: a.farId,
+      label: a.fey ? `<b>⇄ Fey portal to ${realmNameOf(a.otherRealm)}</b>`
+        : `<b>→ Border with ${realmNameOf(a.otherRealm)}</b>` });
   }
   ctx.restore();
+}
+
+// A LAND BORDER is not magic and not a door — it is the edge of what this map will show you, with
+// ordinary walkable ground on the other side. So it gets no ring and no glow: a short warm shaft with
+// an open chevron, pointing out over the fog, in the same red the connection lines use. Distinct from
+// the fey portal at a glance, which is the point — one is a place you teleport from, the other is a
+// line you step across. ctx.font is set by the caller.
+const BORDER_ARROW = "rgba(228,120,86,0.95)";
+function drawBorderArrow(ox, oy, dx, dy, label) {
+  const tipX = ox + dx * 13, tipY = oy + dy * 13, nx = -dy, ny = dx, s = 5.5;
+  ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(10,6,5,0.75)";      // a dark under-stroke so it reads over pale fog too
+  ctx.beginPath(); ctx.moveTo(ox + dx * 2, oy + dy * 2); ctx.lineTo(tipX, tipY); ctx.stroke();
+  ctx.strokeStyle = BORDER_ARROW;
+  ctx.beginPath(); ctx.moveTo(ox + dx * 2, oy + dy * 2); ctx.lineTo(tipX, tipY); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(tipX - dx * s + nx * s, tipY - dy * s + ny * s);
+  ctx.lineTo(tipX, tipY);
+  ctx.lineTo(tipX - dx * s - nx * s, tipY - dy * s - ny * s);
+  ctx.stroke();
+  if (!label) return;
+  ctx.textAlign = dx >= 0 ? "left" : "right"; ctx.textBaseline = "middle";
+  const lx = tipX + dx * 6, ly = tipY + dy * 6;
+  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(8,6,6,0.92)"; ctx.strokeText(label, lx, ly);
+  ctx.fillStyle = "#f0b9a2"; ctx.fillText(label, lx, ly);
 }
 
 // The crossing to another realm is a FEY PORTAL, not a military arrow — so it reads as gladeway magic:

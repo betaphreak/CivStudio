@@ -301,12 +301,74 @@ for (const rk of REALM_KEYS) {
   console.log(`  realm ${rk}: ${rprovs.length} provinces, crop ${realms[rk].map.dw}×${realms[rk].map.dh}px`);
 }
 
+// ---- terra incognita: the realm fog's parchment (docs/realms.md §Ocean and fog) ----
+// GENERATED, not ported, and that is a sourcing decision rather than a shortcut: there is no fog-of-war
+// texture to port. Civ4 fogs IN THE ENGINE — a darkening pass over the terrain — and ships no such
+// asset (verified: no fogofwar/fow/shroud file of any kind in the C2C art tree). Anbennar overrides
+// EU4's gfx but does not include its terra-incognita paper either. The tiles this consumer was written
+// against came from the Civ6 SDK art, which was REMOVED from the project (there is no civ6.mjs and
+// nothing resolves a Civ6 cache any more), so `BUNDLE.fow` has been absent and js/main.mjs's fog
+// layers (drawRealmFogUnder / drawRealmFog) have never once drawn.
+//
+// So it is authored here, the same call `?debug=holes` makes for its checkerboard and for the same two
+// reasons: a fetched game asset is a licensing question and a dependency that breaks the fully-offline
+// tools/dev-local.ps1 loop. This is a paper texture, not terrain — the `use-authored-art-not-substitutes`
+// rule is about never hand-rolling a stand-in for art that EXISTS, and here none does.
+//
+// Tileable by construction: the value-noise lattice wraps modulo the tile size, so the pattern repeats
+// seamlessly at any offset — which matters because the consumer fills the whole viewport with it as a
+// repeat pattern anchored at the screen origin, not at the map's.
+const FOG_TILE = 256;
+function bakeFogTiles() {
+  const N = FOG_TILE, rgb = Buffer.alloc(N * N * 3);
+  // deterministic lattice hash — no Math.random, so the bake is reproducible like every other asset
+  const hash = (x, y) => {
+    let h = Math.imul(x & 1023, 374761393) ^ Math.imul(y & 1023, 668265263);
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+  };
+  const smooth = t => t * t * (3 - 2 * t);
+  // one octave of tileable value noise at `period` cells across the tile
+  const octave = (x, y, period) => {
+    const f = N / period;
+    const xi = Math.floor(x / f), yi = Math.floor(y / f);
+    const tx = smooth((x / f) - xi), ty = smooth((y / f) - yi);
+    const x0 = xi % period, x1 = (xi + 1) % period, y0 = yi % period, y1 = (yi + 1) % period;
+    const a = hash(x0, y0), b = hash(x1, y0), c = hash(x0, y1), d = hash(x1, y1);
+    return (a + (b - a) * tx) * (1 - ty) + (c + (d - c) * tx) * ty;
+  };
+  // Aged paper: a warm base, broad blotching (the stain), fine fibre grain, and a faint 45° cross-hatch
+  // — the hatch is what makes it read as CARTOGRAPHIC unknown rather than as a dirty texture, and it is
+  // the one thing every terra-incognita treatment in the genre has in common.
+  const BASE = [206, 186, 148];
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const blotch = octave(x, y, 4) * 0.6 + octave(x, y, 8) * 0.3 + octave(x, y, 16) * 0.1;
+    const fibre = octave(x, y, 64) * 0.5 + octave(x, y, 128) * 0.5;
+    const hatch = (Math.sin((x + y) * Math.PI / 9) + Math.sin((x - y) * Math.PI / 9)) * 0.5;
+    // blotch dominates the tone; fibre adds tooth; hatch is a whisper (±3%) so it reads at a distance
+    // as texture and only resolves into lines when you look for them
+    const k = 0.80 + blotch * 0.22 + (fibre - 0.5) * 0.09 + hatch * 0.03;
+    const o = (y * N + x) * 3;
+    rgb[o] = Math.min(255, BASE[0] * k) | 0;
+    rgb[o + 1] = Math.min(255, BASE[1] * k) | 0;
+    rgb[o + 2] = Math.min(255, BASE[2] * k) | 0;
+  }
+  const src = queueWebp('fow/parchment', N, N, rgb, null, { quality: 88 });
+  // The consumer picks PARCHMENT first and falls back to HATCH_MED (js/main.mjs `_fowTile`), a shape
+  // inherited from the tile set it was written against. One authored tile answers both, and keeping
+  // the two keys means the consumer needs no edit and a future second tile has a slot.
+  const tile = { src, tile: N };
+  return { PARCHMENT: tile, HATCH_MED: tile };
+}
+const fow = bakeFogTiles();
+console.log(`  fog: 1 tileable ${FOG_TILE}×${FOG_TILE} parchment (authored — no Civ4/Anbennar fow art exists)`);
+
 // ---- `--realms-only`: rebake the realm crops and nothing else ----
 // A realm split changes which provinces each crop holds, so the six backgrounds and their crop rects
-// have to be rebaked — but nothing ELSE about the assets moved, and a full run would rebuild every
-// Civ4/Civ6-derived asset in the tree. On a machine whose .civ6-cache junction is dangling (the SDK is
-// not a checkout — it is an installed Steam depot) that silently DEGRADES art this change has no
-// business touching. So: bake the realms, patch the two manifest keys that describe them, stop.
+// have to be rebaked — but nothing ELSE about the assets moved. A full run rebuilds ~40 unrelated
+// baked assets from the Civ4/C2C and Anbennar sources, which is slow and makes the diff impossible to
+// review: every re-encoded WebP shows up as a changed binary whether or not a pixel moved. So: bake
+// the realms, patch the two manifest keys that describe them, stop.
 //
 // The whole-world `map` above is rebaked too and written back, deliberately: it is derived from the
 // same two inputs and is deterministic, so it either comes out identical or something upstream moved
@@ -318,7 +380,7 @@ if (process.argv.includes('--realms-only')) {
   const mp = path.join(ROOT, 'civstudio-server/src/main/resources/map/web-asset-manifest.json');
   const prev = JSON.parse(fs.readFileSync(mp, 'utf8'));
   const dropped = Object.keys(prev.realms || {}).filter(k => !(k in realms));
-  fs.writeFileSync(mp, JSON.stringify({ ...prev, map, realms }));
+  fs.writeFileSync(mp, JSON.stringify({ ...prev, map, realms, fow }));
   for (const [k, v] of Object.entries(realms))
     console.log(`  ${k.padEnd(13)} ${v.map.src} ${((sizes[v.map.src.replace('assets/', '')] || 0) / 1024).toFixed(0)} KB`);
   console.log(`--realms-only: rebaked ${Object.keys(realms).length} realm crops + the whole-world map;`
@@ -472,7 +534,22 @@ const seaBands = bakeSeaBands();             // {trop, temp, polar, shore} clima
 const coastTiles = bakeCoastTiles();         // Civ4's painted shore transition tiles + the authored blend table, or null
 const terrainColors = terrainDisplayColors(terrainRealColors(), waterColors(seaBands, coastTiles));
 const terrainLayer = terrainLayerOrders();   // TERRAIN_* -> Civ4 LayerOrder (drives edge blending)
-const terrainTiles = bakeTerrainTiles(terrainColors);
+const terrainTiles = bakeTerrainTiles(terrainColors, Object.keys(waterColors(seaBands, coastTiles) || {}));
+
+// ---- `--tiles-only`: rebake the terrain atlas and nothing else ----
+// Same reason --realms-only exists (below): a full run re-encodes ~40 unrelated assets, burying the
+// one that changed in a diff of churned binaries. The atlas and the colour tables it is baked against
+// are one unit, so they are patched together.
+if (process.argv.includes('--tiles-only')) {
+  const sizes = await flushImages(path.join(WEB, 'assets'));
+  const mp = path.join(ROOT, 'civstudio-server/src/main/resources/map/web-asset-manifest.json');
+  const prev = JSON.parse(fs.readFileSync(mp, 'utf8'));
+  fs.writeFileSync(mp, JSON.stringify({ ...prev, terrainTiles, terrainColors, seaBands, coastTiles }));
+  const kb = ((sizes[terrainTiles.src.replace('assets/', '')] || 0) / 1024).toFixed(0);
+  console.log(`--tiles-only: rebaked ${terrainTiles.src} (${kb} KB, ${Object.keys(terrainTiles.cols).length}`
+    + ` columns); patched terrainTiles/terrainColors/seaBands/coastTiles in ${path.relative(ROOT, mp)}`);
+  process.exit(0);
+}
 const landBlend = bakeLandBlendCells();      // Civ4's authored land transition cells, or null (renderer keeps its feather)
 const hillWash = bakeHillWash();             // Civ4's translucent hill overlay, or null (renderer keeps its invented brightening)
 const river = bakeRiverTile();               // {src, tile} water tile, or null (flat-fill fallback)
@@ -609,7 +686,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, terrainColors, terrainLayer, terrainTiles, landBlend, hillWash, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
+  map, realms, fow, terrainColors, terrainLayer, terrainTiles, landBlend, hillWash, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -1015,7 +1092,35 @@ function terrainDisplayColors(real, water) {
 // Packed as one horizontal strip the page draws per plot at deep zoom.
 // Returns {src, tile, cols:{TERRAIN_*: column}}, or null if the manifest/textures are
 // absent (the page then keeps the flat-colour plot tiles).
-function bakeTerrainTiles(colorsHex) {
+function bakeTerrainTiles(colorsHex, waterKeys = []) {
+  // WATER DOES NOT GET THE AUTHORED GROUND COMPOSITE, and the data says why. `authoredGroundTile`
+  // builds Civ4's base×detail×2 from the FIRST INTERIOR CELL of the terrain's blend sheet — and a land
+  // terrain declares seventeen of them (15,16,18..32), a real interior. Every water terrain declares
+  // exactly ONE, cell 29. That is not an interior; it is a lone transition tile, because Civ4 has no
+  // authored water GROUND at all — it renders water with a shader, the same reason it ships no
+  // fog-of-war texture. Compositing cell 29 as if it were ground is what made TERRAIN_LAKE render as
+  // pale lichen-rock, TERRAIN_LAKE_SHORE as grass and TERRAIN_SEA as blue gravel.
+  //
+  // So water takes the `detailTile` path the rest of the pipeline already assumes it does: SeaDetail /
+  // ShoreDetail / CoastDetail recoloured to the terrain's measured display colour (see waterColors —
+  // "what a lake gains is its own GRAIN"). The keys come from waterColors itself rather than a second
+  // list here, so the two cannot drift.
+  const isWaterTerrain = new Set(waterKeys);
+  // ...and the four that bind SeaDetail get ShoreDetail instead (decided). C2C's
+  // `Art/Terrain/Textures/Water/SeaDetail.dds` is not a water surface: decoded, it is a mottled
+  // green-and-pink LICHEN-ON-ROCK texture, and it is a C2C addition — base Civ4's Art0.FPK has no
+  // `water/seadetail.dds` at all. Civ4 uses it as a modulation map under the water shader, so its high
+  // contrast is fine there and disastrous here: recolouring its mean to dark blue keeps the mottle and
+  // the open sea renders as blue gravel.
+  //
+  // ShoreDetail is the fine sand-grain sheet beside it, and recoloured it gives exactly the water tile
+  // TERRAIN_LAKE_SHORE already gets. This IS a substitution — one authored texture standing in for
+  // another — so it is named here rather than buried: the alternative was inventing a grain, which
+  // `use-authored-art-not-substitutes` forbids outright.
+  const SEA_DETAIL = /water\/seadetail\.dds$/i;
+  const SHORE_DETAIL = 'Art/Terrain/Textures/Water/ShoreDetail.dds';
+  const detailFor = e => (e.detail && SEA_DETAIL.test(e.detail)) ? SHORE_DETAIL : e.detail;
+  let substituted = 0;
   const manifest = bundleResourceOpt('/map/terrain-art.json');
   if (!manifest.length) return null;
   const hexRgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
@@ -1042,11 +1147,24 @@ function bakeTerrainTiles(colorsHex) {
       // Civ4's composite where the terrain has an authored table; the authored recolour where it has
       // no art define at all. Nothing is recoloured to a display colour any more, so `colorsHex` is
       // read only on the synthetic path.
-      let tile = authoredGroundTile(e, T);
+      let tile = isWaterTerrain.has(e.terrain) ? null : authoredGroundTile(e, T);
       if (tile && T === LODS[0]) authored++;
-      if (!tile) tile = detailTile(e.detail, hexRgb(colorsHex[e.terrain] || '#465046'), T);
+      const detail = detailFor(e);
+      if (detail !== e.detail && T === LODS[0]) substituted++;
+      if (!tile) tile = detailTile(detail, hexRgb(colorsHex[e.terrain] || '#465046'), T);
       if (tile && T === LODS[0]) c2cCount++;
       if (tile) decoded++;
+      // A TERRAIN THAT DECLARES ART MUST GET IT. This is a guard, not the water fix above: silently
+      // baking a flat tile when a bound texture fails to resolve is the failure mode that makes a
+      // wrong-looking map impossible to diagnose from the output. The nine authored, source-less
+      // terrains (TERRAIN_CAVERN, the special Anbennar surfaces) declare no `detail` and are exempt by
+      // that test rather than by a list — they are meant to be recoloured.
+      if (!tile && detail)
+        throw new Error(`terrain tile: ${e.terrain} declares <Detail> "${detail}" but it did not `
+          + `resolve, so its column would have been baked as flat colour with no warning. Check the `
+          + `art source: Civ4's terrain textures are reachable either from the C2C fetch or from `
+          + `.civ4-fpk (tools/fpk/unpack.mjs extract "<game>/Assets/Art0.FPK" .civ4-fpk `
+          + `terrain/textures, then C2C0..C2C3 and C2CPatch0 in order).`);
       const t = makeSeamless(tile || solidTile(target, T), T);   // wrap-feather so the repeat has no grid seam
       for (let y = 0; y < T; y++)
         for (let x = 0; x < T; x++) {
@@ -1062,7 +1180,8 @@ function bakeTerrainTiles(colorsHex) {
   }
   if (!anyDecoded) return null;   // no textures decoded → keep flat colours
   console.log(`  terrain tiles: ${c2cCount} C2C ground sources (${authored} authored base×detail×2, `
-    + `${c2cCount - authored} recoloured synthetic); LoDs ${LODS.join('/')}px`);
+    + `${c2cCount - authored} recoloured synthetic${substituted ? `, ${substituted} SeaDetail→ShoreDetail` : ''});`
+    + ` LoDs ${LODS.join('/')}px`);
   // src/tile default to the deep (largest) LoD so an un-migrated reader still works; `lods` is the tier list.
   const deep = lods[lods.length - 1];
   return { src: deep.src, tile: deep.tile, cols, lods };
