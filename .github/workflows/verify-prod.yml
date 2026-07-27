@@ -27,6 +27,8 @@ on:
       - 'tools/world-invariants.mjs'
       - 'tools/verify-content-parity.mjs'
       - 'tools/content-hash.cjs'
+      - 'tools/fetch-settling.mjs'
+      - 'tools/verify-server-ahead.mjs'
       - 'civstudio-engine/src/test/resources/world-bundle.json.gz'
       - '.github/workflows/verify-prod.yml'
 

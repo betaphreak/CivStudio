@@ -13,6 +13,11 @@ on:
       - 'web/**'                              # any change to the committed site or its baked assets
       - '.github/workflows/deploy-web.yml'
   workflow_dispatch:
+    inputs:
+      skip_server_check:
+        description: 'Ship web even if the deployed server is older than this commit'
+        type: boolean
+        default: false
 
 # never let two deploys race; the newest push wins
 concurrency:
@@ -25,11 +30,33 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # the server-ordering check below walks history (merge-base --is-ancestor)
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      # ORDERING GATE. This site auto-deploys on every master push; the server is rolled by hand, so
+      # a push touching both ships the frontend NOW and the backend whenever someone gets to it. On
+      # 2026-07-27 the six-realm split did exactly that — web went live at 06:51 against the previous
+      # day's server, and the mismatch sat unnoticed for hours. "Deploy the server first" was a line
+      # in CLAUDE.md and nothing enforced it.
+      #
+      # It does not demand a fully up-to-date server (that would block a CSS fix over an unrelated
+      # backend commit, and a check people route around is worse than none). It demands only that the
+      # running server already contains the newest SERVER-AFFECTING commit up to this one — so
+      # web-only pushes sail through and mixed pushes wait for their backend.
+      #
+      # Fails closed: an unreachable server or an unrecognisable build stamp cannot prove the pairing
+      # is safe. Override with the workflow_dispatch input, or `[skip server-check]` in the commit
+      # message for a push you know is frontend-only.
+      - name: Server is not behind this build
+        if: >-
+          ${{ inputs.skip_server_check != true
+              && !contains(github.event.head_commit.message, '[skip server-check]') }}
+        run: node tools/verify-server-ahead.mjs --base https://dev.civstudio.com --ref "$GITHUB_SHA"
 
       # The web unit tests (node:test, no dependencies — the site is dependency-free and so are its
       # tests, so this needs no npm install). They gate the deploy: the pure modules under test are

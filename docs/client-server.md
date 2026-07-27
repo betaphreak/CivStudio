@@ -377,6 +377,18 @@ map silently break:
    reach for the manual path (`npx @azure/static-web-apps-cli deploy ./web --env production` with
    the deployment token) if that run failed or CI is unavailable.
 
+   **The site will not ship in front of its server.** Because web deploys itself and the server does
+   not, a push touching both used to put the frontend live immediately against whatever backend
+   happened to be running — which is how the six-realm split reached production at 06:51 on
+   2026-07-27 against the previous day's server, and sat mismatched for hours. `deploy-web.yml` now
+   runs **`tools/verify-server-ahead.mjs`** first, and it asserts the narrow thing that actually
+   matters: *the running server already contains the newest **server-affecting** commit up to the
+   one being shipped* (server-affecting = `deploy-server.yml`'s own trigger paths). A web-only push
+   therefore never blocks; a mixed push waits for `pwsh tools/deploy-server.ps1` and a re-run. It
+   **fails closed** — an unreachable server or a build stamp not in this history cannot prove the
+   pairing is safe. Override with the workflow's `skip_server_check` input, or `[skip server-check]`
+   in the commit message.
+
 5. **Reseed the content store** — *only if the change touched world CONTENT* (anything the
    committed `world-bundle.json.gz` carries: provinces, terrains, techs, buildings, balance…).
    Run the **Seed Studio** workflow, then **`pwsh tools/refresh-content.ps1`**.
@@ -431,7 +443,9 @@ or the snapshot.
 **Rule of thumb:** a **generation** change → bump `MAP_VERSION` → **CI rebake, then the server
 roll** (never a cache delete — see step 2); a plain engine-resource / server-code change → **server
 deploy** alone; a `web/` change → **SWA deploy** (automatic); a bundle/terrain change → **rebake the
-bundle first, then the server**; a **content** change → **seed, then `refresh-content.ps1`**.
+bundle first, then the server**; a **content** change → **seed, then `refresh-content.ps1`**; a
+change touching **both server and web** → **server first**, which the web deploy now enforces rather
+than trusting you to remember.
 
 **Custom domain (`dev.civstudio.com`).** `civstudio.com` DNS is **not** in Azure DNS
 (no zone in the subscription), so the two validation records are added at the external DNS
