@@ -43,6 +43,7 @@ regenerating.
 | **Ward ↔ plot** | **Bijection.** One Voronoi seed per plot centre, jittered, clamped, one Lloyd pass, clipped to the footprint (§4). A patch *is* a plot, so the engine's per-plot `DistrictType` **is** the patch's ward — no divergence from the engine-authoritative decision in `district-buildout.md`. |
 | **Mesh irregularity** | **Jitter, clamped to `r < 0.5` plot widths; one Lloyd pass, re-clamped** (owner, 2026-07-27). The clamp makes the bijection true *by construction* rather than asserted after the fact, and bounds how far a growing town can reshuffle its existing wards (§4.1). Starting point, uncalibrated: `r = 0.35`, one pass. |
 | **Walls** | **Permanent settlements only** — `Settlement.isPermanent()`, true from `SettlementTier.TOWN` up (owner, 2026-07-27). Below that the town is unwalled: no `CurtainWall`, no gates, streets radiate from the centre to the footprint edge. This also sidesteps the single-plot wall failure (§5.3). |
+| **Wall model** | **A wall is a property of individual plots, not a ring** (owner, 2026-07-28). Every outward-facing edge of a boundary plot carries one piece of fortification, and its kind depends on what lies beyond: `CURTAIN` on dry ground, `QUAY` on water, `ROAD_GATE` where a road leaves, `RIVER_GATE` where the river does. The town's defences are the sum of its plots' edges. This is what makes a half-built town degrade correctly, matches the reference art (§2c), and leaves fortification free to become real engine state later — a plot that raised a wall building would just report a different kind, and nothing downstream would change. |
 | **Gates** | Aimed at the **neighbouring provinces' border portals** (`/map/portals.json` → `WorldMap.portalByEdge`), not chosen at random (§6). |
 | **Altitude** | Feeds ward placement, street cost, and the 3D drape (§7). Relief (`PlotType`) carries more signal than raw `elevation()` at city scale — use both, scaled separately, as `web/js/heightfield.mjs` already does. |
 | **Language / where it runs** | **Java, server-side** (`com.civstudio.server.town`). The layout is a pure projection of engine state + seed, exactly like the D3 district type/era/style projection, so it belongs where that lives. Keeps the sim engine free of render geometry, and the client free of the temptation to invent state. |
@@ -270,6 +271,32 @@ a layout carries a **version stamp** and a generator change invalidates old file
 `MAP_VERSION` does. Per-session also settles the key collision: two sessions on the same seed found
 the same site and must not overwrite each other's town.
 
+### 3a.1 Name overrides live in the store
+
+**The settlement store keeps per-entity name overrides** (owner, 2026-07-28), so the names on
+`nathalaire.png` — *Quarterquarters*, *Shadowport*, *Fish Island*, *Upper Noblewaters*, *Silvercove*,
+*Shadowgate*, *The Bootyhoard* — can be authored and kept rather than only ever generated. Generated
+names are the default and an override always wins.
+
+| Entity | Default name | Keyed by |
+| --- | --- | --- |
+| a plot / its ward | the plot's real GeoNames place name (already stamped at bake time, already on hover) | `(x, y)` |
+| a quarter (an extramural cluster, or a named part of the body) | the name of its central plot | its central plot's `(x, y)` |
+| a gate | the neighbour it faces (§6) | the gate's `(cell, side)` |
+| a water body — bay, cove, channel | none today | a representative cell of the hole |
+| a notable building | its catalog name | the plot it stands on |
+
+**Everything is keyed by plot coordinates, and that is the whole trick.** A cell's `(x, y)` is stable
+forever — across a regeneration, a generator version bump, a colony's death, a session restore —
+whereas any index into a list of patches, segments or lots is not. So overrides survive a full
+rebuild of the layout, which is what makes them authored content rather than something that has to
+be re-entered whenever the generator changes. It also means the layout file must never key anything
+by list position, which is a constraint on T7's schema and cheap only if honoured from the start.
+
+Authoring surface is deliberately not decided here — the store holds the overrides; whether they are
+edited in studio, by an admin tool, or shipped as content is a separate question (`docs/studio-
+control-plane-plan.md` is the obvious home).
+
 Per-session and "ruins outlive the colony" are consistent — a ruin outlives the *`Settlement`*, not
 the session it belongs to. The worldgen-history case above is the exception that will eventually want
 a session-independent tier (a generated world's history is the world's, not one playthrough's); it
@@ -372,8 +399,11 @@ it has to be, because nothing else knows.
 So subdivision stops being a random target and becomes a **fitted** one: subdivide the block until it
 yields at least `buildings + households` lots, then assign in order —
 
-1. **one lot per real building**, stamped with its C2C `nifbake` sprite (the Layer-3 art from
-   `district-generator.md`), sized by the building's importance so a cathedral is not a cottage;
+1. **one lot per real building**, drawn as a **coloured mass sized by importance** with its
+   **building icon standing on it as a billboard, placed exactly the way bonus icons are placed
+   today** (owner, 2026-07-28 — `bonusicons.mjs`). So a cathedral is a large coloured block with a
+   cathedral icon over it and a cottage is neither; this is the treatment the reference art uses
+   (§2c) and the one piece of machinery the client already has;
 2. **one lot per household**, a dwelling — and since `DistrictView` already carries `ownerName`, a
    house can be labelled for the family living in it;
 3. the remainder left **empty** — yards, gardens, or ruins under decline (§2a).
@@ -727,10 +757,31 @@ off**; T7 is the first user-visible change.
 
       Also found: `Poly` had no value equality, so two identical meshes never compared equal — every
       cache check and test comparison would have silently reported "changed".
-- [ ] **T4 — Wall + gates.** Walled core capped, remainder extramural (§2b); union outline +
-      smoothing; **waterfront edges as quay, not wall** (§7a); gates from portal bearings (§6); walls
-      gated on `isPermanent()` and ≥4 plots; **wall retained as a high-water mark** (§2a). **Ships
-      §5.1, §5.3, §5.4.**
+- [x] **T4 — Wall + gates.** ✅ **Shipped 2026-07-28.** `TownWall` (per-plot fortified edges, kinds,
+      capped core, portal-aimed gates) and `ColonyWall` (the engine adapter), 17 tests. Walls gated
+      on `isPermanent()` and ≥4 plots (§5.3); core capped by tier — `TOWN` 16, `METROPOLIS` 32 (§2b)
+      — and reduced to its largest connected piece, since a wall cannot wrap two; gates from the
+      neighbours' real border portals with an angular-separation rule replacing the reference
+      generator's vertex splicing (§5.4, §6); waterfront edges as quay, river crossings as water
+      gates (§7a). **Ships §5.1, §5.3, §5.4.**
+
+      **The wall is per-plot, which is the owner's model and a better one than the plan had.** Every
+      outward edge of a boundary plot carries one piece, typed by what lies beyond it, so the
+      "wall" is the sum of its plots' edges. It degrades correctly for a half-built town, it matches
+      the reference art, and it leaves fortification free to become engine state later without
+      changing anything downstream.
+
+      **On Nathalaire the model pays for itself immediately**: 26 segments, **20 quay to 5 curtain**,
+      one road gate. Nothing in the code knows it is a pirate city — the plots' own `coast()` masks
+      say so. Dhenijansar, a river capital, comes out 21 curtain / 3 river gates / 4 road gates
+      (Durdhinana, Parusapa, Ghamakrit, Amtujsaat) and no quay at all.
+
+      **Found while switching sites, and it was a real bug:** the starting core ranked over *urban*
+      plots only, and `CityPlacement` flags every plot urban solely in a province that is a city.
+      Everywhere else exactly one plot is urban — so an ordinary site that grew into a city would
+      have been walled as a single hut, which is precisely the failure §2.1 exists to prevent. Both
+      named sites are cities and both hid it. The core now takes urban ground first and keeps going
+      into the nearest plots until the site's development is housed.
 - [ ] **T5 — Streets.** A* from each gate to the centre under **one weight function carrying both the
       slope penalty and the water terms** (sea blocked, rivers crossable at bridge cost — §7, §7a);
       artery deduplication; smoothing. Unwalled settlements radiate from the centre to the footprint
@@ -758,21 +809,26 @@ relevant"). The target case is a founded 1444 city at historical size with a ful
 population (§4b); a fresh colony that may never reach `TOWN` exercises the unwalled branch only and
 tells you nothing about whether the feature looks right.
 
-**The canonical test site is Dhenijansar** (owner, 2026-07-27) — province **4411**, the Raj's capital
-in Rahen (`Realm.Haless`): `city_terrain`, development **30** (12/12/6), centre of trade 2, culture
-`rabhidarubsad`, high philosophy, paper. It is close to a worst case in every axis this plan worries
-about, which is why it is the right one to look at:
+**The canonical site is Nathalaire** (owner, 2026-07-28, superseding Dhenijansar) — province **451**,
+the pirate city on the Sea of Follies: development **27** on 63 plots, culture `nathalairey`, regent
+court, paper, `is_city`. **The demo session founds here** (`civstudio.demo.province-id`), for one
+decisive reason: `tools/samples/nathalaire.png` is a hand-drawn map of this exact place, so what the
+generator produces can be held against what the city is supposed to look like. Nothing else on the
+map has that.
 
-| It exercises | Because |
-| --- | --- |
-| §2b's extramural cap | all-urban, so the footprint offers far more plots than the walled core may take |
-| §4b's density function | top-of-range development — if 30 does not read as a capital, nothing will |
-| realm handling | Haless, so the layout crosses a realm crop rather than sitting in the Cannor default |
-| §11's known wrongness | a Rahen imperial capital rendered as a European market town is the most conspicuous instance of "one vocabulary for all", and worth *seeing* before deciding how long to accept it |
+What it already gets right, with nothing in the code knowing it is a pirate city: 27 plots, a
+14-vertex outline, and a fortification line that is **20 quay to 5 curtain** with a single road gate
+toward the Flooded Coast. A city in a bay comes out as a waterfront.
 
-Practically this needs a way to found a colony there on demand — a dev scenario or `CalibrationRun`
-variant taking a province id — which T2 should ship, since every phase after it needs the same thing
-to look at.
+**Dhenijansar** (4411, development 30 on 74 plots, Haless) stays as a second case — it crosses a
+realm crop rather than sitting in the Cannor default, and a Rahen imperial capital rendered as a
+European market town is the most conspicuous instance of §11's known wrongness, worth *seeing*
+before deciding how long to accept it.
+
+A third case has no name in this doc and should not need one: a province that is **no city at all**,
+where `CityPlacement` flags exactly one plot urban. That is the ordinary map, and it is where the
+starting core has to reach past the urban flag (§2.1) — a rule both named sites hide, because both
+are cities and therefore all-urban.
 
 ## 9a. Open for the owner
 

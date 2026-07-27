@@ -193,22 +193,22 @@ class TownMeshTest {
 	}
 
 	@Test
-	void dhenijansarMeshesIntoThirtyWards() {
+	void nathalaireMeshesIntoAWardPerPlot() {
 		GameSession s = new GameSession(42);
-		Province dh = s.getWorldMap().findByName("Dhenijansar").orElseThrow();
+		Province dh = s.getWorldMap().findByName("Nathalaire").orElseThrow();
 		Settlement c = s.newSettlement("Test", LocalDate.of(1444, 12, 11), 30, 26, 5, 2, dh);
 		c.claimPlot(new PlotOccupant() {
 		});
 		Footprint fp = ColonyFootprint.of(c, s.plotPoolIfPresent(dh.id()));
 		TownMesh mesh = TownMesh.of(fp, TownRng.siteSeed(42, dh.id()));
 
-		assertEquals(30, mesh.patches().size(), "one ward per plot of the 1444 core");
+		assertEquals(27, mesh.patches().size(), "one ward per plot of the 1444 core");
 		assertBijection(mesh);
 		double total = 0;
 		for (Patch p : mesh.patches()) {
 			total += p.poly().area();
 			assertTrue(p.poly().isConvex(), "patch " + p.cell() + " is not convex");
 		}
-		assertEquals(30.0, total, 1.5, "the wards cover the town: " + total);
+		assertEquals(27.0, total, 1.5, "the wards cover the town: " + total);
 	}
 }

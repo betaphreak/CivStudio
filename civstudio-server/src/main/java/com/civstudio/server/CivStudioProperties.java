@@ -317,8 +317,13 @@ public class CivStudioProperties {
 		private boolean enabled = true;
 		/** The session seed (reproducibility root). */
 		private long seed = 7654321L;
-		/** The world-map province the demo colony founds into (Dhenijansar). */
-		private int provinceId = 4411;
+		/**
+		 * The world-map province the demo colony founds into — <b>Nathalaire</b> (451), the pirate
+		 * city on the Sea of Follies. Chosen because we have a hand-drawn reference for it
+		 * ({@code tools/samples/nathalaire.png}, {@code docs/towngen-port.md} §2c), so what the
+		 * generator produces can be held against what the place is supposed to look like.
+		 */
+		private int provinceId = 451;
 		/** Wall-clock milliseconds per tick — ~one in-game day per second. */
 		private long tickRateMillis = 1000L;
 

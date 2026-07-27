@@ -21,9 +21,9 @@ import com.civstudio.settlement.Settlement;
  * alone is right — the first cannot grow, the second makes a 1444 metropolis a single hut on day
  * one — so the town stands on <b>both</b>:
  * <ul>
- * <li>the <b>1444 starting core</b>: the {@link Settlement#getStartingDistrictCount()} urban plots
- *     of the province nearest the centre, plus the city centre itself, which is part of the town by
- *     definition however the ranking falls;</li>
+ * <li>the <b>1444 starting core</b>: the {@link Settlement#getStartingDistrictCount()} plots of the
+ *     province nearest the centre — urban ground first, then whatever else is closest — plus the
+ *     city centre itself, which is part of the town by definition however the ranking falls;</li>
  * <li>the <b>built plots</b>: those the colony owns and has raised a regular building on
  *     ({@link Plot#hasRegularBuilding()}).</li>
  * </ul>
@@ -84,13 +84,23 @@ public final class ColonyFootprint {
 		if (pool == null || centre == null || n <= 0) {
 			return List.of();
 		}
+		// URBAN PLOTS FIRST, BUT NOT ONLY THEM. The urban flag comes from CityPlacement, which
+		// gives exactly ONE urban plot to any province that is not Anbennar `city_terrain` — and
+		// only ~62 provinces are. Ranking urban plots alone therefore collapses every ordinary
+		// city, however developed, to a single hut: Nathalaire is development 27 and has one urban
+		// plot. So the core takes the urban ground first and then keeps going into the plots
+		// nearest the centre until the site's 1444 development is housed.
 		List<Cell> urban = new ArrayList<>();
+		List<Cell> rest = new ArrayList<>();
 		for (Plot p : pool.plots()) {
-			if (p.urban()) {
-				urban.add(cell(p));
-			}
+			(p.urban() ? urban : rest).add(cell(p));
 		}
-		return Footprint.nearest(urban, n, centre.x() + 0.5, centre.y() + 0.5);
+		double cx = centre.x() + 0.5, cy = centre.y() + 0.5;
+		List<Cell> core = new ArrayList<>(Footprint.nearest(urban, n, cx, cy));
+		if (core.size() < n) {
+			core.addAll(Footprint.nearest(rest, n - core.size(), cx, cy));
+		}
+		return List.copyOf(core);
 	}
 
 	private static Set<Cell> landCells(ProvincePlotPool pool) {
