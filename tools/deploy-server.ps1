@@ -247,6 +247,18 @@ try {
         "(see the failed invariants above). The deploy landed; the map is not usable. " +
         "Roll back with: pwsh tools/deploy-server.ps1 -SkipBuild -Tag <previous-tag>")
     }
+
+    # …and is it the world this repo describes? A usable world can still be the WRONG one — the
+    # deployed content store drifts from the committed snapshot independently of any code change,
+    # and nothing else in the pipeline compares them. Reported as a WARNING, not a failure: content
+    # lives outside this deploy (it is reseeded separately), so a mismatch means "reseed next", not
+    # "this roll was bad".
+    node (Join-Path $PSScriptRoot 'verify-content-parity.mjs') $SITE --settle 90
+    if ($LASTEXITCODE -ne 0) {
+      Write-Warning ("CONTENT PARITY: $SITE is not serving the content in this repo (see above). " +
+        "The server roll itself is fine. To bring content into line: run the Seed Studio workflow, " +
+        "then `pwsh tools/refresh-content.ps1`.")
+    }
   }
 
   # HOUSEKEEPING — only now that the new build is verified live: drop old LOCAL images. The registry

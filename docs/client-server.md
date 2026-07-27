@@ -412,6 +412,22 @@ a small minority. `deploy-server.ps1` runs it after the build-identity verify (`
 bypass), `refresh-content.ps1` runs it after dropping the caches, and Seed Studio runs it to decide
 what to tell you. Run it by hand any time: `node tools/verify-world.mjs https://dev.civstudio.com`.
 
+**…and a usable world may still be the wrong one.** The suites run against the committed snapshot
+while production runs against Strapi — two content stores, each internally consistent, never
+compared. That is why 501 + 132 + 235 tests were green through the outage: both were right about
+their own world. `contentVersion` is now **derived from the content** (`tools/content-hash.cjs`), so
+the comparison is a string equality and needs no credentials: the server publishes it on
+`/api/bundle`, and **`tools/verify-content-parity.mjs`** hashes the committed snapshot and asks the
+server what it serves. `--restamp` fixes the snapshot when *it* is the stale one; `--settle <s>`
+polls until two readings agree, which a rolling replica restart otherwise makes look like drift.
+**`.github/workflows/verify-prod.yml`** runs both checks every 6 hours and on any push touching them
+or the snapshot.
+
+> **`contentVersion` is a cache key, not a label.** Deriving it is what makes "the version travels
+> with the content" a fact rather than a convention — you cannot change the content without changing
+> the key, so the 2026-07-27 stale-cache failure is no longer expressible. It also strengthens the
+> reproducibility stamp: two runs sharing a `contentVersion` genuinely saw the same world.
+
 **Rule of thumb:** a **generation** change → bump `MAP_VERSION` → **CI rebake, then the server
 roll** (never a cache delete — see step 2); a plain engine-resource / server-code change → **server
 deploy** alone; a `web/` change → **SWA deploy** (automatic); a bundle/terrain change → **rebake the

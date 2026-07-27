@@ -13,6 +13,7 @@
 //
 // Usage:
 //   node tools/verify-content-parity.mjs [baseUrl]      compare prod against the committed snapshot
+//   node tools/verify-content-parity.mjs --settle 60    …tolerating a rolling restart (see fetch-settling)
 //   node tools/verify-content-parity.mjs --restamp      rewrite the snapshot's meta.contentVersion
 //                                                       to its own derived hash (no network)
 //   node tools/verify-content-parity.mjs --print        print the snapshot's derived hash and exit
@@ -24,6 +25,7 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import hashMod from './content-hash.cjs';
+import { fetchSettling } from './fetch-settling.mjs';
 
 const { contentHash, isDerived } = hashMod;
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -32,7 +34,11 @@ const SNAPSHOT = join(HERE, '..', 'civstudio-engine', 'src', 'test', 'resources'
 const args = process.argv.slice(2);
 const restamp = args.includes('--restamp');
 const printOnly = args.includes('--print');
-const base = args.find((a) => !a.startsWith('--')) || 'https://dev.civstudio.com';
+const base = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--settle')
+  || 'https://dev.civstudio.com';
+// seconds to allow the deployment to settle before believing a reading (0 = believe the first)
+const settleIdx = args.indexOf('--settle');
+const settleMs = settleIdx >= 0 ? Number(args[settleIdx + 1] ?? 60) * 1000 : 0;
 
 function readSnapshot() {
   return JSON.parse(gunzipSync(readFileSync(SNAPSHOT)).toString('utf8'));
@@ -75,9 +81,12 @@ check('the committed snapshot is stamped with its own content hash', stamped ===
 let served = null;
 let reachable = true;
 try {
-  const res = await fetch(base.replace(/\/+$/, '') + '/api/bundle', { headers: { 'cache-control': 'no-cache' } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  served = (await res.json()).contentVersion ?? null;
+  // --settle: straight after a restart the old replica may still be draining, so one reading can be
+  // stale and the "drift" it reports already untrue. Poll until two agree. The scheduled canary
+  // passes nothing (settle 0): there, an answer that keeps changing IS the finding.
+  const bundle = await fetchSettling(base.replace(/\/+$/, '') + '/api/bundle',
+    (b) => b?.contentVersion ?? null, { settleMs, log: (m) => console.log(m) });
+  served = bundle.contentVersion ?? null;
 } catch (e) {
   reachable = false;
   check(`${base} is reachable`, false, e.message);

@@ -98,12 +98,30 @@ if (-not $SkipServer) {
   Write-Host '==> -SkipServer: leaving the server bundle cache alone' -ForegroundColor Yellow
 }
 
-# The point of the whole exercise: is the world the visitor gets actually usable?
+# The point of the whole exercise, in two questions.
+#
+# 1. Is the world the visitor gets usable at all? (a realm every province can belong to, no empty
+#    realm in the picker, the province count over its floor)
 Write-Host '==> verifying the served world' -ForegroundColor Cyan
 node (Join-Path $PSScriptRoot 'verify-world.mjs') $SERVER_SITE
 if ($LASTEXITCODE -ne 0) {
   throw ("WORLD VERIFY FAILED after refreshing the caches — the content itself is wrong, not merely " +
     "stale. Check what the seed actually wrote (the committed world-bundle.json.gz is the source), " +
     "and see the failed invariants above.")
+}
+
+# 2. …and is it the world this repo describes? A refresh that leaves prod on OLD content is the exact
+#    failure this script exists to prevent, so it must not report success without checking.
+#
+#    --settle: Container Apps rolls replicas gradually, so the old one can still answer for a few
+#    seconds after the new one is healthy. Reading once here gave a false "drift" on 2026-07-27; poll
+#    until two readings agree instead.
+Write-Host '==> verifying content parity with the committed snapshot' -ForegroundColor Cyan
+node (Join-Path $PSScriptRoot 'verify-content-parity.mjs') $SERVER_SITE --settle 90
+if ($LASTEXITCODE -ne 0) {
+  throw ("CONTENT PARITY FAILED after refreshing the caches — the caches are fresh but the deployed " +
+    "content is not what this repo describes. If the SEED has not run yet, run it (Seed Studio) and " +
+    "re-run this script; if the SNAPSHOT is the stale one, " +
+    "`node tools/verify-content-parity.mjs --restamp` and commit.")
 }
 Write-Host '==> done — the seeded content is live.' -ForegroundColor Green
