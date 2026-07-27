@@ -4,7 +4,11 @@
 // Usage: node minimap-yaw-verify.mjs [baseUrl] [serverUrl]
 import { chromium } from 'playwright-core';
 
-const [, , base = 'http://localhost:3001', server = 'http://localhost:8080'] = process.argv;
+// The realm is NAMED, not left to the page's default. Province 4411 is in Haless, and a deep link
+// into a realm other than the one on screen makes the viewer switch realm and RELOAD — so the
+// measurement lands on the pre-switch page at band 0, which looks exactly like a yaw regression.
+const [, , base = 'http://localhost:3001', server = 'http://localhost:8080',
+       realm = 'haless'] = process.argv;
 const browser = await chromium.launch({ channel: 'msedge', headless: true });
 const results = [];
 const check = (name, pass, detail) => results.push({ name, pass, detail });
@@ -14,7 +18,8 @@ for (const [zoom, expectYaw] of [[8, false], [60, true]]) {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   const errs = [];
   page.on('pageerror', e => errs.push(e.message));
-  const url = `${base.replace(/\/$/, '')}/?p=4411&z=${zoom}&live=${encodeURIComponent(server)}&lobby=0#none`;
+  const url = `${base.replace(/\/$/, '')}/?p=4411&realm=${realm}&z=${zoom}`
+    + `&live=${encodeURIComponent(server)}&lobby=0#none`;
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForSelector('#zoomLevel', { timeout: 45000 });
   await page.waitForTimeout(9000);
