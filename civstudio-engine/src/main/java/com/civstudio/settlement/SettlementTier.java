@@ -53,6 +53,29 @@ public enum SettlementTier {
 	METROPOLIS;
 
 	/**
+	 * How large a share of a province's plots a settlement of this tier claims when it is
+	 * <b>not alone in it</b> — the weight in the split described on {@link
+	 * com.civstudio.settlement.PlotField#getMaxPlots()}.
+	 * <p>
+	 * Several settlements in one province are a {@code Rank.LEAGUE} ({@code
+	 * docs/city-and-league.md}), and a league is not made of equals: its lead city is a metropolis
+	 * and its members are towns and hamlets, so the ground divides in that proportion rather than
+	 * evenly. The weights are deliberately coarse — a metropolis is worth eight hamlets, not 8.4 —
+	 * because the split's job is to stop one city draining a province, not to be a land registry.
+	 *
+	 * @return this tier's share weight, always at least 1
+	 */
+	public int plotWeight() {
+		return switch (this) {
+			case CAMP, COTTAGE -> 1;
+			case HAMLET -> 2;
+			case SMALLHOLDING -> 3;
+			case TOWN -> 5;
+			case METROPOLIS -> 8;
+		};
+	}
+
+	/**
 	 * The people-count a {@link #TOWN} must reach before it can advance to {@link #METROPOLIS}
 	 * (the population gate that makes a town a metropolis, beyond food and households alone).
 	 */

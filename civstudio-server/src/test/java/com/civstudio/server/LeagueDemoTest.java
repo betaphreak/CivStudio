@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.HashSet;
@@ -57,20 +58,18 @@ class LeagueDemoTest {
 	}
 
 	@Test
-	void vassalageBetweenCitiesIsNotExpressibleYet() {
-		// The league founds asking each vassal's crown to take the lead city's crown as its liege,
-		// and the link does not take: Ruler.isSovereign() is hardcoded true, so a crown has no
-		// liege by construction. The household liege link (docs/estate-system.md P3) models
-		// ruler -> nobles -> peasants WITHIN one colony; a Legate over Mayors is the rank ladder's
-		// job (docs/city-and-league.md), not something to fake here. Pinned as a known gap so the
-		// day it is implemented, this test says so.
+	void theVassalCrownsAnswerToTheLeadCity() {
+		// A crown used to be sovereign by construction (Ruler.isSovereign() returned true outright),
+		// so a league could not be expressed at all. Now sovereignty is a question — a crown sworn
+		// to another crown is not the root — and the tie is held by reference, because agent ids do
+		// not span colonies and the lead city is in another one.
 		HostedSession hs = league();
 		Settlement lead = hs.colonies().get(0);
 		for (Settlement vassal : hs.colonies().subList(1, hs.colonies().size())) {
-			assertNull(vassal.getRuler().getLiege(),
-					"a crown is sovereign by construction — see docs/city-and-league.md");
+			assertSame(lead.getRuler(), vassal.getRuler().getLiege(),
+					vassal.getName() + " does not answer to " + lead.getName());
 		}
-		assertNull(lead.getRuler().getLiege());
+		assertNull(lead.getRuler().getLiege(), "and the lead city answers to nobody");
 	}
 
 	@Test

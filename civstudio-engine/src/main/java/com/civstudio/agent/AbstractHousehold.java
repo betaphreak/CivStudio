@@ -84,8 +84,14 @@ public abstract class AbstractHousehold extends Agent implements Household {
 	// colony's ruler, so an unassigned household reads as a direct crown vassal (the P1 neutral
 	// state — everyone is the Crown's until a grant hands them to a noble). Stored as an id, not a
 	// reference, so a liege's death simply falls back to the crown — the same death-safe seam as
-	// Building.ownerId. The Ruler is the sovereign root (isSovereign() → getLiege() is null).
+	// Building.ownerId. A crown is the sovereign root unless it has itself been sworn to another
+	// city's crown (a LEAGUE — docs/city-and-league.md), which is what makes isSovereign() a
+	// question rather than a constant.
 	private Integer liegeId;
+
+	// a liege that belongs to ANOTHER colony, held by reference because agent ids do not span
+	// colonies. Set only by setLiege, and only for a cross-colony tie: a league's lead city.
+	private transient AbstractHousehold foreignLiege;
 
 	/**
 	 * Open this household's accounts and draw its identity (age, skill, named
@@ -254,6 +260,8 @@ public abstract class AbstractHousehold extends Agent implements Household {
 	public AbstractHousehold getLiege() {
 		if (isSovereign())
 			return null;
+		if (foreignLiege != null && foreignLiege.isAlive())
+			return foreignLiege;   // a liege in another colony — a league's lead city
 		if (liegeId != null)
 			for (Agent a : getColony().getAgents())
 				if (a.getID() == liegeId && a.isAlive() && a instanceof AbstractHousehold h)
@@ -269,6 +277,11 @@ public abstract class AbstractHousehold extends Agent implements Household {
 	 */
 	public void setLiege(AbstractHousehold liege) {
 		this.liegeId = liege == null ? null : liege.getID();
+		// A liege in ANOTHER colony cannot be resolved by id: agent ids are per-colony and
+		// getLiege() searches this colony's agents. That is exactly the case a LEAGUE needs — one
+		// city's crown sworn to another city's (docs/city-and-league.md) — so a foreign liege is
+		// held by reference instead. Within one colony this stays null and nothing changes.
+		this.foreignLiege = liege != null && liege.getColony() != getColony() ? liege : null;
 	}
 
 	/**

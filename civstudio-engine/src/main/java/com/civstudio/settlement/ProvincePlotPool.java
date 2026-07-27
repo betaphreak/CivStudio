@@ -46,6 +46,9 @@ public final class ProvincePlotPool {
 	private final Province province;
 	private final List<Plot> plots;
 	private int freeCount;
+
+	// share weight held for settlements a league plans to found here but has not yet
+	private int reservedWeight;
 	private final int centroidX; // the founding anchor for the first settlement
 	private final int centroidY;
 
@@ -280,6 +283,43 @@ public final class ProvincePlotPool {
 	 */
 	public synchronized boolean hasSettlement() {
 		return freeCount < plots.size();
+	}
+
+	/**
+	 * <b>Reserve</b> share weight in this province for settlements not yet founded — the seam a
+	 * {@code Rank.LEAGUE} needs when it founds several cities into one province.
+	 * <p>
+	 * The tier-weighted split ({@code PlotField.getMaxPlots}) can only divide the ground between
+	 * settlements that <em>exist</em>, and a colony fills its allowance as it founds. So the first
+	 * city of a league would take the whole province and the second would find it empty. Reserving
+	 * the planned cities' weight up front makes the first city take its share instead, and the
+	 * reservation is released once they are all founded and can speak for themselves.
+	 *
+	 * @param weight the share weight to reserve (negative releases)
+	 */
+	public synchronized void reserveShares(int weight) {
+		reservedWeight = Math.max(0, reservedWeight + weight);
+	}
+
+	/** The share weight reserved for settlements not yet founded. */
+	public synchronized int reservedWeight() {
+		return reservedWeight;
+	}
+
+	/**
+	 * The settlements holding ground in this province, in claim order — several settlements in one
+	 * province being a {@code Rank.LEAGUE} ({@code docs/city-and-league.md}). Read off the plots'
+	 * owners rather than kept as a list, so it cannot drift out of step with who actually holds
+	 * what, and so a colony that dies and releases its plots leaves the set by itself.
+	 *
+	 * @return the owning settlements
+	 */
+	public synchronized java.util.Set<Settlement> settlements() {
+		java.util.Set<Settlement> out = new java.util.LinkedHashSet<>();
+		for (Plot p : plots)
+			if (p.owner() != null)
+				out.add(p.owner());
+		return out;
 	}
 
 	/**

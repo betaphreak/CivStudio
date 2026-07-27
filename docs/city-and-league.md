@@ -381,16 +381,28 @@ neighbours and all three are rural** (Jorathur Fields, New Corveld, Dostanesck, 
 So the league is cities *sharing a site*, and **Nathalaire proper keeps province 451's 63 plots to
 itself** (owner) while the vassals found into the neighbours, staying adjacent.
 
-Two things stop it reaching ten cities, and neither should be worked around quietly:
+Two things stopped it reaching ten cities. **Both are now addressed in the engine** (owner,
+2026-07-28), and one of them is fully done:
 
-1. **A settlement is capped at its province's plot count, and the cities share one pool.** The lead
-   city can drain Nathalaire's 63 plots by itself, so a second city there has nowhere to seat a firm.
-   Today that means roughly one city per province — four in all. Seating ten needs a per-settlement
-   allowance (a province's plots divided among the settlements in it) rather than a per-province cap.
-2. **A crown cannot hold a liege.** `Ruler.isSovereign()` is hardcoded `true`, so the household liege
-   link — which models ruler → nobles → peasants *within* a colony (`docs/estate-system.md` P3) —
-   cannot express a Legate over Mayors. The league founds asking for the link and it does not take;
-   a test pins that as a known gap rather than faking it. This is the rank-ladder work above.
+1. **The province plot cap is now a tier-weighted share** (done). `PlotField.getMaxPlots()` divides a
+   province's plots among the settlements standing in it, weighted by
+   `SettlementTier.plotWeight()` — a metropolis is worth eight hamlets — because a league is not made
+   of equals. A settlement alone in its province still has all of it, so nothing changes for an
+   ordinary colony. `ProvincePlotPool.reserveShares` lets a league hold weight for cities it has not
+   founded yet, since the split can otherwise only see cities that already exist and the first one
+   founded would take everything.
+2. **A crown can now hold a liege** (done). `Ruler.isSovereign()` was hardcoded `true`; it now asks
+   whether this crown has been sworn to another, so a league's member cities answer to its lead city
+   and a lone colony's ruler is sovereign exactly as before. The tie is held **by reference** rather
+   than by id, because agent ids do not span colonies and the lead city is in another one. The
+   Legate/Mayor *titles* remain the rank-ladder work above; what exists now is the feudal link
+   underneath them.
+
+**Still only three cities**, and the remaining cause is localised: `PlotField.claimFreshWorkablePlot`
+fills the colony's plot ladder up to its allowance as it founds, so the founding order still decides
+who gets the ground. The share and the reservation are in place; what is left is making the founding
+respect them all the way down. Worth doing when the demo needs ten cities rather than four — the
+mechanism is built, only the founding sequence is not.
 
 ### The footprint partition (built)
 

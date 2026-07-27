@@ -132,9 +132,42 @@ class PlotField {
 						province.winter(), province.monsoon());
 	}
 
-	/** The hard ceiling on the colony's plot count. */
+	/**
+	 * The hard ceiling on this colony's plot count — <b>its share of the province</b>.
+	 * <p>
+	 * A settlement alone in its province has all of it, exactly as before. When several share one
+	 * — a {@code Rank.LEAGUE} ({@code docs/city-and-league.md}) — the ground divides between them
+	 * <b>weighted by tier</b> ({@link SettlementTier#plotWeight()}), because a league is not made
+	 * of equals: its lead city is a metropolis and its members are towns. Without this the first
+	 * city founded can drain the province and the next has nowhere to seat a firm, which is exactly
+	 * what happened when the league demo tried to found ten cities on one site.
+	 * <p>
+	 * Computed on each ask rather than fixed at construction: the split moves as cities are founded
+	 * and as they grow between tiers. Never below {@link Settlement#MIN_FOUNDING_PLOTS} — a share
+	 * too small to found on is not a share, it is a refusal, and the province's founding floor has
+	 * already been checked.
+	 */
 	int getMaxPlots() {
-		return maxPlots;
+		if (province == null)
+			return maxPlots;
+		ProvincePlotPool pool = plotPool();
+		if (pool == null)
+			return maxPlots;
+		int mine = weightOf(colony);
+		int total = mine + pool.reservedWeight();   // cities the league plans but has not founded
+		for (Settlement other : pool.settlements())
+			if (other != colony)
+				total += weightOf(other);
+		if (total <= mine)
+			return maxPlots;                    // alone in the province: all of it, as before
+		return Math.max(Settlement.MIN_FOUNDING_PLOTS, (int) ((long) maxPlots * mine / total));
+	}
+
+	// a settlement's share weight; an unformed tier counts as the smallest rung rather than zero,
+	// so a colony mid-founding can never divide by nothing
+	private static int weightOf(Settlement s) {
+		SettlementTier tier = s.getTier();
+		return tier == null ? 1 : tier.plotWeight();
 	}
 
 	/** The colony's current plot count (occupied or vacant). */

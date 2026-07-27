@@ -273,7 +273,11 @@ public class Ruler extends AbstractHousehold {
 	/** The Crown is the sovereign root of the feudal tree — sworn to no liege. */
 	@Override
 	protected boolean isSovereign() {
-		return true;
+		// A crown is the sovereign root of ITS colony's feudal tree — unless it has been sworn to
+		// another crown, which is what a LEAGUE is: member cities under a lead city
+		// (docs/city-and-league.md). Until one is, this is true exactly as it always was, so a
+		// lone colony's ruler answers to nobody and nothing about it changes.
+		return getLiegeId() == null;
 	}
 
 	/** The current bank-profit tax rate — fraction of each public bank's distributable profit. */

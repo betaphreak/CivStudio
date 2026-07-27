@@ -487,6 +487,15 @@ public final class SessionHost {
 			log.info(() -> "league " + id + " is " + flavor + "-flavoured (" + province.name()
 					+ "): founding it contiguously until scattered leagues are built");
 		LeagueNames.Pool names = LeagueNames.pool(session, sites);
+		// tell each site how many cities are coming, or the first one founded there takes the whole
+		// province and the rest find it full (ProvincePlotPool.reserveShares)
+		int perSite = sites.isEmpty() ? 0 : (size - 1 + sites.size() - 1) / sites.size();
+		for (int siteId : sites) {
+			com.civstudio.geo.Province at = session.getWorldMap().province(siteId);
+			if (at != null)
+				session.provincePlotPool(at).reserveShares(
+						perSite * com.civstudio.settlement.SettlementTier.SMALLHOLDING.plotWeight());
+		}
 		for (int i = 1; i < size; i++) {
 			Settlement vassal = null;
 			for (int attempt = 0; attempt < sites.size() && vassal == null; attempt++) {
@@ -522,6 +531,13 @@ public final class SessionHost {
 				break;
 			}
 			colonies.add(vassal);
+		}
+		// the cities can speak for themselves now: release the reservation so the split is by who
+		// actually stands there
+		for (int siteId : sites) {
+			com.civstudio.geo.Province at = session.getWorldMap().province(siteId);
+			if (at != null)
+				session.provincePlotPool(at).reserveShares(Integer.MIN_VALUE / 2);
 		}
 		log.info(() -> "founded " + flavor + " league " + id + " — " + colonies.size() + " cities in "
 				+ (province == null ? String.valueOf(spec.provinceId()) : province.name()));
