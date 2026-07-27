@@ -338,6 +338,13 @@ function propsOf(p) {
   }
   for (const q of p._plots) {
     if (!q.feature) continue;
+    // URBAN GROUND IS CLEARED GROUND (owner, 2026-07-28). The baked feature layer describes the
+    // land as the map found it — uninhabited — and a plot a city stands on has not been that for
+    // centuries. Leaving the wild forest standing among the wards is the single most obvious tell
+    // that the town is a drawing over a wilderness rather than a place. The 2D bake keeps the
+    // feature (a city in a forest region still reads as forested from above); what goes is the
+    // standing vegetation ON the built plots.
+    if (q.urban) continue;
     const g = foliageGroup(q.feature);
     const a = g && propAtlas[g.key];
     if (!a || !a.ready) continue;

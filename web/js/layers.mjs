@@ -17,7 +17,6 @@ import { drawSeaBase } from "./sea.mjs";
 import { drawRealmRim } from "./realmrim.mjs";
 import { drawCostOverlay } from "./cost.mjs";
 import { drawTradeGoodIcons } from "./bonusicons.mjs";
-import { drawRoutes } from "./routes.mjs";
 import { drawImprovements } from "./improvements.mjs";
 import { drawTiers } from "./overlays/tiers.mjs";
 import { drawPolitical } from "./overlays/political.mjs";
@@ -88,7 +87,10 @@ export const LAYERS = [
   { id: "selected",       band: "all",                     draw: drawSelectedHighlight },
   { id: "live",           band: "all",  gate: () => S.overlay === "live", draw: drawLive },
   { id: "tradeGoods",     band: "TERRAIN→PLOT, self-fade", gate: notPolitical, draw: drawTradeGoodIcons },
-  { id: "routes",         band: "≥TERRAIN, self-fade", gate: notPolitical, draw: drawRoutes },
+  // ROUTE RIBBONS REMOVED (owner, 2026-07-28): the standing road/trail ribbons are obsolete —
+  // the town layer draws the streets that matter, and T5 gives it the arteries leaving town. The
+  // modules (routes.mjs, route-ribbon.mjs, route-index.mjs, routefetch.mjs) and the server's route
+  // feed are still here; only the drawing is gone.
   { id: "improvements",   band: "≥TERRAIN, self-fade", gate: notPolitical, draw: drawImprovements },
   { id: "city",           band: "≥PROVINCE, self-fade", gate: notPolitical, draw: drawCity },
   { id: "districts",      band: "deep (≥~23×), self-fade", gate: notPolitical, draw: drawDistricts },

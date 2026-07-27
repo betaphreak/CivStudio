@@ -69,7 +69,11 @@ civstudio:
   demo:
     enabled: true
     seed: 7654321
-    province-id: 4411
+    # Nathalaire, the pirate city on the Sea of Follies — the site we have a hand-drawn map of
+    # (tools/samples/nathalaire.png, docs/towngen-port.md §2c), so the town generator's output can
+    # be held against what the place is meant to look like. The demo founds a LEAGUE here: the lead
+    # city and its vassal mayors around the bay (docs/city-and-league.md).
+    province-id: 451
     tick-rate-millis: 3000
   world-source:
     # Where the engine boots its INVARIANT world data (studio-datamodel-rebuild Phase 4):

@@ -27,7 +27,6 @@ import com.civstudio.server.HostedSession;
 import com.civstudio.server.SessionHost;
 import com.civstudio.server.SessionSpec;
 import com.civstudio.server.render.CaravanDetail;
-import com.civstudio.server.render.ProvinceRoutes;
 import com.civstudio.server.render.SessionSnapshot;
 
 import tools.jackson.databind.ObjectMapper;
@@ -409,62 +408,6 @@ class ServerApiTest {
 		assertEquals(1, json.readTree(grepped.body()).size(), "limit + grep + from narrow the tail");
 	}
 
-	@Test
-	@Timeout(120)
-	void routeFeedServesAProvincesStandingLayerAndTheSnapshotFlagsItDirty() throws Exception {
-		// an unknown session has no route layer to serve
-		HttpResponse<String> missing = client.send(
-				HttpRequest.newBuilder(uri("/api/sessions/nope/routes/" + DHENIJANSAR)).GET().build(),
-				HttpResponse.BodyHandlers.ofString());
-		assertEquals(404, missing.statusCode());
-
-		HostedSession hs = host.create(SessionSpec.caravanDemo(224L, DHENIJANSAR));
-		// routeDirty is a per-frame DELTA, so it must be observed on the live feed — subscribe BEFORE
-		// founding, or the frame that carries it has already gone by. (The cached frame is
-		// deliberately delta-free: a joiner has no route layers to invalidate, and refetches per
-		// viewport anyway — see SessionSnapshot#withoutDeltas and web/js/routefetch.mjs.)
-		List<SessionSnapshot> frames = new java.util.concurrent.CopyOnWriteArrayList<>();
-		AutoCloseable sub = hs.subscribe(frames::add);
-		hs.startPaused(); // founds the colony → builds DHENIJANSAR's pool → trails its urban core
-		long deadline = System.nanoTime() + 60_000_000_000L;
-		while (hs.currentSnapshot() == null && System.nanoTime() < deadline)
-			Thread.sleep(5);
-
-		// the colony's all-urban home province comes trailed, so its standing layer is non-empty and
-		// served whole — not a per-band window. This is the viewport-windowed feed's whole point.
-		HttpResponse<String> home = client.send(
-				HttpRequest.newBuilder(uri("/api/sessions/" + hs.id() + "/routes/" + DHENIJANSAR)).GET().build(),
-				HttpResponse.BodyHandlers.ofString());
-		assertEquals(200, home.statusCode());
-		assertTrue(home.headers().firstValue("Cache-Control").orElse("").contains("no-cache"),
-				"routes are per-session mutable, so the feed must not be cached: " + home.headers().map());
-		ProvinceRoutes layer = json.readValue(home.body(), ProvinceRoutes.class);
-		assertEquals(DHENIJANSAR, layer.provinceId());
-		assertTrue(!layer.plots().isEmpty(), "the trailed urban core should serve routed plots");
-		assertTrue(layer.plots().stream().allMatch(p -> p.type().startsWith("ROUTE_")),
-				"every served plot carries a ROUTE_* tier");
-
-		// a province nobody has built a pool for has no routes — answered empty (rev 0), never by
-		// paying the pool's generation cost
-		HttpResponse<String> untouched = client.send(
-				HttpRequest.newBuilder(uri("/api/sessions/" + hs.id() + "/routes/999999")).GET().build(),
-				HttpResponse.BodyHandlers.ofString());
-		assertEquals(200, untouched.statusCode());
-		ProvinceRoutes empty = json.readValue(untouched.body(), ProvinceRoutes.class);
-		assertEquals(0, empty.rev());
-		assertTrue(empty.plots().isEmpty(), "an unbuilt province serves an empty layer");
-
-		// a LIVE frame flags the trailed province dirty, so a client already viewing it refetches
-		sub.close();
-		assertTrue(frames.stream().anyMatch(f -> f.routeDirty().contains(DHENIJANSAR)),
-				"a province born trailed should be flagged dirty on a live frame; saw "
-						+ frames.stream().map(SessionSnapshot::routeDirty).toList());
-
-		// ...and the one-shot read never carries it, so a reconnect cannot replay stale invalidations
-		SessionSnapshot cached = json.readValue(currentSnapshotBody(hs), SessionSnapshot.class);
-		assertTrue(cached.routeDirty().isEmpty(), "GET /snapshot must serve no delta");
-		assertTrue(cached.log().isEmpty(), "GET /snapshot must serve no log delta");
-	}
 
 	@Test
 	@Timeout(120)

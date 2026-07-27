@@ -12,10 +12,10 @@
 // plot grid uses — which is what makes it survive realm crops, the homography projector and the 3D
 // drape without a coordinate system of its own (§3 Coordinates).
 import { P, ctx, projectOn, isPolitical, plotPxAt, provOnScreen } from "./core.mjs";
-import { band, bandAlpha } from "./bands.mjs";
+import { bandAlpha } from "./bands.mjs";
 import { liveColony } from "./overlays/live.mjs";
 import { townOf, ensureTown } from "./townfetch.mjs";
-import { patchFill, patchStroke, wallStyle, townAlpha } from "./town-style.mjs";
+import { patchFill, patchStroke, wallStyle, TOWN_ENV } from "./town-style.mjs";
 
 // draw a ring of [x, y] plot-space points as a path. The layout is served in the same source
 // coordinates the plot grid uses, so projectOn — which carries the homography and the 3D ground
@@ -41,7 +41,10 @@ export function drawTown() {
   if (isPolitical()) return;
   const colony = liveColony();
   if (!colony) return;                       // WorldMap mode: no session, no towns
-  const a = townAlpha(band()) * bandAlpha(band());
+  // ONE envelope, read the way every other layer reads one — bandAlpha takes an ENVELOPE
+  // ([in, full]), not a band position. Passing it a band silently yields nothing, which is exactly
+  // how this layer first drew a perfect, invisible town.
+  const a = bandAlpha(TOWN_ENV);
   if (a <= 0) return;
 
   const px = plotPxAt();                     // one plot in screen px — the unit every width is in

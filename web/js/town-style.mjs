@@ -56,15 +56,18 @@ export function patchStroke(alpha) {
 }
 
 /**
- * The band envelope: the town layer fades in over the city bands and stays up to the deepest zoom.
- * Below `IN` there is no room to draw a ward, and the district chips carry the settlement instead
+ * The town layer's band ENVELOPE — `[fade-in, full]`, the shape bands.bandAlpha takes. Below the
+ * fade-in there is no room to draw a ward and the district chips carry the settlement instead
  * (docs/towngen-port.md §8a — the handover is by band, not by deleting either layer).
  */
 export const BAND_IN = 5.5;
 export const BAND_FULL = 6.5;
+export const TOWN_ENV = [BAND_IN, BAND_FULL];
 
 /**
- * How strongly the town layer draws at a given band position.
+ * How strongly the town layer draws at a given band position. The layer itself reads
+ * {@link TOWN_ENV} through `bands.bandAlpha`; this is the same ramp, exposed so it can be tested
+ * without the camera.
  *
  * @param {number} band the current band value
  * @returns {number} 0 below the fade-in, ramping to 1 by BAND_FULL

@@ -459,7 +459,13 @@ public final class SessionHost {
 	// (docs/estate-system.md P3) applied across colonies rather than within one.
 	private HostedSession buildLeague(String id, String owner, SessionKind kind, String mode,
 			String difficulty, SessionSpec spec, SimulationConfig cfg, ScenarioDef def) {
-		SimulationHarness lead = SimulationHarness.create(cfg, spec.seed(), spec.provinceId());
+		// the lead city is named for the place it stands in, not for SimulationConfig's default
+		// label — a league called Nathalaire whose lead city is called Dhenijansar reads as a bug
+		com.civstudio.geo.Province site =
+				com.civstudio.geo.WorldMap.load().province(spec.provinceId());
+		SimulationConfig leadCfg = site == null ? cfg
+				: cfg.toBuilder().settlementName(site.name()).build();
+		SimulationHarness lead = SimulationHarness.create(leadCfg, spec.seed(), spec.provinceId());
 		lead.setBalanceProfile(BalanceProfiles.get().get(def.balanceProfile()));
 		lead.foundStandardColony();
 		Settlement first = lead.getColony();

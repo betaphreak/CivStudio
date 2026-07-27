@@ -14,7 +14,6 @@
 import { ctx, px, py, cssVar, VIEW, baseXr, baseYr, sxSrc, sySrc, LABEL_FONT, centerOn, S, SERVER_BASE as LIVE_BASE, pllOn } from "../core.mjs";
 import { hasDeepLink } from "../main.mjs";
 import { atLeast, BAND, bandAlpha } from "../bands.mjs";
-import { setRouteSession, invalidateRoutes } from "../routefetch.mjs";
 import { setTownSession } from "../townfetch.mjs";
 import { showLiveLog, ingestLog, ingestChat, resetLog, setChatSender } from "../livelog.mjs";
 import { showNotify, ingestNotify, seedNotify, resetNotify } from "../notify.mjs";
@@ -270,8 +269,7 @@ export async function controlLive(action, value) {
 export function stopLive() {
   if (es) { es.close(); es = null; }
   snap = null; sid = null;
-  setRouteSession(null);   // drop the route-index so the next session starts clean
-  setTownSession(null);    // and the town layouts with it
+  setTownSession(null);    // drop the town layouts so the next session starts clean
   for (const k in trails) delete trails[k];
   resetLog();
   resetNotify();
@@ -417,9 +415,7 @@ function onSnapshot(s) {
   // point the viewport-windowed route feed at this session and flag the provinces whose route layer
   // changed this frame, so the draw layer refetches only those (routefetch.mjs). The refetch is async
   // and repaints itself when the layer lands, so it does not feed the repaint decision below.
-  setRouteSession(s.sessionId);
   setTownSession(s.sessionId);
-  invalidateRoutes(s.routeDirty);
   s.caravans.forEach(c => {
     const t = (trails[c.leader] = trails[c.leader] || []);
     t.push([c.latitude, c.longitude]);
