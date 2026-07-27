@@ -26,9 +26,11 @@ import com.civstudio.server.town.geom.Poly;
  * <p>
  * <b>Three cleanups, in this order, and the order matters.</b>
  * <ol>
- * <li><b>Largest connected component.</b> 4-neighbour connectivity; outlying clumps are dropped
- *     rather than walled, which reads correctly anyway — an outlying built plot is a hamlet outside
- *     the town, not part of it.</li>
+ * <li><b>Largest connected component becomes the walled body</b> (4-neighbour connectivity).
+ *     Everything else is <b>outlying, not discarded</b>: scattered urban plots are real built
+ *     ground, so they stay in the layout as {@linkplain #outliers() extramural} clusters — suburbs
+ *     and hamlets outside the wall (§2b) — and only the body is wrapped by the wall line. Losing
+ *     them would quietly delete plots the sim genuinely built on.</li>
  * <li><b>Water-aware hole fill.</b> An enclosed pocket of <em>unbuilt land</em> is an artefact of
  *     the claim order and gets promoted into the footprint; an enclosed <em>lake</em> is a real
  *     feature the town built around and is kept. A pocket containing any water is kept whole —
@@ -41,17 +43,20 @@ import com.civstudio.server.town.geom.Poly;
  * {@link Diagnostics#singleOuterLoop()} rather than asserted, because a render feature must never
  * be able to kill a session thread (§5.1). The caller logs it; nothing throws.
  *
- * @param cells      the surviving cells, sorted by {@code (y, x)} — the order everything downstream
- *                   iterates in
- * @param outer      the boundary of the whole town, in canonical orientation; the wall line before
- *                   it is a wall, and {@link Poly#EMPTY} for an empty footprint
+ * @param cells      the walled body's cells, sorted by {@code (y, x)} — the order everything
+ *                   downstream iterates in
+ * @param outliers   the extramural cells, sorted the same way: built ground that is not part of the
+ *                   body and is therefore outside the wall rather than gone
+ * @param outer      the boundary of the body, in canonical orientation; the wall line before it is
+ *                   a wall, and {@link Poly#EMPTY} for an empty footprint
  * @param waterHoles the enclosed water bodies, as loops wound the other way
  * @param diag       what the cleanup did, for the caller to log
  */
-public record Footprint(List<Cell> cells, Poly outer, List<Poly> waterHoles, Diagnostics diag) {
+public record Footprint(List<Cell> cells, List<Cell> outliers, Poly outer, List<Poly> waterHoles,
+		Diagnostics diag) {
 
 	/** The footprint of a settlement that has nothing to stand on yet. */
-	public static final Footprint EMPTY = new Footprint(List.of(), Poly.EMPTY, List.of(),
+	public static final Footprint EMPTY = new Footprint(List.of(), List.of(), Poly.EMPTY, List.of(),
 			new Diagnostics(0, 0, 0, 0, 0, 0, true));
 
 	/**
@@ -59,28 +64,29 @@ public record Footprint(List<Cell> cells, Poly outer, List<Poly> waterHoles, Dia
 	 * the {@code SimLog} warning §5.2 asks for when the shape was not what we expected.
 	 *
 	 * @param given            how many cells were offered
-	 * @param kept             how many survived into the footprint
-	 * @param droppedCells     cells discarded with the smaller components
-	 * @param droppedClumps    how many separate components were discarded
-	 * @param filledPockets    enclosed land pockets promoted into the footprint
+	 * @param kept             how many are in the walled body
+	 * @param outlyingCells    cells outside the body — extramural, still drawn
+	 * @param outlyingClumps   how many separate extramural clusters those form
+	 * @param filledPockets    enclosed land pockets promoted into the body
 	 * @param waterHoles       enclosed water bodies kept as holes
-	 * @param singleOuterLoop  whether the outline came back with exactly one outer boundary, which
-	 *                         it always should after the components pass — {@code false} means the
-	 *                         cleanup and the outline disagree and the layout deserves a warning
+	 * @param singleOuterLoop  whether the body's outline came back with exactly one outer boundary,
+	 *                         which it always should after the components pass — {@code false}
+	 *                         means the cleanup and the outline disagree and the layout deserves a
+	 *                         warning
 	 */
-	public record Diagnostics(int given, int kept, int droppedCells, int droppedClumps,
+	public record Diagnostics(int given, int kept, int outlyingCells, int outlyingClumps,
 			int filledPockets, int waterHoles, boolean singleOuterLoop) {
 
-		/** Whether anything was discarded or repaired — i.e. whether this is worth a log line. */
+		/** Whether anything was moved outside or repaired — i.e. whether this is worth a log line. */
 		public boolean interesting() {
-			return droppedCells > 0 || filledPockets > 0 || waterHoles > 0 || !singleOuterLoop;
+			return outlyingCells > 0 || filledPockets > 0 || waterHoles > 0 || !singleOuterLoop;
 		}
 
 		@Override
 		public String toString() {
-			return kept + "/" + given + " plots"
-					+ (droppedCells > 0 ? ", dropped " + droppedCells + " in " + droppedClumps
-							+ " outlying clump(s)" : "")
+			return kept + "/" + given + " plots walled"
+					+ (outlyingCells > 0 ? ", " + outlyingCells + " extramural in "
+							+ outlyingClumps + " cluster(s)" : "")
 					+ (filledPockets > 0 ? ", filled " + filledPockets + " land pocket(s)" : "")
 					+ (waterHoles > 0 ? ", kept " + waterHoles + " water hole(s)" : "")
 					+ (singleOuterLoop ? "" : ", MULTIPLE OUTER LOOPS");
@@ -105,11 +111,14 @@ public record Footprint(List<Cell> cells, Poly outer, List<Poly> waterHoles, Dia
 			return EMPTY;
 		}
 		List<Set<Cell>> clumps = components(given);
-		Set<Cell> kept = largest(clumps);
-		int droppedCells = given.size() - kept.size();
+		Set<Cell> body = largest(clumps);
+		// everything not in the body stays in the layout as extramural ground — outside the wall,
+		// not deleted
+		Set<Cell> outside = new LinkedHashSet<>(given);
+		outside.removeAll(body);
 
-		Pockets pockets = enclosedPockets(kept, isLand);
-		Set<Cell> all = new LinkedHashSet<>(kept);
+		Pockets pockets = enclosedPockets(body, isLand);
+		Set<Cell> all = new LinkedHashSet<>(body);
 		all.addAll(pockets.land());
 
 		List<Poly> loops = GridOutline.loops(all);
@@ -117,26 +126,41 @@ public record Footprint(List<Cell> cells, Poly outer, List<Poly> waterHoles, Dia
 		List<Poly> holes = GridOutline.holes(loops);
 		int outerLoops = loops.size() - holes.size();
 
-		List<Cell> sorted = new ArrayList<>(all);
-		sorted.sort(Comparator.comparingInt(Cell::y).thenComparingInt(Cell::x));
-		return new Footprint(List.copyOf(sorted), outer, List.copyOf(holes),
-				new Diagnostics(given.size(), all.size(), droppedCells, clumps.size() - 1,
+		return new Footprint(sortedByRow(all), sortedByRow(outside), outer, List.copyOf(holes),
+				new Diagnostics(given.size(), all.size(), outside.size(), clumps.size() - 1,
 						pockets.land().size(), holes.size(), outerLoops == 1));
 	}
 
-	/** Whether the town stands on nothing. */
+	/** Whether the town stands on nothing at all — neither walled body nor suburb. */
 	public boolean isEmpty() {
-		return cells.isEmpty();
+		return cells.isEmpty() && outliers.isEmpty();
 	}
 
-	/** How many plots the town stands on. */
+	/** How many plots the <b>walled body</b> stands on. */
 	public int size() {
 		return cells.size();
 	}
 
-	/** The cells as a set, for membership tests. */
+	/** The body's cells as a set, for membership tests. */
 	public Set<Cell> cellSet() {
 		return new LinkedHashSet<>(cells);
+	}
+
+	/**
+	 * Every plot the town stands on, walled body and extramural alike, sorted by {@code (y, x)}.
+	 * This is what gets a patch: a suburb is still built ground with households on it, and the wall
+	 * decides what it is <em>inside</em> of, not whether it exists.
+	 */
+	public List<Cell> allCells() {
+		Set<Cell> all = new LinkedHashSet<>(cells);
+		all.addAll(outliers);
+		return sortedByRow(all);
+	}
+
+	private static List<Cell> sortedByRow(Set<Cell> cells) {
+		List<Cell> sorted = new ArrayList<>(cells);
+		sorted.sort(Comparator.comparingInt(Cell::y).thenComparingInt(Cell::x));
+		return List.copyOf(sorted);
 	}
 
 	/**

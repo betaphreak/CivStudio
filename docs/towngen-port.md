@@ -166,6 +166,33 @@ So the cap costs nothing extra to implement: it is the boundary that decides whi
 existing `inner` / outskirts branch a patch takes. It also means the wall stays legible at every
 tier, and a huge city reads as *dense core + sprawling suburbs* rather than a wall around a district.
 
+## 2c. What a really large settlement actually looks like
+
+`tools/samples/nathalaire.png` — *Nathalaire, the Pirate City, 1446*, hand-drawn Anbennar — is the
+reference for the top of the size range, and it breaks three assumptions this plan carries. Worth
+recording now, because two of them are cheap if designed for and expensive if retrofitted.
+
+1. **A big coastal city is not one blob with suburbs — it is a cluster of named quarters.**
+   Nathalaire is Nescann, Quarterquarters, Fish Island, Shadowport, Smugglersbay, Fortunespent,
+   Jollyport, Upper and Lower Noblewaters: separate built masses around bays, linked by causeways.
+   §2b's "walled core plus thinning sprawl" describes an inland town; here the outlying clusters are
+   **peers**, not fringe. T2's `outliers` already keeps them, but they deserve their own outlines
+   and names rather than being a lesser class of the body's leftovers.
+2. **The wall is not universal, and its water analogue is different in kind.** Nathalaire has no
+   curtain wall. What it has is **gate forts on the causeways** (Shadowgate, Goldgate) and
+   **defensive chains across the channels** — fortification at the chokepoints, because the water
+   is the wall. §1's "walls from `TOWN` up" needs a water branch: a settlement whose approaches are
+   channels gets gates and chains, not a ring.
+3. **The field belt is a first-class layer, not background.** Outside the built masses the whole map
+   is white field lines over green — the farm belt of §2's three-way split, and visually about a
+   third of what makes it read as a city rather than a diagram of one. Our claimed-but-unbuilt plots
+   are exactly that belt.
+
+Two details worth stealing directly: the built texture is fine grey blocks against a dense white
+street network, with **notable buildings drawn as large coloured masses** (palaces, temples,
+warehouses) — which is precisely §4a's "one lot per building, sized by importance" — and every
+quarter carries a name, which our per-plot GeoNames place names could supply for free.
+
 ---
 
 ## 3. Architecture and data flow
@@ -653,6 +680,11 @@ off**; T7 is the first user-visible change.
       pocket fill (land filled, lakes kept, a mixed pocket kept whole) → outline as one outer loop
       plus zero or more water holes. **Ships §5.2.**
 
+      **Outlying clumps are extramural, not discarded** (owner correction, 2026-07-28): scattered
+      urban plots are real built ground, so the largest component becomes the walled body and
+      everything else stays in the layout as `Footprint.outliers()` — suburbs outside the wall
+      (§2b). Dropping them, as the first cut did, quietly deleted plots the sim had built on.
+
       **The single-loop check is a reported diagnostic, not an assert** — consistent with T3 and
       §5.1: `Diagnostics.singleOuterLoop()` travels with the footprint for the caller to log, and
       nothing throws. `Footprint.nearest()` is `district-plots.mjs nearestPlots()` moved server-side
@@ -671,12 +703,30 @@ off**; T7 is the first user-visible change.
       in the middle of the list — so T3 must **derive each cell's jitter from a hash of (seed, x, y)
       rather than from draw order**, or growth reshuffles every seed after the insertion point. That
       also retires §10's order-sensitivity worry for the mesh entirely.
-- [ ] **T3 — Mesh.** One seed per plot centre, **jittered and clamped to `r < 0.5` plot widths**, one
-      Lloyd pass, re-clamped, clipped (§4.1). The bijection (every patch contains exactly one plot
-      centre; every footprint plot has a patch) holds **by construction under the clamp**, and the
-      check is a **non-fatal guard, not a hard rule** (owner) — a violation logs and that patch falls
-      back to its plot square. Test that the clamp is never violated, including on a deliberately
-      concave/holed footprint.
+- [x] **T3 — Mesh.** ✅ **Shipped 2026-07-28.** `TownMesh` (one patch per plot: keyed jitter,
+      clamped, one Lloyd pass) and `TownRng` (keyed randomness), 19 tests. The bijection holds **by
+      construction under the clamp**, and the check is a **non-fatal guard, not a hard rule**
+      (owner) — zero repairs on every shape tested, including one that is concave, holed and
+      carrying a detached suburb at once. Extramural clusters are meshed like everything else: a
+      suburb is built ground with households on it.
+
+      **Grid-line clips beat ghost seeds.** The footprint is a polyomino, so clipping cells to it
+      would need general polygon booleans. Ghost seeds in the empty cells were the obvious dodge and
+      are *worse*: a bisector against a ghost falls short of the plot edge, so every boundary ward
+      would pull back and leave a ring of unclaimed ground between the last houses and the wall.
+      Clipping at the shared grid line is exact for a polyomino, keeps every patch convex, and puts
+      the ward precisely on the line the wall will follow. Residue: a patch can round a diagonal
+      corner into an empty cell by up to the jitter radius — bounded, rare, hidden under the wall.
+
+      **Locality is a guarantee, not an optimisation.** Each patch is built from the seeds within
+      two plots, against bounds derived from its own cell, so it is a **bit-exact function of its
+      5×5 neighbourhood**. The first cut derived bounds from the town's bounding box, and growing
+      the town then shifted every patch by a few ulps — the same class of bug as stream-ordered
+      jitter, only quieter. Asserted now: build a plot three away and every existing patch compares
+      equal, byte for byte.
+
+      Also found: `Poly` had no value equality, so two identical meshes never compared equal — every
+      cache check and test comparison would have silently reported "changed".
 - [ ] **T4 — Wall + gates.** Walled core capped, remainder extramural (§2b); union outline +
       smoothing; **waterfront edges as quay, not wall** (§7a); gates from portal bearings (§6); walls
       gated on `isPermanent()` and ≥4 plots; **wall retained as a high-water mark** (§2a). **Ships

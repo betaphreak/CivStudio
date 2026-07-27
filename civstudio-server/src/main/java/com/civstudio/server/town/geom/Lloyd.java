@@ -58,6 +58,35 @@ public final class Lloyd {
 	}
 
 	/**
+	 * One anchor jittered by an opaque 64-bit <b>key</b> instead of by a position in a random
+	 * stream — uniform in the disc of radius {@code r}, exactly as {@link #jitter} is.
+	 * <p>
+	 * <b>Why a key and not a stream.</b> Stream order makes a seed's jitter depend on how many
+	 * anchors precede it, so inserting one plot into the middle of the list reshuffles every seed
+	 * after it — and the footprint hands its cells back sorted by {@code (y, x)}, where a newly
+	 * built plot routinely lands in the middle. Keyed off {@code (seed, x, y)} instead (see
+	 * {@code TownRng.cellKey}), a plot's jitter is a property of <em>that plot</em>: a town can
+	 * grow, be rebuilt from disk, or be generated one patch at a time and every existing seed lands
+	 * where it always did. It also retires the draw-order sensitivity {@code towngen-port.md} §10
+	 * warns about, at least for the mesh.
+	 *
+	 * @param anchor the plot centre to jitter about
+	 * @param r      the jitter radius, in plots; held below {@link TownScale#JITTER_MAX}
+	 * @param key    the mixed 64-bit key for this plot
+	 * @return the jittered seed
+	 */
+	public static Pt jitterAt(Pt anchor, double r, long key) {
+		double rr = Math.min(r, TownScale.JITTER_MAX * 0.999);
+		// two independent unit reals out of one key: the high and low halves, each scaled off its
+		// own 26-bit slice, which is ample for a sub-plot offset
+		double u = (key >>> 38) / (double) (1L << 26);
+		double v = ((key >>> 12) & ((1L << 26) - 1)) / (double) (1L << 26);
+		double d = rr * Math.sqrt(u);
+		double t = v * 2 * Math.PI;
+		return new Pt(anchor.x() + Math.cos(t) * d, anchor.y() + Math.sin(t) * d);
+	}
+
+	/**
 	 * {@code passes} rounds of Lloyd relaxation: each seed moves to its clipped cell's area
 	 * centroid, then is clamped back into its anchor's {@code r}-disc.
 	 * <p>

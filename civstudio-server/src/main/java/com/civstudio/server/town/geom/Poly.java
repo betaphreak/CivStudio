@@ -438,6 +438,22 @@ public final class Poly {
 		return p.plus(dp.scale(t));
 	}
 
+	/**
+	 * Value equality, vertex list for vertex list. A polygon is data — it gets compared in tests,
+	 * put in records that get compared, and cached; identity equality here would silently make
+	 * every one of those comparisons false. Note this is <b>not</b> geometric equality: the same
+	 * region wound from a different starting vertex is a different {@code Poly}.
+	 */
+	@Override
+	public boolean equals(Object o) {
+		return o instanceof Poly p && pts.equals(p.pts);
+	}
+
+	@Override
+	public int hashCode() {
+		return pts.hashCode();
+	}
+
 	@Override
 	public String toString() {
 		return "Poly" + pts;

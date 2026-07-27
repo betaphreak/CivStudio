@@ -56,30 +56,49 @@ class FootprintTest {
 	}
 
 	@Test
-	void outlyingClumpsAreDroppedAndCounted() {
-		// two built plots across the province are a hamlet outside the town, not part of it
+	void outlyingClumpsStayOutsideTheWallRatherThanBeingDropped() {
+		// scattered urban plots are real built ground: the wall does not enclose them, but they are
+		// still part of the town as extramural clusters (§2b), and deleting them would quietly lose
+		// plots the sim built on
 		Set<Cell> claimed = new LinkedHashSet<>(block(0, 0, 4, 4));
 		claimed.addAll(block(20, 20, 2, 1));
 		claimed.add(new Cell(30, 30));
 		Footprint f = Footprint.of(claimed, ALL_LAND);
-		assertEquals(16, f.size());
-		assertEquals(3, f.diag().droppedCells());
-		assertEquals(2, f.diag().droppedClumps());
-		assertEquals(16.0, f.outer().area(), EPS);
+		assertEquals(16, f.size(), "the walled body");
+		assertEquals(3, f.outliers().size(), "and three plots outside it, kept");
+		assertEquals(19, f.allCells().size(), "every claimed plot is still in the layout");
+		assertEquals(3, f.diag().outlyingCells());
+		assertEquals(2, f.diag().outlyingClumps());
+		assertEquals(16.0, f.outer().area(), EPS, "the wall wraps the body only");
 		assertTrue(f.diag().singleOuterLoop(), "one town, one wall line");
-		assertTrue(f.diag().interesting(), "a dropped clump is worth a log line");
+		assertTrue(f.diag().interesting(), "extramural ground is worth a log line");
 	}
 
 	@Test
 	void diagonalTouchIsNotConnected() {
 		// 4-neighbour connectivity: a corner touch is two clumps, and walling them as one would
-		// pinch the outline at a point no street could pass through
+		// pinch the outline at a point no street could pass through. The second clump becomes a
+		// suburb rather than vanishing.
 		Set<Cell> claimed = new LinkedHashSet<>(block(0, 0, 2, 2));
 		claimed.addAll(block(2, 2, 2, 2));
 		Footprint f = Footprint.of(claimed, ALL_LAND);
 		assertEquals(4, f.size());
-		assertEquals(4, f.diag().droppedCells());
-		assertEquals(1, f.diag().droppedClumps());
+		assertEquals(4, f.outliers().size());
+		assertEquals(1, f.diag().outlyingClumps());
+		assertEquals(8, f.allCells().size());
+	}
+
+	@Test
+	void allCellsIsSortedAndComplete() {
+		Set<Cell> claimed = new LinkedHashSet<>(block(0, 0, 3, 2));
+		claimed.add(new Cell(9, 0));
+		List<Cell> all = Footprint.of(claimed, ALL_LAND).allCells();
+		assertEquals(7, all.size());
+		assertTrue(all.contains(new Cell(9, 0)), "the suburb is in the meshable set");
+		for (int i = 1; i < all.size(); i++) {
+			Cell p = all.get(i - 1), c = all.get(i);
+			assertTrue(p.y() < c.y() || (p.y() == c.y() && p.x() < c.x()), "sorted by (y, x)");
+		}
 	}
 
 	@Test
