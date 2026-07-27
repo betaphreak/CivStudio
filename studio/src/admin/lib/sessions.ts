@@ -54,6 +54,21 @@ export function sessionTitle(s: SessionRow): string {
   return s.colony ?? s.id;
 }
 
+/**
+ * The id as a human should read it. An owned run's key is `<spec-id>@<app_user GUID>`
+ * (`SessionHost.sessionKey`) — the GUID is the ownership key, and it is noise on screen, so the
+ * owner's NAME stands in its place: `caravan-demo-9131759@alexandru`.
+ *
+ * Cosmetic only: the real id is what every API call still uses, so this must never be fed back to
+ * the server. With no `ownerName` (an unowned demo, or an owner the store has forgotten) the id is
+ * shown exactly as it is, GUID and all — a wrong name would be worse than an ugly one.
+ */
+export function displayId(s: SessionRow): string {
+  const at = s.id.indexOf('@');
+  if (at < 0 || !s.ownerName) return s.id;
+  return `${s.id.slice(0, at)}@${s.ownerName}`;
+}
+
 /** Route to a session's detail page, relative to the admin basename. */
 export function sessionPath(id: string): string {
   return `/civstudio-sessions/${encodeURIComponent(id)}`;

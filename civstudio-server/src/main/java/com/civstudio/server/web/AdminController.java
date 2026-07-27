@@ -15,6 +15,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import com.civstudio.geo.RegionEarthMap;
 import com.civstudio.server.CivStudioProperties;
+import com.civstudio.server.DemoSessionSeeder;
+import com.civstudio.server.HostedSession;
 import com.civstudio.server.SessionHost;
 import com.civstudio.server.chat.ChatStore;
 import com.civstudio.settlement.ProvincePlotStore;
@@ -40,14 +42,17 @@ public class AdminController {
 	private final CivStudioProperties props;
 	private final SessionHost host;
 	private final ChatStore chat;
+	private final DemoSessionSeeder demo;
 
 	public AdminController(PlotService plots, CurrentUserResolver currentUser,
-			CivStudioProperties props, SessionHost host, ChatStore chat) {
+			CivStudioProperties props, SessionHost host, ChatStore chat,
+			DemoSessionSeeder demo) {
 		this.plots = plots;
 		this.currentUser = currentUser;
 		this.props = props;
 		this.host = host;
 		this.chat = chat;
+		this.demo = demo;
 	}
 
 	/** A consolidated admin readout: map cache status (+ generation version), server + identity. */
@@ -101,6 +106,27 @@ public class AdminController {
 		out.put("mapVersion", ProvincePlotStore.MAP_VERSION);
 		out.put("entries", entries);
 		return out;
+	}
+
+	/**
+	 * Throw the running caravan demo away and deal a fresh one — same seed and province, day zero.
+	 *
+	 * <p>The shop window is the one run this is allowed for: it is a fixture, not anyone's record
+	 * (see {@link DemoSessionSeeder#reseed()}). Spectators watching the old id will not find it in
+	 * the list any more, so their client re-resolves to the new run on its next reconnect.
+	 *
+	 * @return the new session's id and clock state
+	 */
+	@PostMapping("/demo/restart")
+	public Map<String, Object> restartDemo(HttpServletRequest http) {
+		requireAdmin(http);
+		HostedSession hs;
+		try {
+			hs = demo.reseed();
+		} catch (IllegalStateException disabled) {
+			throw new ResponseStatusException(HttpStatus.CONFLICT, disabled.getMessage());
+		}
+		return Map.of("id", hs.id(), "clockState", hs.clock().name());
 	}
 
 	/** Drop all lobby chat history (new/reloading spectators replay nothing). */

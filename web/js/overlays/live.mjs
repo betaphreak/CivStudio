@@ -20,6 +20,8 @@ import { showNotify, ingestNotify, seedNotify, resetNotify } from "../notify.mjs
 import { minusDays, LIFETIME_DAYS, MAX_CARDS } from "../notify-age.mjs";
 import { makeLogGate } from "../snapshot-dedupe.mjs";
 import { renderPicker } from "../build-picker.mjs";
+import { setSessionEnded } from "../diag.mjs";
+import { fmtNum } from "../num.mjs";
 
 const PALETTE = ["#e8c37a","#6bd08a","#7aa2e0","#e07a9e","#9e7ae0","#e0a97a","#7ae0d0","#c0e07a"];
 
@@ -181,7 +183,7 @@ async function connectStream() {
     es.addEventListener("chat", e => {
       try { ingestChat(JSON.parse(e.data)); } catch (err) { /* ignore a bad chat frame */ }
     });
-    setChatSender(postChat);
+    setChatSender(postChat, postAsk);
     // EventSource retries transient network drops on its own (readyState CONNECTING). A permanently
     // CLOSED feed (readyState 2) — e.g. a non-2xx during a redeploy's revision hand-off — the UA will
     // NOT retry, so we reconnect ourselves (see retryOrLost) rather than dropping straight to the
@@ -239,7 +241,7 @@ window.addEventListener("civstudio:spectate", e => {
   const id = e.detail && e.detail.id;
   if (!id || id === sid) return;
   preferred = id;
-  ended = false;
+  setEnded(false);
   stoppedShown = false;
   const go = document.getElementById("gameover");
   if (go) go.hidden = true;
@@ -272,7 +274,7 @@ export function stopLive() {
   resetLog();
   resetNotify();
   logGate.reset();   // the board is cleared, so the next session's lines are new again
-  ended = false;     // a fresh connection may be to a living session
+  setEnded(false);   // a fresh connection may be to a living session
   stoppedShown = false;
   const go = document.getElementById("gameover");
   if (go) go.hidden = true;
@@ -321,10 +323,18 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && sn
 //     banner but keep the feed's reconnect alive; a restored RUNNING/PAUSED frame clears it (hideStopped).
 let ended = false;          // finished for good — no more frames are coming
 let stoppedShown = false;   // the terminal card is up (finished or suspended)
+
+// `ended` is read by three surfaces that must not disagree — the reconnect loop (stop trying), the
+// HUD status strip (say "game over") and the diagnostics chip (go idle) — so it is written in one
+// place rather than assigned at each of the four sites that end or revive a run.
+function setEnded(over) {
+  ended = over;
+  setSessionEnded(over);
+}
 function showStopped(s) {
   const finished = s.outcome && s.outcome !== "LIVE";
   if (finished && !ended) {
-    ended = true;
+    setEnded(true);
     if (es) { es.close(); es = null; }       // no more frames are coming
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   }
@@ -361,7 +371,7 @@ function hideStopped() {
 // never real. Show a notice and STAY PUT (docs/session-management.md): the map never silently swaps
 // to a different session. Reuses the terminal card with dead-link wording.
 function showDeadLink(id) {
-  ended = true;                             // there is nothing to reconnect to
+  setEnded(true);                           // there is nothing to reconnect to
   if (es) { es.close(); es = null; }
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
   setHudStatus("unavailable");
@@ -566,12 +576,18 @@ function hud(show) {
 // starts showing figures tells the same story without the chrome.
 function setHudStatus(text) {
   const v = el("liveVitals");
-  if (v) v.innerHTML = `<span class="lv lv-status">${text}</span>`;
+  // Once the run is FINISHED there is nothing left to connect to, so the transport's own
+  // "connecting…/reconnecting…" chatter — which the teardown still emits on its way down — is a lie
+  // about a chronicle that has ended. The terminal wording wins over anything the socket says.
+  if (v) v.innerHTML = `<span class="lv lv-status">${ended ? "game over" : text}</span>`;
 }
 
 function renderHud() {
   const v = el("liveVitals");
   if (!v || !snap) return;
+  // …and the vitals must not paint over it either: the cached terminal frame is re-delivered on
+  // every subscribe, and each one used to restore a strip of figures for a colony that is gone.
+  if (ended) { setHudStatus("game over"); return; }
   const c = snap.colonies[0] || {};
   if (!c.name) { v.textContent = ""; return; }
   // one compact strip; the colony's NAME is already the Zeitgeist segment's label, so it is not
@@ -582,7 +598,7 @@ function renderHud() {
     ["🍼", c.children, "Children born into the colony"],
     ["🏭", c.firms, "Firms currently chartered"],
     ["👑", c.nobles, "Nobles in the aristocracy"],
-    ["🌾", (c.necessityPrice || 0).toFixed(2), "Food price — the necessity market's last clearing price"],
+    ["🌾", fmtNum(c.necessityPrice || 0), "Food price — the necessity market's last clearing price"],
     ["🐫", (snap.caravans || []).length, "Caravans afield"],
   ].map(([ico, val, tip]) =>
     `<span class="lv" data-tip="${tip}"><span class="lv-i">${ico}</span>${val}</span>`).join("");
@@ -597,6 +613,26 @@ async function postChat(text) {
       { method: "POST", credentials: "include",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
   } catch (err) { /* transient — the message just won't post */ }
+}
+
+// "@ask <question>" from the log bar — the same gesture the lobby has, pointed at THIS session's
+// room so the answer comes back where it was asked (server: SessionController#ask → LoreChat). The
+// server posts both the question and the Loremaster's reply into the room, so nothing is drawn
+// here: both arrive over the SSE `chat` event like any other line. Only a refusal is shown locally,
+// since a question the room never received should not look as though it were asked.
+async function postAsk(question) {
+  if (!sid) return;
+  try {
+    const res = await fetch(LIVE_BASE + "/api/sessions/" + sid + "/ask",
+      { method: "POST", credentials: "include",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: question }) });
+    if (!res.ok)
+      ingestChat({ user: "Loremaster", text: res.status === 503 || res.status === 404
+        ? "the lore chatbot isn't enabled on this server yet."
+        : "(could not ask — " + res.status + ")" });
+  } catch (err) {
+    ingestChat({ user: "Loremaster", text: "(lore service unreachable)" });
+  }
 }
 
 // --- the B6 pause-and-choose modal (docs/build-queue-plan.md) -------------------------

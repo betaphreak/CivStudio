@@ -30,23 +30,9 @@ import "./btntip.mjs";
 
 // the app shell — panel sets --bar-total on it from the top bar's height (the rail owns its own DOM)
 const appEl = document.querySelector(".app");
-// The title acts as "home": reset to the world view and open the SPECTATOR LOBBY over the live map
-// (docs/spectator-lobby.md) — Esc or a click outside returns to the map. The lobby is where you now
-// land, because "what is running, and what do I want to play" is the question home actually asks;
-// choosing a SERVER is the rarer act, and lives on the picker the lobby links to (window.__picker,
-// exposed by index.html's boot flow). Falls back to the picker, then to a reload, if the lobby
-// module is unavailable (defensive; it always is after boot).
-const brandEl = document.getElementById("brand");
-if (brandEl) {
-  const home = () => {
-    resetView();
-    if (window.__lobby && window.__lobby.open) window.__lobby.open();
-    else if (window.__picker && window.__picker.open) window.__picker.open();
-    else location.href = location.pathname;
-  };
-  brandEl.onclick = home;
-  brandEl.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); home(); } };
-}
+// (The wordmark watermark used to sit here as "home" — reset the view and open the Spectator Lobby.
+//  The watermark came off the map on 2026-07-27 and Esc took the job: js/shortcuts.mjs opens the
+//  lobby once there is nothing left on screen to close. The lobby's own Esc closes it again.)
 document.addEventListener("fullscreenchange", resize);
 // The global keyboard shortcuts (pan / zoom / reset / fullscreen / play / Escape) are
 // dispatched centrally by js/shortcuts.mjs, which calls the actions exported below.
@@ -228,8 +214,9 @@ export function boot() {
   });
   // Refit the canvas whenever the stage's box changes — window resize, fullscreen, AND the panel
   // opening/closing or being drag-resized (all of which shrink/grow the stage). One observer covers
-  // every case, including live tracking during the width transition. (Replaces the window resize
-  // listener; fullscreenchange still calls resize directly above as a belt-and-braces.)
+  // every case. (Replaces the window resize listener; fullscreenchange still calls resize directly
+  // above as a belt-and-braces.) Opening the rail is now ONE refit rather than one per animation
+  // frame: the width transition it used to track is gone — see .stage in styles.css.
   new ResizeObserver(() => resize()).observe(stage);
   // track the floating top bar's height in --bar-total so the Technology tree starts just below it
   // (the bar wraps its sub-control strip to a second line when it doesn't fit — §4)
@@ -241,7 +228,7 @@ export function boot() {
   resize();
   // floating controls over the map (zoom buttons, cost key, political legend) must not fall through
   // to the stage's pan/zoom/pick handlers — the same guard the minimap and live HUD/log bar use.
-  document.querySelectorAll(".zoomctl, #costKey, #polLegend, #brand").forEach(elm =>
+  document.querySelectorAll(".zoomctl, #costKey, #polLegend").forEach(elm =>
     ["pointerdown", "mousedown", "click", "touchstart", "wheel"].forEach(t =>
       elm.addEventListener(t, e => e.stopPropagation(), { passive: true })));
   setPov(S.pov);              // paints the camera-POV toggle (default: God)

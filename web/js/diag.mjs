@@ -25,6 +25,24 @@ let lastFrameMs = 0;        // duration of the most recent paint
 let lastPaintAt = 0;
 let rttMs = null;           // null → not measured yet; -1 → last probe failed
 let chipEl = null, fpsEl = null, netEl = null;
+let ended = false;          // the watched run is over — see setSessionEnded
+
+/**
+ * Tell the chip whether the run it belongs to has ENDED (live.mjs, on a terminal snapshot).
+ *
+ * A finished chronicle is not a slow one and not a disconnected one: there are no frames left to
+ * time and no feed left to be latent about, so the chip collapses to a single "idle". Reporting a
+ * render rate there invites reading a dead number as a performance problem, and "offline" — which
+ * is what an unmeasured link says — reads as a fault when nothing is wrong. A merely PAUSED or
+ * reconnecting run is NOT idle: it is still a live thing, and keeps the real numbers.
+ *
+ * @param {boolean} over whether the run has ended for good
+ */
+export function setSessionEnded(over) {
+  if (ended === !!over) return;
+  ended = !!over;
+  render();
+}
 
 /**
  * Record one completed paint. Called by main.paint() — the only honest place to measure, since it is
@@ -77,6 +95,16 @@ function grade(v, warn, bad) { return v == null ? "" : v >= bad ? "bad" : v >= w
 
 function render() {
   if (!chipEl) return;
+  // an ended run: one word, no figures (see setSessionEnded)
+  chipEl.classList.toggle("idle", ended);
+  if (ended) {
+    fpsEl.textContent = "";
+    fpsEl.title = "";
+    netEl.textContent = "idle";
+    netEl.dataset.grade = "";
+    netEl.title = "The run has ended — nothing is being rendered or fetched for it";
+    return;
+  }
   const f = fps(), avg = avgFrameMs(), stale = performance.now() - lastPaintAt > STALE_AFTER;
   if (f != null) {
     fpsEl.textContent = f + "fps";

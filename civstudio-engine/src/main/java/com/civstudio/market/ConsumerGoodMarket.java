@@ -34,6 +34,24 @@ public class ConsumerGoodMarket extends Market {
 	// (marginalProfit / pPrice) blowup at price 0.
 	private static final double PRICE_FLOOR_FRACTION = 0.05;
 
+	// Scarcity price CEILING, as a multiple of the founding reference — the floor's mirror image, and
+	// for the same reason: a discovered price is only meaningful while the search actually discovers
+	// something, and past a point a runaway quote is not information.
+	//
+	// The band search brackets [p(1-zeta), p(1+zeta)] around yesterday's price. When demand exceeds
+	// supply at EVERY price in that window the search cannot converge, so it settles at the top rail
+	// and the price ratchets +zeta — compounding ~10% a day, 1.1^365 ≈ 10^15 a year. Holding
+	// yesterday's price on a day with NO supply (below) closed the empty-market case, but not this
+	// one: a market with a TRICKLE of supply against large demand takes the same rail every day, and
+	// measured 2.5e12x in 300 days. That is the "1e+30 food price" the UI was rendering.
+	//
+	// Deliberately far above the ordinary range (the skyrocket WARNING at 10x still fires first, so
+	// the anomaly is still reported before the clamp bites) and far above any peak a healthy colony
+	// reaches. Nothing is hidden by it: the shortage drives the ruler's chartering through the
+	// unmet-demand pressure signal, which is computed from demand and supply directly and never
+	// looks at the price.
+	private static final double PRICE_CEILING_FACTOR = 50;
+
 	// window (days) over which the unmet-demand fraction is smoothed for the
 	// short-run pressure reading. Long enough to span the rest-day calendar so a
 	// single closed day's zero-supply spike does not read as a chronic shortage.
@@ -245,9 +263,17 @@ public class ConsumerGoodMarket extends Market {
 		// subsistence price floor: never clear below a small fraction of the founding reference, so a
 		// demand-deficient crash cannot zero the sector's revenue/wages/production (the deflationary
 		// death spiral) — the price stays low (cheap food to stockpile) but the farm keeps producing.
-		double priceFloor = PRICE_FLOOR_FRACTION * (initLow + initHigh) / 2;
+		double reference = (initLow + initHigh) / 2;
+		double priceFloor = PRICE_FLOOR_FRACTION * reference;
 		if (price < priceFloor)
 			price = priceFloor;
+		// …and the same clamp on the scarcity side, before anything transacts at it — see
+		// PRICE_CEILING_FACTOR. Applied here rather than to mktPrice alone so the day's actual
+		// transactions settle at the clamped price too: a buyer must not be charged a number the
+		// market itself will not stand behind tomorrow.
+		double priceCeiling = PRICE_CEILING_FACTOR * reference;
+		if (price > priceCeiling)
+			price = priceCeiling;
 
 		double vol = Math.min(supply, demand);
 

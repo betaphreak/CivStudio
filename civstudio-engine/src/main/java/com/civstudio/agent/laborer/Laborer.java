@@ -691,8 +691,16 @@ public class Laborer extends AbstractHousehold {
 		homePlot.addBuilding(built);
 		house = built;
 		houseOnPlot = homePlot;
-		SimLog.event(Rank.HOUSEHOLD, Level.FINE, String.format(
-				"the %s household raised its %s on its home plot",
+		// Deliberately NOT SimLog.event: a hut going up is not news (owner ruling, 2026-07-27).
+		// Every household raises one and then climbs the housing ladder, so at colony scale this was
+		// the single loudest thing on the notification board — hundreds of identical lines about the
+		// most ordinary thing a family does, burying the events that actually needed reading.
+		//
+		// FINER, not FINE, and that is the whole point: the live tap's floor is FINE
+		// (-Deos.log.tap.level), so a plain log.fine here would still reach the board — and reach it
+		// UNRANKED, which notify-rank shows unconditionally. One rung lower keeps it as
+		// instrumentation for a -Deos.log.level=FINER run and off the player's screen.
+		log.finer(() -> String.format("the %s household raised its %s on its home plot",
 				getHead().surname(),
 				com.civstudio.settlement.BuildingCatalog.displayName(targetRungId)));
 		targetRungId = null;
@@ -729,8 +737,8 @@ public class Laborer extends AbstractHousehold {
 		var built = new com.civstudio.settlement.Building(targetUpgradeId, getID());
 		homePlot.addBuilding(built);
 		buildEconomy.noteHousingUpgrade();
-		SimLog.event(Rank.HOUSEHOLD, Level.FINE, String.format(
-				"the %s household upgraded to a %s on its home plot",
+		// instrumentation, not news — see the sibling note in the raise path above
+		log.finer(() -> String.format("the %s household upgraded to a %s on its home plot",
 				getHead().surname(),
 				com.civstudio.settlement.BuildingCatalog.displayName(targetUpgradeId)));
 		house = built;

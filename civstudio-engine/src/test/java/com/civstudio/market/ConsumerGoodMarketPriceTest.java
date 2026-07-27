@@ -86,6 +86,33 @@ class ConsumerGoodMarketPriceTest {
 		assertEquals(0, necessity.getLastMktSupply(), 1e-12);
 	}
 
+	/**
+	 * The half the empty-market rule missed. Holding yesterday's price when NOTHING is offered closes
+	 * the {@code supply == 0} case exactly — and a market with a <b>trickle</b> of supply against
+	 * large demand walks the same band rail every single day, so it ratcheted just as fast while
+	 * passing the {@code supply > 0} guard. Measured before the ceiling: 2.5e12x in 300 days, which
+	 * is where the UI's "1e+30 food price" came from.
+	 */
+	@Test
+	void aTrickleOfSupplyAgainstHugeDemandDoesNotRatchetEither() {
+		Settlement colony = foundColony(SimulationConfig.DEFAULT, 7654321L);
+		ConsumerGoodMarket necessity = (ConsumerGoodMarket) colony.getMarket("Necessity");
+		colony.run(200);
+
+		for (int day = 0; day < 300; day++) {
+			necessity.addBuyOffer(colony.getRuler(), price -> 500);
+			necessity.addSellOffer(colony.getRuler(), 0.001);   // > 0, and nowhere near demand
+			necessity.clear();
+		}
+		double ceiling = 50 * necessity.getInitialPrice();   // PRICE_CEILING_FACTOR
+		assertTrue(necessity.getLastMktPrice() <= ceiling + 1e-9,
+				"300 rationed days ran the price to " + necessity.getLastMktPrice()
+						+ " (ceiling " + ceiling + ") — the ratchet is back on the trickle path");
+		// …and it genuinely climbed on the way: the clamp bounds scarcity, it does not deny it
+		assertTrue(necessity.getLastMktPrice() > necessity.getInitialPrice(),
+				"a rationed market should still read dear");
+	}
+
 	@Test
 	void aGlutStillDiscoversDownward() {
 		Settlement colony = foundColony(SimulationConfig.DEFAULT, 7654321L);

@@ -294,6 +294,12 @@ public final class HostedSession {
 		this.tickRateMillis = Math.max(0, millis);
 	}
 
+	/** The wall-clock milliseconds per tick when running (0 = uncapped) — so a caller that borrows
+	 *  the clock (the restore fast-forward) can hand it back. */
+	public long tickRateMillis() {
+		return tickRateMillis;
+	}
+
 	/** Set the snapshot cadence (emit every {@code n} ticks; clamped to at least 1). */
 	public void setSnapshotEveryTicks(int n) {
 		this.snapshotEveryTicks = Math.max(1, n);

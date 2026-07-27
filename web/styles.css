@@ -272,7 +272,10 @@ body {
      static backdrop has no business being redrawn 30 times a second. (It was #090d14 — a different
      dark that had been invisible all along, because the fill covered it every frame.) */
   position: absolute; top: var(--bar-h); left: 0; right: 0; bottom: var(--foot-h); z-index: 0; overflow: hidden; background: #070a10; cursor: grab;
-  transition: right .22s ease;   /* the panel resizes the map (see .app.rail-open); a ResizeObserver refits the canvas */
+  /* NO transition on `right`. The rail used to slide the stage's edge over .22s with a
+     ResizeObserver refitting the canvas behind it — which meant one FULL scene render per animation
+     frame for a fifth of a second, every time the rail opened or closed, purely for the easing.
+     Opening a panel is not worth ~13 repaints of the world (2026-07-27). */
   --panel: #141a26; --panel-2: #1a2130;
   --ink: #e7ecf4; --ink-soft: #9aa6ba; --ink-faint: #6b7688;
   --line: #232c3c; --line-soft: #1b2331; --accent: #e6b04a;
@@ -308,25 +311,10 @@ canvas#map { position: absolute; inset: 0; width: 100%; height: 100%; display: b
 canvas#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 0; }
 canvas#gl.off { display: none; }
 
-/* the project wordmark (leftmost in the top bar) */
-.brand {
-  font-family: "Constantia", "Cambria", "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 21px; font-weight: 600; letter-spacing: .005em; line-height: 1; white-space: nowrap;
-  text-shadow: 0 1px 12px rgba(4, 7, 12, .75);
-  cursor: pointer; user-select: none; border-radius: 6px; padding: 2px 4px; transition: opacity .15s;
-}
-.brand:hover { opacity: .82; }
-.brand:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.brand-a { color: var(--accent); }                 /* CivStudio — gold */
-.brand-b { color: #eef2f8; }                        /* Anbennar — light */
-.brand-sep { color: var(--accent); opacity: .55; margin-right: .04em; }
-/* watermark variant: the wordmark over the map (moved off the top bar to save space) — unobtrusive
-   and faint, brightening a little on hover; still clickable (reset / back to server selection) */
-.brand-watermark {
-  position: absolute; top: 14px; right: 18px; z-index: 4;
-  font-size: 18px; opacity: .16; pointer-events: auto;
-}
-.brand-watermark:hover, .brand-watermark:focus-visible { opacity: .5; }
+/* (The project wordmark's styles — .brand / .brand-a / .brand-b / .brand-sep / .brand-watermark —
+   went with the last element wearing them on 2026-07-27, when the watermark came off the map and Esc
+   took over as the lobby's door. The loading splash (.ld-title) and the lobby header (.lb-title)
+   carry the name now, and style it themselves.) */
 
 .legend {
   position: absolute; left: 22px; bottom: 16px; z-index: 3;
@@ -432,10 +420,13 @@ input[type="range"].scrub::-moz-range-thumb {
    left edge — .app.rail-open below — so it never draws over the map). Its width is user-draggable
    via the .rail-resize handle. On narrow screens it falls back to an overlay (media query further down). */
 .railwrap {
-  position: absolute; top: var(--bar-h); right: 0; bottom: var(--foot-h); width: var(--rail-w); z-index: 8;
+  /* --bar-total, not --bar-h: the top bar is TWO rows whenever the advisor sub-strip wraps
+     (#advisorSubbar), and --bar-h is only the first. panel.mjs measures the real height into
+     --bar-total; pinning to --bar-h left the rail's top tucked under the wrapped sub-bar. */
+  position: absolute; top: var(--bar-total, var(--bar-h)); right: 0; bottom: var(--foot-h); width: var(--rail-w); z-index: 8;
   background: var(--panel); border-left: 1px solid var(--line); box-shadow: var(--shadow);
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;
-  transform: translateX(100%); transition: transform .22s ease;
+  transform: translateX(100%);   /* no transition — see .stage above */
 }
 .railwrap.open { transform: none; }
 /* the panel reserves layout space by pushing the stage's right edge in — the map (and every control
@@ -531,6 +522,9 @@ input[type="range"].scrub::-moz-range-thumb {
 .metacell .k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
 .metacell .v { font-size: 18px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .metacell .v small { font-size: 11px; color: var(--ink-soft); font-weight: 400; }
+/* a figure's UNIT, tucked after it at a whisper — "12.4% /yr". The period a rate is quoted over is
+   the difference between alarming and unremarkable, so it is always said; it just needn't shout. */
+.metacell .v .unit, .stat .v .unit { font-size: .62em; color: var(--ink-faint); font-weight: 500; letter-spacing: .04em; }
 
 .sectlabel { font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); margin: 0 0 2px; }
 
@@ -1060,6 +1054,9 @@ body.auth-anon .live-log-chat-hint { display: block; }
   font: 600 11px ui-monospace, 'Cascadia Code', Consolas, monospace; font-variant-numeric: tabular-nums;
   color: var(--ink-dim, #8b97a8); white-space: nowrap; cursor: default; }
 .diag-chip .diag-sep { opacity: .4; }
+/* an ended run collapses the chip to one word (diag.setSessionEnded) — so the separator has
+   nothing left to separate */
+.diag-chip.idle .diag-sep { display: none; }
 .diag-v[data-grade="ok"]   { color: #6ee7a8; }
 .diag-v[data-grade="warn"] { color: #f2c14b; }
 .diag-v[data-grade="bad"]  { color: #f0776a; }
@@ -1243,6 +1240,10 @@ body.auth-anon #clock { cursor: not-allowed; }
 .lb-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .lb-btn:disabled { opacity: .4; cursor: not-allowed; border-color: var(--line); background: none; }
 .lb-btn.lb-ghost { border-color: var(--line); background: none; font-weight: 400; }
+/* an OPERATOR action sitting among the play buttons — deliberately not gold: it is not something
+   the room is being invited to do, it is a lever the one admin present happens to be able to pull */
+.lb-btn.lb-btn-op { border-color: #6b4a4a; background: none; color: #d99a8f; font-weight: 500; }
+.lb-btn.lb-btn-op:hover:not(:disabled) { background: rgba(217, 154, 143, .14); }
 .lb-hint { font-size: 11px; color: var(--ink-faint); flex: 1; }
 .lb-esc { font-size: 11px; color: var(--ink-faint); }
 /* new-run setup: a step inside the lobby, not another screen */

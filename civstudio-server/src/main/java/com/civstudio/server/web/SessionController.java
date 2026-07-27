@@ -25,6 +25,8 @@ import com.civstudio.server.SessionKind;
 import com.civstudio.server.SessionSpec;
 import com.civstudio.geo.WorldMap;
 import com.civstudio.handicap.HandicapCatalog;
+import com.civstudio.server.auth.AppUser;
+import com.civstudio.server.auth.UserStore;
 import com.civstudio.server.command.SetTaxRateCommand;
 import com.civstudio.server.registry.SessionRecord;
 import com.civstudio.server.registry.SessionRegistry;
@@ -68,13 +70,33 @@ public class SessionController {
 	private final CurrentUserResolver currentUser;
 	private final SessionAuthz authz;
 	private final SseFeed feed;
+	private final UserStore users;
+	private final LoreChat lore;
 
 	public SessionController(SessionHost host, CurrentUserResolver currentUser,
-			SessionAuthz authz, SseFeed feed) {
+			SessionAuthz authz, SseFeed feed, UserStore users, LoreChat lore) {
 		this.host = host;
 		this.currentUser = currentUser;
 		this.authz = authz;
 		this.feed = feed;
+		this.users = users;
+		this.lore = lore;
+	}
+
+	/**
+	 * The owner's human-readable name for a row — what an admin reads instead of the surrogate
+	 * {@code app_user} GUID the session key is tagged with ({@link SessionHost#sessionKey}). Null for
+	 * an unowned run (the demo), and for an owner the store no longer knows, so a caller falls back to
+	 * the raw id rather than inventing a name.
+	 *
+	 * @param owner the owning {@code app_user} id, or {@code null}
+	 * @return the display name, or {@code null}
+	 */
+	private String ownerName(String owner) {
+		if (owner == null || owner.isBlank())
+			return null;
+		return users.findById(owner).map(AppUser::displayName)
+				.filter(n -> !n.isBlank()).orElse(null);
 	}
 
 	/**
@@ -131,6 +153,7 @@ public class SessionController {
 		row.put("date", hs.date().toString());     // the in-game date a lobby row shows
 		row.put("watching", hs.spectators());      // 👁 on the row
 		row.put("mine", me != null && me.equals(hs.owner()));
+		row.put("ownerName", ownerName(hs.owner()));   // the GUID's human face — see ownerName
 		row.put("realm", realmKey(hs.session().getWorldMap(), hs.spec().provinceId()));
 		// What the row is CALLED. A run is named by its colony for now — naming is deferred to
 		// countries (docs/spectator-lobby.md §Naming), and this is the one field that changes when
@@ -165,6 +188,7 @@ public class SessionController {
 		row.put("date", SimulationConfig.DEFAULT.startDate().plusDays(r.tick()).toString());
 		row.put("watching", 0);
 		row.put("mine", true);   // only the caller's own records reach here
+		row.put("ownerName", ownerName(r.owner()));
 		row.put("realm", realmKey(map, r.provinceId()));
 		if (r.endReason() != null)
 			row.put("endReason", r.endReason());
@@ -435,6 +459,35 @@ public class SessionController {
 			text = text.substring(0, MAX_CHAT_LEN);
 		hs.postChat(user, text);
 		return ResponseEntity.status(202).body(Map.of("accepted", true, "user", user));
+	}
+
+	/**
+	 * Put a lore question to THIS session's chat — the map's event-log bar is a chat box like the
+	 * lobby's, so {@code @ask} has to work in it, and the answer has to come back where it was asked
+	 * rather than in some other room. Same machinery either way ({@link LoreChat}), pointed at this
+	 * session's {@code postChat} instead of the lobby's.
+	 *
+	 * @param id   the session to ask in
+	 * @param req  the question
+	 * @param http the request (the asker's identity is resolved from it)
+	 * @return 202 once the question is in the room, 404 no such session, 401 signed out, 400 empty,
+	 *         503 no lore backend
+	 */
+	@PostMapping("/{id}/ask")
+	public ResponseEntity<Object> ask(@PathVariable String id, @RequestBody(required = false) ChatRequest req,
+			HttpServletRequest http) {
+		HostedSession hs = host.getOrRestore(id);
+		if (hs == null)
+			return notFound(id);
+		ResponseEntity<Object> denied = authz.denyChat(http);
+		if (denied != null)
+			return denied;
+		String question = req == null || req.text() == null ? "" : req.text().strip();
+		if (question.isEmpty())
+			return ResponseEntity.badRequest().body(Map.of("error", "empty question"));
+		if (question.length() > MAX_CHAT_LEN)
+			question = question.substring(0, MAX_CHAT_LEN);
+		return lore.ask(hs::postChat, currentUser.displayName(http), question);
 	}
 
 	// the session's latest render snapshot, once. /stream is the right way to WATCH a session, but a

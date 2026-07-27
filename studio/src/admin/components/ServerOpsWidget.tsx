@@ -48,6 +48,15 @@ export default function ServerOpsWidget() {
       return 'Lobby chat cleared.';
     }, 'Clear all lobby chat history?');
 
+  // The shop window, dealt again from day zero. Destructive in the sense that the running demo is
+  // gone — but it is a fixture, not anyone's save, which is exactly why it is the one run with a
+  // restart button (see DemoSessionSeeder#reseed).
+  const restartDemo = () =>
+    run(async () => {
+      const r = await serverFetch<{ id: string }>('POST', '/api/admin/demo/restart');
+      return `Demo restarted — ${r.id} is back at day zero.`;
+    }, 'Restart the caravan demo? The run on screen is discarded and re-founded from day zero.');
+
   return (
     <Flex direction="column" alignItems="stretch" gap={3}>
       <Flex gap={2} wrap="wrap">
@@ -67,6 +76,9 @@ export default function ServerOpsWidget() {
         </Button>
         <Button variant="danger-light" onClick={clearChat} loading={busy} disabled={busy}>
           Clear lobby chat
+        </Button>
+        <Button variant="secondary" onClick={restartDemo} loading={busy} disabled={busy}>
+          Restart demo
         </Button>
         {pl.storageUrl && (
           <Button variant="tertiary" onClick={() => window.open(pl.storageUrl, '_blank', 'noopener')}>

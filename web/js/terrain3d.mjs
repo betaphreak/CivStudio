@@ -22,7 +22,7 @@
 // static import would put it on every page load's critical path to serve a band most sessions never
 // reach. It is fetched by dynamic import the first time the camera crosses into band 5.
 import { P, MAP, VIEW, cam, affineUnproject, setProjector, setGroundHeight, latAtSourceY,
-         isUnderground, provSrcBox, SEA_BANDS, TREES } from "./core.mjs";
+         isUnderground, provSrcBox, SEA_BANDS, TREES, S } from "./core.mjs";
 import { ground3D, props3D, set3DAvailable, band } from "./bands.mjs";
 import { tiltAt, heightScaleAt, TILT_MAX } from "./band-math.mjs";
 import { draw } from "./repaint.mjs";
@@ -661,6 +661,8 @@ function syncCamera() {
   tiltNow = tiltAt(band());
   const th = tiltNow * Math.PI / 180;
   const ps = yawAt(tiltNow) * Math.PI / 180;
+  // publish the applied yaw for the north-up chrome that has to compensate for it (minimap.mjs)
+  S.camYaw = yawAt(tiltNow);
   const fov = FOV_FLAT + (FOV_TILTED - FOV_FLAT) * (tiltNow / TILT_MAX);
   const r = VIEW.h / (2 * m * Math.tan(fov * Math.PI / 360));
 
@@ -847,7 +849,7 @@ export function renderTerrain3D() {
     if (canvas) canvas.classList.add("off");
     // Hand the camera back. Leaving a 3D projector installed after the 2D ground resumes would have every
     // label and icon on the map projected through a camera that is no longer drawing anything.
-    if (installed) { installed = false; tiltNow = 0; H = Hinv = null; setProjector(); }
+    if (installed) { installed = false; tiltNow = 0; S.camYaw = 0; H = Hinv = null; setProjector(); }
     return;
   }
   if (!ensureRenderer()) return;

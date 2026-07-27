@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { Box, Flex, Typography, Button } from '@strapi/design-system';
 import { serverFetch, type SessionRow } from '../lib/serverApi';
 import { useServerPoll } from '../lib/useServerPoll';
-import { KIND_LABEL, controlsFor, controlSession, sessionPath, sessionTitle,
+import { KIND_LABEL, controlsFor, controlSession, displayId, sessionPath, sessionTitle,
   type ControlAction } from '../lib/sessions';
 import { CenteredLoader, Gate, ActionResult } from './opsShared';
 import { Pill, StatePair, SessionFigures } from './sessionBits';
@@ -68,8 +68,8 @@ export default function SessionsWidget() {
                   {sessionTitle(s)}
                 </Typography>
                 {s.colony && (
-                  <Typography variant="pi" textColor="neutral600" ellipsis>
-                    {s.id}
+                  <Typography variant="pi" textColor="neutral600" ellipsis title={s.id}>
+                    {displayId(s)}
                   </Typography>
                 )}
               </Flex>

@@ -229,6 +229,33 @@ class SessionPersistenceTest {
 		assertEquals(1, after.colonies().size());
 	}
 
+	/**
+	 * A restored run comes back <b>paused</b>, even though it was RUNNING when the process went
+	 * down (owner decision, 2026-07-27). Restoring used to re-{@code resume()} it, so the first
+	 * visitor after a redeploy found days already spent on their behalf — and spent at the
+	 * fast-forward's uncapped rate, which was never handed back either.
+	 */
+	@Test
+	@Timeout(300)
+	void aRestoredRunComesBackPaused() {
+		SessionSpec spec = new SessionSpec(6009L, "registry-test", DHENIJANSAR);
+		HostedSession before = host.create(spec, "alice");
+		before.setTickRateMillis(0);
+		before.startPaused();
+		before.step(20);
+		long deadline = System.nanoTime() + 120_000L * 1_000_000L;
+		while (before.tick() < 20 && System.nanoTime() < deadline)
+			Thread.onSpinWait();
+		before.resume();                       // …and is recorded RUNNING
+		String id = before.id();
+		host.stopAll();
+
+		HostedSession after = host.getOrRestore(id);
+		assertNotNull(after);
+		assertEquals(ClockState.PAUSED, after.clock(),
+				"a restored run waits for you rather than running on without you");
+	}
+
 	/** getOrRestore is the caller's door: a live run is handed back, a recorded one rebuilt. */
 	@Test
 	@Timeout(180)

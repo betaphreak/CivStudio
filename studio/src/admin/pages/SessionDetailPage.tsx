@@ -5,7 +5,7 @@ import { ArrowLeft } from '@strapi/icons';
 import { Layouts, Page } from '@strapi/admin/strapi-admin';
 import { serverFetch, type SessionRow, type SessionSnapshot } from '../lib/serverApi';
 import { useServerPoll } from '../lib/useServerPoll';
-import { KIND_LABEL, controlsFor, controlSession, sessionTitle, type ControlAction } from '../lib/sessions';
+import { KIND_LABEL, controlsFor, controlSession, displayId, sessionTitle, type ControlAction } from '../lib/sessions';
 import { CenteredLoader, Gate, ActionResult } from '../components/opsShared';
 import { Pill, StatePair, SessionFigures } from '../components/sessionBits';
 import ColonyPanel from '../components/panels/ColonyPanel';
@@ -125,7 +125,7 @@ export default function SessionDetailPage() {
       <Page.Title>{sessionTitle(session)}</Page.Title>
       <Layouts.Header
         title={sessionTitle(session)}
-        subtitle={session.id}
+        subtitle={displayId(session)}
         navigationAction={back}
         primaryAction={
           <Flex gap={1}>

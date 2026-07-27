@@ -1,4 +1,5 @@
 import { cam, VIEW, MAP, centerOn, S, stage } from "./core.mjs";
+import { viewportQuad, worthShowing } from "./minimap-geom.mjs";
 import { band, BAND } from "./bands.mjs";
 
 // Minimap — a small world-raster thumbnail docked bottom-left of the stage, with a rectangle
@@ -68,22 +69,21 @@ function wireNav() {
 export function drawMinimap() {
   if (!canvas || !mctx) return;
 
-  // the visible screen box as fractions of the world raster (0..1), both axes clamped to the map
-  // edges — no east-west wrap now the map is a finite sheet (docs/realms.md §Delete the wrap), so
-  // horizontal is computed exactly like vertical (no mod, no seam).
-  let fx0 = ((-cam.x / cam.k) - VIEW.dx) / VIEW.dw;
-  let fx1 = ((VIEW.w - cam.x) / cam.k - VIEW.dx) / VIEW.dw;
-  fx0 = Math.max(0, Math.min(1, fx0)); fx1 = Math.max(0, Math.min(1, fx1));
-  const fw = fx1 - fx0;
-  let fy0 = ((-cam.y / cam.k) - VIEW.dy) / VIEW.dh;
-  let fy1 = ((VIEW.h - cam.y) / cam.k - VIEW.dy) / VIEW.dh;
-  fy0 = Math.max(0, Math.min(1, fy0)); fy1 = Math.max(0, Math.min(1, fy1));
-  const fh = fy1 - fy0;
+  // the visible screen box as fractions of the world raster (0..1) — no east-west wrap now the map
+  // is a finite sheet (docs/realms.md §Delete the wrap), so horizontal is computed exactly like
+  // vertical (no mod, no seam). Kept UNCLAMPED: the marker is rotated below, and clamping an extent
+  // before rotating it skews the quad. Only the visibility test wants the clamped fractions.
+  const fx0 = ((-cam.x / cam.k) - VIEW.dx) / VIEW.dw;
+  const fx1 = ((VIEW.w - cam.x) / cam.k - VIEW.dx) / VIEW.dw;
+  const fy0 = ((-cam.y / cam.k) - VIEW.dy) / VIEW.dh;
+  const fy1 = ((VIEW.h - cam.y) / cam.k - VIEW.dy) / VIEW.dh;
+  const clamp01 = v => Math.max(0, Math.min(1, v));
+  const fw = clamp01(fx1) - clamp01(fx0), fh = clamp01(fy1) - clamp01(fy0);
 
   // at the world view the rectangle ≈ the whole map → hide; show as soon as either axis zooms in.
   // Also hidden in the Ground regime (band ≥ PLOT): at city-micro zoom the world thumbnail is noise
   // and the deep view is the subject (docs/zoom-bands.md §chrome).
-  const visible = ready && (fw < 0.985 || fh < 0.985) && band() < BAND.PLOT;
+  const visible = ready && worthShowing(fw, fh) && band() < BAND.PLOT;
   canvas.classList.toggle("on", visible);
   stage.classList.toggle("mm-on", visible);
   if (!visible) return;
@@ -95,19 +95,24 @@ export function drawMinimap() {
   mctx.drawImage(img, 0, 0, mmW, mmH);
   mctx.fillStyle = "rgba(6,9,14,0.22)"; mctx.fillRect(0, 0, mmW, mmH);   // dim the whole thumbnail…
 
-  const ry = fy0 * mmH, rh = Math.max(2, fh * mmH), rw = fw * mmW, rx = fx0 * mmW;
-  // one piece — the map is a finite sheet, so the framed rect never straddles a seam (there is none)
-  const pieces = [[rx, rw]];
-  for (const [x, w] of pieces) {                       // re-light the framed slice (undo the dim)
-    mctx.save();
-    mctx.beginPath(); mctx.rect(x, ry, w, rh); mctx.clip();
-    mctx.drawImage(img, 0, 0, mmW, mmH);
-    mctx.restore();
-  }
-  for (const [x, w] of pieces) {                       // dark halo + bright/amber outline so it pops
-    mctx.lineWidth = 3; mctx.strokeStyle = "rgba(10,14,20,0.9)";
-    mctx.strokeRect(x + 0.5, ry + 0.5, Math.max(1, w - 1), Math.max(1, rh - 1));
-    mctx.lineWidth = 1.4; mctx.strokeStyle = "rgba(240,244,250,0.95)";
-    mctx.strokeRect(x + 0.5, ry + 0.5, Math.max(1, w - 1), Math.max(1, rh - 1));
-  }
+  // The framed slice, in thumbnail pixels — a QUAD, not a rect: past band 5 the camera yaws
+  // (S.camYaw, published by terrain3d) and the world it frames is no longer axis-aligned with a
+  // north-up thumbnail. At yaw 0 the quad is exactly the old rectangle. The map is a finite sheet,
+  // so it never straddles a seam (there is none).
+  const quad = viewportQuad(
+    { x: fx0 * mmW, y: fy0 * mmH, w: (fx1 - fx0) * mmW, h: Math.max(2, (fy1 - fy0) * mmH) },
+    S.camYaw);
+  const trace = () => {
+    mctx.beginPath();
+    quad.forEach(([x, y], i) => (i ? mctx.lineTo(x, y) : mctx.moveTo(x, y)));
+    mctx.closePath();
+  };
+  mctx.save();                                         // re-light the framed slice (undo the dim)
+  trace(); mctx.clip();
+  mctx.drawImage(img, 0, 0, mmW, mmH);
+  mctx.restore();
+  mctx.lineJoin = "round";
+  trace();                                             // dark halo + bright outline so it pops
+  mctx.lineWidth = 3; mctx.strokeStyle = "rgba(10,14,20,0.9)"; mctx.stroke();
+  mctx.lineWidth = 1.4; mctx.strokeStyle = "rgba(240,244,250,0.95)"; mctx.stroke();
 }

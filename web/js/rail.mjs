@@ -9,6 +9,7 @@
 // (the mode toggles that DRIVE the rail) and re-exports renderRail/showRail/selectProvince, which
 // plotfetch.mjs, techtree.mjs and advisor-detail.mjs already import from it.
 import { P, provGeo, terrainRgb, TRADE_GOODS, S, isPolitical } from "./core.mjs";
+import { fmtNum, fmtPct, annualize } from "./num.mjs";
 import { draw } from "./repaint.mjs";
 import { loadPlots } from "./plotfetch.mjs";
 import { politicsBlock, ensurePolitical, politicalReady } from "./overlays/political.mjs";
@@ -224,10 +225,11 @@ function colonyBlock(p) {
       <div class="metagrid" style="margin-top:8px">
         ${cell("Tier", tier)}
         ${cell("Firms · nobles", `${c.firms} · ${c.nobles}`)}
-        ${cell("Food price", (c.necessityPrice || 0).toFixed(2))}
+        ${cell("Food price", fmtNum(c.necessityPrice || 0))}
         ${cell("Plots worked", `${c.plotCount} / ${c.maxPlots}`)}
-        ${cell("Tax · bank", (c.bankProfitTax || 0).toFixed(3))}
-        ${cell("Tax · noble", (c.nobleIncomeTax || 0).toFixed(3))}
+        ${cell("Inflation", fmtPct(annualize(c.cpi || 0)) + " <span class=\"unit\">/yr</span>")}
+        ${cell("Tax · bank", fmtPct(c.bankProfitTax || 0))}
+        ${cell("Tax · noble", fmtPct(c.nobleIncomeTax || 0))}
       </div>
     </div>`;
 }

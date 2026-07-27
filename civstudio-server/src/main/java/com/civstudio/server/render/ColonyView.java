@@ -17,7 +17,13 @@ import java.util.List;
  * @param nobles         noble households
  * @param firms          living firms
  * @param poolSize       peasant-pool reserve size
- * @param cpi            the consumer price index (inflation)
+ * @param cpi            the colony's <b>average daily inflation rate</b> as a fraction, rolling-averaged
+ *                       over {@code Settlement.INFLATION_TIME_WIN} ({@code Settlement#getInflation()}).
+ *                       <b>The name is a legacy misnomer</b>: this is NOT the price index
+ *                       ({@code Settlement#getCPI()}, the mean consumer-good price) — it is the rate at
+ *                       which that index is moving, per STEP, i.e. per in-game day. A client showing it
+ *                       raw shows "0.00"; the web annualizes it (see {@code web/js/num.mjs}). Kept under
+ *                       the old wire name so existing consumers do not break
  * @param necessityPrice last clearing price of the necessity (food) market
  * @param enjoymentPrice last clearing price of the enjoyment market
  * @param plotCount      claimed build plots

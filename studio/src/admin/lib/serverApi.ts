@@ -42,6 +42,34 @@ export async function serverFetch<T = any>(
   return (await res.json().catch(() => ({}))) as T;
 }
 
+/**
+ * The game server's build identity, from `GET /actuator/info` — `build.version` (the reactor
+ * version), plus the auto-incrementing `build.number` and short `build.commit` the Maven build bakes
+ * in (see civstudio-server/pom.xml → build-info).
+ *
+ * Fetched WITHOUT credentials and outside {@link serverFetch}: actuator is public (SecurityConfig
+ * permits everything and management.endpoints.web.cors allows the admin origin), and it is not under
+ * `/api`, so the gate/error mapping serverFetch exists for does not apply. Cached for the life of
+ * the page — a running server's version does not change under it; a redeployed one is a reload.
+ */
+export interface ServerInfo {
+  version?: string;
+  number?: string;
+  commit?: string;
+}
+
+let infoPromise: Promise<ServerInfo> | null = null;
+
+export function serverInfo(): Promise<ServerInfo> {
+  if (!infoPromise)
+    infoPromise = fetch(`${serverBase}/actuator/info`, { credentials: 'omit' })
+      .then(async (r): Promise<{ build?: ServerInfo }> => (r.ok ? r.json() : {}))
+      .then((j) => j?.build ?? {})
+      // an unreachable or actuator-less server just has no version to show — never a broken page
+      .catch(() => ({}));
+  return infoPromise;
+}
+
 // ---- response shapes (GET /api/admin/status, GET /api/sessions) ----
 export interface ServerStatus {
   plots: { cached: number; total: number; mapVersion: number; generating: number | null; storageUrl?: string };
@@ -69,6 +97,13 @@ export interface SessionRow {
   /** spectators currently watching */
   watching?: number;
   mine?: boolean;
+  /**
+   * The owner's human-readable name. The session key tags an owned run with the owner's surrogate
+   * `app_user` GUID (`SessionHost.sessionKey`), which is unreadable in a list — this is the face to
+   * show instead (see `displayId`). Absent for an unowned run (the demo) and for an owner the user
+   * store no longer knows.
+   */
+  ownerName?: string | null;
   realm?: string;
   /** a run is named by its colony; absent for a Timeline or a colony-less run */
   colony?: string;

@@ -3,7 +3,7 @@ import { Box, Flex, Typography } from '@strapi/design-system';
 import { Layouts, Page } from '@strapi/admin/strapi-admin';
 import { serverFetch, serverBase, type SessionRow } from '../lib/serverApi';
 import { useServerPoll } from '../lib/useServerPoll';
-import { KIND_LABEL, sessionPath, sessionTitle } from '../lib/sessions';
+import { KIND_LABEL, displayId, sessionPath, sessionTitle } from '../lib/sessions';
 import { CenteredLoader, Gate } from '../components/opsShared';
 import { Pill, StatePair, SessionFigures } from '../components/sessionBits';
 
@@ -57,8 +57,8 @@ export default function SessionListPage() {
                       <Typography variant="delta" textColor="neutral800" ellipsis>
                         {sessionTitle(s)}
                       </Typography>
-                      <Typography variant="pi" textColor="neutral600" ellipsis>
-                        {s.id}
+                      <Typography variant="pi" textColor="neutral600" ellipsis title={s.id}>
+                        {displayId(s)}
                       </Typography>
                     </Flex>
                     <Flex gap={1} style={{ flexShrink: 0 }}>

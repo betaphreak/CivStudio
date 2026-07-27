@@ -46,7 +46,11 @@
     /* the map fills the WHOLE viewport; the bar floats over its top-left corner (no reserved strip),
        so the map uses the space the content-width bar would otherwise leave empty */
     .app .stage{top:0}
-    .app .railwrap{top:0}
+    /* …but the RAIL is not the map. Pulling it to top:0 too put it under the floating bar, whose
+       right-hand end (the search box, and the advisor sub-strip once it wraps to a second line) is
+       exactly where the rail's head sits — so the two overlapped. The rail starts below the bar's
+       REAL height instead (--bar-total, measured by panel.mjs; the sub-bar stays where it is). */
+    .app .railwrap{top:var(--bar-total,var(--bar-h))}
     /* Technology Advisor (§2): the tech tree is a full-canvas map-mode — #techModal covers the WHOLE
        stage region (top:0, same area as the map, so it fully covers/disables the map behind it); its
        scrollable viewport is inset below the floating bar (--bar-total, panel.mjs) so tech nodes clear
@@ -177,9 +181,9 @@
            below that band, and everything above the ground at every band. -->
       <canvas id="gl" class="off"></canvas>
       <canvas id="map"></canvas>
-      <!-- the wordmark, moved off the top bar (§ space-saving) into a faint, unobtrusive watermark over
-           the map; still clickable (back to server selection · reset to the world view) -->
-      <span class="brand brand-watermark" id="brand" role="button" tabindex="0" data-tip="Back to the lobby" aria-label="Back to the lobby"><span class="brand-a">CivStudio</span></span>
+      <!-- (the CivStudio wordmark watermark lived here. Removed 2026-07-27: the map is the product,
+           and a permanent logo over it earned its pixels only as the lobby's door — which is Esc
+           now, dispatched by js/shortcuts.mjs. The realm dropdown keeps a mouse route.) -->
       <div class="regime-pulse" id="regimePulse" aria-hidden="true"></div>
 
       <div class="legend" id="polLegend" aria-label="Political legend" hidden></div>
@@ -197,7 +201,7 @@
           </div>
           <div class="live-log-lines" id="liveLogLines"></div>
           <div class="live-log-chat">
-            <input id="liveLogChatInput" type="text" maxlength="280" autocomplete="off" placeholder="Say something…">
+            <input id="liveLogChatInput" type="text" maxlength="280" autocomplete="off" placeholder="type… or @ask a lore question">
             <button id="liveLogChatSend">Send</button>
             <span class="live-log-chat-hint">Sign in to chat</span>
           </div>
@@ -283,7 +287,10 @@
           <button id="lobbySolo" class="lb-btn"></button>
           <button id="lobbyRanked" class="lb-btn"></button>
           <span class="lb-hint" id="lobbyHint"></span>
-          <span class="lb-esc">Esc &rarr; map</span>
+          <!-- operators only (hidden unless /api/auth/me says admin; the server checks again on the
+               POST). The demo is a fixture, so it is the one run anyone may throw away and re-deal. -->
+          <button id="lobbyRestartDemo" class="lb-btn lb-btn-op" hidden>Restart demo</button>
+          <span class="lb-esc">Esc &harr; lobby</span>
         </div>
       </div>
 

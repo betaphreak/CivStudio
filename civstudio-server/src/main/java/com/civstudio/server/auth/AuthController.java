@@ -43,16 +43,27 @@ public class AuthController {
 		this.rememberMe = rememberMe;
 	}
 
-	/** The current authenticated user, or {@code {authenticated:false}}. */
+	/**
+	 * The current authenticated user, or {@code {authenticated:false}}.
+	 *
+	 * <p>Carries {@code admin} as well as identity: a client cannot work out from an id alone
+	 * whether the operator controls (restart the demo, and whatever joins it) belong on screen, and
+	 * probing a gated endpoint to find out means showing a button that may 403. This is a hint for
+	 * PAINTING only — every admin action is still checked server-side on the request that performs
+	 * it, so forging the flag client-side buys nothing.
+	 */
 	@GetMapping("/me")
 	public Map<String, Object> me() {
 		Authentication auth = SecurityContextHolder.getContext().getAuthentication();
 		if (auth == null || !auth.isAuthenticated() || auth instanceof AnonymousAuthenticationToken)
 			return Map.of("authenticated", false);
+		boolean admin = auth.getAuthorities().stream()
+				.anyMatch(a -> Admins.ROLE_ADMIN.equals(a.getAuthority()));
 		return users.findById(auth.getName())
 				.map(u -> Map.<String, Object>of("authenticated", true, "id", u.id(), "provider",
 						u.provider(), "displayName", u.displayName(),
-						"avatarUrl", u.avatarUrl() == null ? "" : u.avatarUrl()))
+						"avatarUrl", u.avatarUrl() == null ? "" : u.avatarUrl(),
+						"admin", admin))
 				.orElse(Map.of("authenticated", false));
 	}
 

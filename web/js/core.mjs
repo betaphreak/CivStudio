@@ -447,6 +447,12 @@ export const S = {
   markers: [],
   // where the camera was before a legend/search click flew it somewhere, so that focus can be undone
   camBeforeFocus: null,
+  // The camera's YAW in degrees clockwise, as terrain3d actually applied it this frame (0 whenever
+  // the 3D ground is not installed — ?terrain3d=0, a load still in flight, or any band below the
+  // tilt ramp). Published here rather than exported from terrain3d.mjs so that north-up chrome can
+  // ask "which way is the map facing" without importing three: the minimap draws its viewport as a
+  // quad rotated by this, and the arrow keys would need it to pan screen-relative.
+  camYaw: 0,
 };
 
 export { P, fmtInt, apiUrl, SERVER_BASE, centerOn, MAP, sxSrc, sySrc, VIEW, cam, fitView, baseXr, baseYr, pxr, pyr, px, py, pll,

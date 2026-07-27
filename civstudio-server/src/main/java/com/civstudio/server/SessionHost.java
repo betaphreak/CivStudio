@@ -255,11 +255,19 @@ public final class SessionHost {
 		if (r.tick() > 0) {
 			// fast-forward: run the recorded days as fast as the machine allows, then hold. The
 			// command log replays itself on the way, at the ticks it was stamped with.
+			long rate = hs.tickRateMillis();
 			hs.setTickRateMillis(0);
 			hs.startPaused();
 			hs.step((int) Math.min(Integer.MAX_VALUE, r.tick()));
 			awaitTick(hs, r.tick());
-			if ("RUNNING".equals(r.clockState()))
+			// …then put the clock back on its pacing. Without this a restored run that resumes below
+			// ticks UNCAPPED forever, because the fast-forward's rate was never undone.
+			hs.setTickRateMillis(rate);
+			// A restored run comes back PAUSED, whatever it was doing when the process went down
+			// (owner decision, 2026-07-27): you land on the world and decide to continue it, rather
+			// than finding days already spent on your behalf. The DEMO is the exception — a shop
+			// window nobody pressed play on is a dead shop window (cf. SessionKind.begin).
+			if (hs.kind() == SessionKind.DEMO && "RUNNING".equals(r.clockState()))
 				hs.resume();
 		}
 		log.info(() -> "restored session " + id + " (" + r.scenario() + ", tick " + r.tick()

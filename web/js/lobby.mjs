@@ -13,7 +13,7 @@
 // the bundle is still downloading — and core.mjs reads window.BUNDLE at import time, so importing it
 // would mean the lobby could only exist after the very wait it is meant to fill. Its only need from
 // core was the server base, which it resolves the same way core does (below).
-import { title, status, isOver, canDelete, singlePlayer, ranked, order } from "./lobby-rows.mjs";
+import { title, status, isOver, canDelete, singlePlayer, ranked, order, KIND } from "./lobby-rows.mjs";
 // Sign-in lives in the lobby (the account control renders into #siteAuth in its header), so this
 // imports auth — which is why auth had to stop importing core.mjs too. Both must survive being
 // loaded before the world does.
@@ -22,7 +22,7 @@ import { initSiteAuth, whoAmI, onAuthChange } from "./auth.mjs";
 const REFRESH_MS = 4000;   // the list is a poll: a browser list does not need frame-accurate pushes
 const SLOT_LIMIT = 5;      // mirrors SessionHost.SAVE_SLOT_LIMIT; the server is still the authority
 
-let el, rows = [], signedIn = false, es = null, timer = null, open = false;
+let el, rows = [], signedIn = false, isAdmin = false, es = null, timer = null, open = false;
 let base = "";             // the server this lobby is a lobby FOR
 
 const $ = id => document.getElementById(id);
@@ -53,6 +53,11 @@ export function initLobby(serverBase) {
   el.addEventListener("click", e => { if (e.target === el) closeLobby(); });
   document.addEventListener("keydown", e => {
     if (e.key !== "Escape" || !open) return;
+    // Esc is now the lobby's DOOR, both ways (shortcuts.mjs opens it when nothing else is up), so
+    // this handler must consume the key: it listens on `document` and the global dispatcher on
+    // `window`, so without stopPropagation the same press would close the lobby here and then
+    // immediately reopen it there.
+    e.stopPropagation();
     // the setup panel is a step INSIDE the lobby: Esc backs out of it first, not all the way to the map
     if (!$("lobbySetup").hidden) { e.preventDefault(); showSetup(false); return; }
     e.preventDefault();
@@ -60,7 +65,8 @@ export function initLobby(serverBase) {
   });
 
   // signing in or out repaints the room: which buttons you may press is a fact about you
-  onAuthChange(me => { signedIn = !!me.authenticated; paint(); gateChat(); });
+  onAuthChange(me => { signedIn = !!me.authenticated; isAdmin = !!me.admin; paint(); gateChat(); });
+  $("lobbyRestartDemo").onclick = restartDemo;
 
   $("lobbySay").onsubmit = e => { e.preventDefault(); say(); };
   $("lobbySolo").onclick = () => showSetup(true);
@@ -85,7 +91,7 @@ export function openLobby(serverBase) {
   // Ask the server who you are, rather than guessing from the rows. Inferring sign-in from "do you
   // own any of these runs" said SIGNED OUT to a signed-in player with no runs yet — who could then
   // never make their first. The account control (sign in / register / sign out) paints itself.
-  whoAmI().then(me => { signedIn = !!me.authenticated; paint(); gateChat(); });
+  whoAmI().then(me => { signedIn = !!me.authenticated; isAdmin = !!me.admin; paint(); gateChat(); });
   initSiteAuth();
   refresh();
   timer = setInterval(refresh, REFRESH_MS);
@@ -98,6 +104,24 @@ function gateChat() {
   $("lobbySignin").hidden = signedIn;
 }
 
+/**
+ * Re-deal the caravan demo from day zero (operators only — POST /api/admin/demo/restart, which
+ * checks ROLE_ADMIN again server-side; the hidden button is only about not offering what you cannot
+ * do). The list refresh that follows brings the new run in, and a spectator watching the old id
+ * re-resolves on its next reconnect.
+ */
+async function restartDemo() {
+  if (!window.confirm("Restart the caravan demo? The running one is discarded and re-founded from day zero."))
+    return;
+  const btn = $("lobbyRestartDemo");
+  btn.disabled = true;
+  const out = await post("/api/admin/demo/restart", {});
+  btn.disabled = false;
+  if (!out.ok) { $("lobbyHint").textContent = out.error || "could not restart the demo"; return; }
+  refresh();
+  if (out.body.id) spectate({ id: out.body.id });
+}
+
 /** Back to the map. */
 export function closeLobby() {
   open = false;
@@ -108,6 +132,13 @@ export function closeLobby() {
 
 /** Whether the lobby is the thing on screen (so Esc/shortcuts know who owns the key). */
 export const lobbyOpen = () => open;
+
+// The window seam the rest of the app reaches the lobby through — the same handle index.html
+// exposes for the server picker (window.__picker) and the realm selector (window.__realms).
+// panel.mjs and advisors.mjs have always CALLED it; nothing ever SET it, so every "home" route
+// silently fell through to the server picker. Registered at module load, since importing this
+// module at all means the lobby exists.
+window.__lobby = { open: openLobby, close: closeLobby, isOpen: lobbyOpen };
 
 // ---- the list -------------------------------------------------------------
 
@@ -137,6 +168,8 @@ function paint() {
   applyBtn($("lobbySolo"), solo);
   applyBtn($("lobbyRanked"), ranked(rows, signedIn));
   $("lobbyHint").textContent = solo.hint;
+  // the operator lever: offered only to an admin, and only while there is a demo to restart
+  $("lobbyRestartDemo").hidden = !(isAdmin && rows.some(r => r.kind === KIND.DEMO));
 }
 
 function rowEl(row) {
@@ -314,7 +347,7 @@ async function say() {
   const text = input.value.trim();
   if (!text) return;
   input.value = "";
-  const m = text.match(/^@ask\s+([\s\S]+)/i);   // "@ask <question>" → the lore chatbot, not the room
+  const m = text.match(/^@ask\s+([\s\S]+)/i);   // "@ask <question>" → the lore chatbot
   if (m) return askLore(m[1].trim());
   const out = await post("/api/lobby/chat", { text });
   if (out.status === 401) {
@@ -326,27 +359,31 @@ async function say() {
   }
 }
 
-// "@ask <question>" → the RAG lore chatbot. A LOCAL Q&A (not broadcast to the room): the asker's line
-// and a live-updating "Loremaster" answer are rendered client-side; nothing is posted to /api/lobby/chat.
+/**
+ * "@ask <question>" → the RAG lore chatbot, IN THE ROOM.
+ *
+ * This used to render the exchange client-side and post nothing, so an answer belonged to one tab
+ * and vanished the moment the lobby was reopened (connectChat clears the box before replaying the
+ * backlog). It now goes through POST /api/lobby/ask: the server posts the question, looks the answer
+ * up, and posts that — so both lines arrive over the same SSE feed as ordinary chat, persist in the
+ * ChatStore, and replay for whoever walks in later.
+ *
+ * Nothing is drawn here on purpose: the question comes back down the feed like anyone else's line,
+ * and drawing it locally as well would show it twice. Only a REFUSAL is local — a message the room
+ * never received should not look as though it were said.
+ */
 async function askLore(question) {
-  addLine({ user: "you", text: "@ask " + question });
+  const out = await post("/api/lobby/ask", { text: question });
+  if (out.ok) return;
   const box = $("lobbyChat");
   const line = document.createElement("div");
   line.className = "lb-line lore";
   const who = document.createElement("b"); who.textContent = "Loremaster: ";
-  const span = document.createElement("span"); span.textContent = "…thinking";
+  const span = document.createElement("span");
+  span.textContent = out.status === 503 || out.status === 404
+    ? "the lore chatbot isn't enabled on this server yet."
+    : `(${out.error || out.status || "unreachable"})`;
   line.append(who, span); box.append(line); box.scrollTop = box.scrollHeight;
-  try {
-    // the lore endpoint lives on the SAME server this lobby talks to (civstudio-server /api/lore/ask);
-    // 404 = that server was deployed without the lore backend configured.
-    const res = await fetch(apiUrl("/api/lore/ask"), {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ question }),
-    });
-    if (res.status === 404) { span.textContent = "the lore chatbot isn't enabled on this server yet."; return; }
-    const j = await res.json().catch(() => ({}));
-    span.textContent = res.ok ? (j.answer || "(no answer)") : `(${j.error || res.status})`;
-  } catch { span.textContent = "(lore service unreachable)"; }
-  box.scrollTop = box.scrollHeight;
 }
 
 async function post(path, body) {

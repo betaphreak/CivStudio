@@ -14,11 +14,18 @@ let server = "live";     // header prefix (e.g. "dev"), set on show
 let expanded = false;
 let wired = false;
 let sendChat = null;     // callback (text) => post a chat message; set by live.mjs
+let sendAsk = null;      // callback (question) => put a lore question to the room; set by live.mjs
 
 const MAX = 600;         // cap the client-side history
 
-/** Register the callback used to post a chat message (wired by live.mjs). */
-export function setChatSender(fn) { sendChat = fn; }
+/**
+ * Register the callbacks the composer posts through (wired by live.mjs).
+ *
+ * @param fn  posts a plain chat message
+ * @param ask puts an "@ask" lore question to the session's room (optional; without it @ask is
+ *            simply said out loud, which is the old behaviour and not a broken one)
+ */
+export function setChatSender(fn, ask) { sendChat = fn; sendAsk = ask || null; }
 
 /** Show/hide the bar (wiring it once). serverLabel becomes the header prefix, e.g. "dev". */
 export function showLiveLog(show, serverLabel) {
@@ -70,11 +77,20 @@ function wire() {
   });
   const all = el("liveLogAll");
   if (all) all.addEventListener("change", () => { renderBar(); if (expanded) renderHistory(); });
-  // chat input — functional only for signed-in users (the input is hidden for anon via CSS)
+  // chat input — functional only for signed-in users (the input is hidden for anon via CSS).
+  // Typing here IS typing in the lobby, "@ask <question>" included: the bar is a chat box, and a
+  // chat box where the same words do different things depending which one you are looking at is a
+  // trap. The split is made here rather than in the sender so both surfaces read the same way
+  // (cf. lobby.say) — the server posts question and answer into this session's room, so both come
+  // back down the feed as ordinary lines and are drawn by ingestChat.
   const input = el("liveLogChatInput"), send = el("liveLogChatSend");
   const submit = () => {
     const t = ((input && input.value) || "").trim();
-    if (t && sendChat) { sendChat(t); input.value = ""; }
+    if (!t) return;
+    input.value = "";
+    const m = t.match(/^@ask\s+([\s\S]+)/i);
+    if (m && sendAsk) { sendAsk(m[1].trim()); return; }
+    if (sendChat) sendChat(t);   // …including an @ask with nowhere to send it: say it out loud
   };
   if (input) input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
   if (send) send.addEventListener("click", submit);

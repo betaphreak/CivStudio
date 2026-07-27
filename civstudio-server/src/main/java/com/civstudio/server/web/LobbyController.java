@@ -21,6 +21,7 @@ import jakarta.servlet.http.HttpServletRequest;
  * <ul>
  * <li>{@code GET  /api/lobby/stream} — the lobby chat feed (SSE), backlog replayed on connect.</li>
  * <li>{@code POST /api/lobby/chat}   — say something (any signed-in user).</li>
+ * <li>{@code POST /api/lobby/ask}    — put a lore question to the room ({@link LoreChat}).</li>
  * </ul>
  * Session chat rides its session's snapshot stream; the lobby has no session, hence a feed of its
  * own. It carries <b>chat only</b>: the session list is a plain {@code GET /api/sessions} the lobby
@@ -41,13 +42,15 @@ public class LobbyController {
 	private final SseFeed feed;
 	private final SessionAuthz authz;
 	private final CurrentUserResolver currentUser;
+	private final LoreChat lore;
 
 	public LobbyController(LobbyRoom room, SseFeed feed, SessionAuthz authz,
-			CurrentUserResolver currentUser) {
+			CurrentUserResolver currentUser, LoreChat lore) {
 		this.room = room;
 		this.feed = feed;
 		this.authz = authz;
 		this.currentUser = currentUser;
+		this.lore = lore;
 	}
 
 	/**
@@ -85,7 +88,29 @@ public class LobbyController {
 		return ResponseEntity.status(202).body(Map.of("accepted", true, "user", user));
 	}
 
-	/** Body of {@code POST /api/lobby/chat}. */
+	/**
+	 * Ask the lore chatbot, in the lobby room — see {@link LoreChat} for what that means and why the
+	 * answer arrives over the feed rather than in this response.
+	 *
+	 * @param req  the question, in the same body shape as {@link #chat}
+	 * @param http the request (the asker's identity is resolved from it)
+	 * @return 202 once the question is in the room, 401 signed out, 400 empty, 503 no lore backend
+	 */
+	@PostMapping("/ask")
+	public ResponseEntity<Object> ask(@RequestBody(required = false) ChatRequest req,
+			HttpServletRequest http) {
+		ResponseEntity<Object> denied = authz.denyChat(http);
+		if (denied != null)
+			return denied;
+		String question = req == null || req.text() == null ? "" : req.text().strip();
+		if (question.isEmpty())
+			return ResponseEntity.badRequest().body(Map.of("error", "empty question"));
+		if (question.length() > MAX_CHAT_LEN)
+			question = question.substring(0, MAX_CHAT_LEN);
+		return lore.ask(room::post, currentUser.displayName(http), question);
+	}
+
+	/** Body of {@code POST /api/lobby/chat} and {@code POST /api/lobby/ask}. */
 	public record ChatRequest(String text) {
 	}
 }

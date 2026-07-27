@@ -9,6 +9,16 @@ import { resetView, toggleFullscreen, togglePlay, closePanel } from "./panel.mjs
 import { setAdvisor } from "./advisors.mjs";
 import { closeCityScreen } from "./city-screen.mjs";
 
+// Open the Spectator Lobby. Via the window seam when the module is already loaded (the common case
+// — the boot flow opens the lobby over the splash), else a dynamic import: a deep link or ?lobby=0
+// skips that open, so on those loads this is the first time the lobby is needed. Deliberately NOT a
+// static import — lobby.mjs must stay free of the map's module graph (it loads before core.mjs can
+// exist), and live.mjs reaches it the same way.
+function openLobby() {
+  if (window.__lobby && window.__lobby.open) { window.__lobby.open(); return; }
+  import("./lobby.mjs").then(m => m.openLobby()).catch(() => { /* no lobby — Esc just did nothing */ });
+}
+
 // pan the camera and repaint — the shared tail of the WASD / arrow handlers
 function panBy(dx, dy) {
   cam.x += dx; cam.y += dy;
@@ -51,14 +61,17 @@ const REGISTRY = [
       }[e.key];
       if (move) panBy(move[0], move[1]);
     } },
-  { keys: ["Escape"], cap: ["Esc"], label: "Close", modalSafe: true,
-    // the city screen closes back to the map; in the Technology advisor, Escape returns to Main Map
-    // (keeps the selector consistent); otherwise collapse the sidebar (only prevent-default if it
-    // did something)
+  { keys: ["Escape"], cap: ["Esc"], label: "Lobby / close", modalSafe: true,
+    // Escape unwinds what is on screen, innermost first: the city screen closes back to the map; in
+    // the Technology advisor it returns to Main Map (keeps the selector consistent); then it
+    // collapses the sidebar. With NOTHING left to close it opens the lobby — the door the wordmark
+    // watermark used to be, before that was taken off the map (2026-07-27). Closing the lobby again
+    // is the lobby's own handler, which consumes the key before this one ever sees it.
     run: e => {
       if (S.cityOpen) { e.preventDefault(); closeCityScreen(); }
       else if (S.techOpen) { e.preventDefault(); setAdvisor("mainmap"); }
       else if (closePanel()) { e.preventDefault(); }
+      else { e.preventDefault(); openLobby(); }
     } },
   { keys: ["+", "="],
     run: e => { e.preventDefault(); zoomAt(VIEW.w / 2, VIEW.h / 2, 1.5); } },

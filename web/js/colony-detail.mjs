@@ -7,6 +7,7 @@
 // /api/sessions/{sid}/colony (ColonyController) and refetch only when the makeup changes. Reuses the
 // advisor sheet's markup/classes (adv-*), written straight into the rail like openCaravanRail.
 import { S, apiUrl } from "./core.mjs";
+import { fmtNum, fmtPct, annualize } from "./num.mjs";
 import { showRail } from "./rail.mjs";
 import { prettyKey } from "./plotlabel.mjs";
 import { liveSid, liveColony, liveCaravans } from "./overlays/live.mjs";
@@ -103,15 +104,15 @@ function sheetHtml(c, d) {
     <div class="statrow" style="margin-top:8px">
       <div class="stat"><div class="k">Firms</div><div class="v">${c.firms}</div></div>
       <div class="stat"><div class="k">Nobles</div><div class="v">${c.nobles}</div></div>
-      <div class="stat"><div class="k">Food price</div><div class="v">${(c.necessityPrice || 0).toFixed(2)}</div></div>
+      <div class="stat"><div class="k">Food price</div><div class="v">${fmtNum(c.necessityPrice || 0)}</div></div>
     </div>
     <div class="metagrid" style="margin-top:8px">
       ${cell("Tier", tier)}
       ${cell("Caravans afield", caravans)}
       ${cell("Plots worked", `${c.plotCount} / ${c.maxPlots}`)}
-      ${cell("Inflation", (c.cpi || 0).toFixed(2))}
-      ${cell("Tax · bank", (c.bankProfitTax || 0).toFixed(3))}
-      ${cell("Tax · noble", (c.nobleIncomeTax || 0).toFixed(3))}
+      ${cell("Inflation", fmtPct(annualize(c.cpi || 0)) + " <span class=\"unit\">/yr</span>")}
+      ${cell("Tax · bank", fmtPct(c.bankProfitTax || 0))}
+      ${cell("Tax · noble", fmtPct(c.nobleIncomeTax || 0))}
     </div>
     <div class="adv-sec">Skill profile <span class="adv-dim">colony avg</span></div>
     <div class="adv-skills">${skills}</div>
