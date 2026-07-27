@@ -18,6 +18,7 @@ import { drawRealmRim } from "./realmrim.mjs";
 import { drawCostOverlay } from "./cost.mjs";
 import { drawTradeGoodIcons } from "./bonusicons.mjs";
 import { drawRoutes } from "./routes.mjs";
+import { drawImprovements } from "./improvements.mjs";
 import { drawTiers } from "./overlays/tiers.mjs";
 import { drawPolitical } from "./overlays/political.mjs";
 import { drawLive } from "./overlays/live.mjs";
@@ -87,6 +88,7 @@ export const LAYERS = [
   { id: "live",           band: "all",  gate: () => S.overlay === "live", draw: drawLive },
   { id: "tradeGoods",     band: "TERRAIN→PLOT, self-fade", gate: notPolitical, draw: drawTradeGoodIcons },
   { id: "routes",         band: "≥TERRAIN, self-fade", gate: notPolitical, draw: drawRoutes },
+  { id: "improvements",   band: "≥TERRAIN, self-fade", gate: notPolitical, draw: drawImprovements },
   { id: "city",           band: "≥PROVINCE, self-fade", gate: notPolitical, draw: drawCity },
   { id: "districts",      band: "deep (≥~23×), self-fade", gate: notPolitical, draw: drawDistricts },
   { id: "labels",         band: "≥PROVINCE, self-fade",    draw: drawLabels },

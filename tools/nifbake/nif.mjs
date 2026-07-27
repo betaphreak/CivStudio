@@ -173,14 +173,22 @@ function niTriStripsData(r) {
 }
 function niTexturingProperty(r) {
   niObjectNET(r);
-  r.u16();                                          // Flags
+  // Flags is a 10.x field, dropped at 20.0.0.0 — the same phantom as niMaterialProperty's. Verified
+  // by hand on an_eu_farm01: reading a u32 straight after the name gives Apply Mode 2 (MODULATE) and
+  // Texture Count 7, Civ4's own values, where reading a u16 first gives 458752 and 201392128.
+  if (V < 0x14000000) r.u16();                      // Flags (<= 10.x)
   r.u32();                                          // Apply Mode
   const texCount = r.u32();                         // Texture Count
-  // parse each texture desc; we only need to advance. Base Texture is index 0.
+  // Base Texture is index 0, and its Source ref is the ONE field a render needs out of this block:
+  // it names the NiSourceTexture whose file skins the meshes this property is attached to. A model
+  // with several NiTexturingProperties is a MULTI-MATERIAL model (a farm: barn wood, crops, fences),
+  // and dropping this ref is what made the improvement bakes stamp one skin over every triangle.
+  let base = -1;
   for (let i = 0; i < texCount; i++) {
     const hasTex = r.bool();
     if (hasTex) {
-      r.i32();                                       // Source ref (NiSourceTexture)
+      const src = r.i32();                           // Source ref (NiSourceTexture)
+      if (i === 0) base = src;
       r.u32();                                       // Clamp Mode
       r.u32();                                       // Filter Mode
       r.u32();                                       // UV Set
@@ -188,10 +196,20 @@ function niTexturingProperty(r) {
       const hasTransform = r.bool();
       if (hasTransform) { r.f32(); r.f32(); r.f32(); r.f32(); r.f32(); r.u32(); r.f32(); r.f32(); }
     }
-    // Shader textures (index >= base set) may carry a Shader map index; Civ4 base props
-    // usually have small texCount (<=7). If desync appears, refine here.
   }
-  return { kind: 'NiTexturingProperty' };
+  // Num Shader Textures — the four bytes the old comment above suspected and never accounted for.
+  // Civ4 writes 0, but the count itself is always present, and leaving it unread landed the walk
+  // exactly 4 bytes short of the NiSourceTexture that follows. Each shader entry, were there one,
+  // is a texture desc plus a u32 map index.
+  const numShader = r.u32();
+  for (let i = 0; i < numShader; i++) {
+    if (r.bool()) {
+      r.i32(); r.u32(); r.u32(); r.u32();
+      if (r.bool()) { r.f32(); r.f32(); r.f32(); r.f32(); r.f32(); r.u32(); r.f32(); r.f32(); }
+      r.u32();                                       // Map Index
+    }
+  }
+  return { kind: 'NiTexturingProperty', base };
 }
 function niSourceTexture(r) {
   niObjectNET(r);
@@ -208,7 +226,16 @@ function niSourceTexture(r) {
 }
 function niMaterialProperty(r) {
   niObjectNET(r);
-  r.u16();                                          // Flags
+  // Flags is a 10.x FIELD ONLY — it was dropped at 20.0.0.0, so at 20.0.0.4 the colours follow
+  // NiObjectNET directly. Hand-decoded on an_eu_farm01: after the name "barn_bright2" the floats
+  // read (1,1,1)(1,1,1)(1,1,1)(0,0,0) gloss 10.0 alpha 1.0 — the aligned signature — with NO two
+  // bytes in front of them. Reading the phantom u16 shifted every later field by 2 and ran the
+  // walk off the end of the file. Same class of bug as the material-name arrays in niTriShape.
+  //
+  // This body had never actually run before: NiMaterialProperty is not in MUSTPARSE, so it only
+  // ever sat inside a skipped gap. It runs now because walkGap re-walks those gaps for texture
+  // names, which is exactly the sort of latent wrongness that surfaces the moment code is used.
+  if (V < 0x14000000) r.u16();                      // Flags (<= 10.x)
   r.vec3(); r.vec3(); r.vec3(); r.vec3();           // Ambient, Diffuse, Specular, Emissive
   r.f32(); r.f32();                                 // Glossiness, Alpha
   return { kind: 'NiMaterialProperty' };
@@ -290,6 +317,26 @@ export function parseNif(buf, debug = false, lenient = false) {
     return printable && refsOk && scaleOk && dataOk;
   }
 
+  // Try to parse gap blocks [i, j) starting at byte `start`, requiring the walk to consume exactly up
+  // to `end` (the offset the resync proved is the next real block). Returns the parsed blocks, or null
+  // if any body is missing/throws or the walk misses the landing — in which case the caller keeps the
+  // plain gap markers. See the note at the call site for why the landing check is the whole safety story.
+  function walkGap(i, j, start, end) {
+    const probe = new Reader(buf);
+    probe.o = start;
+    const out = [];
+    try {
+      for (let k = i; k < j; k++) {
+        const t = types[typeIdx[k]];
+        if (!PARSERS[t]) return null;                 // an unparsed type in the run — no landing possible
+        out.push(readBlock(probe, t));
+      }
+    } catch (e) { if (process.env.NIF_GAPDEBUG) console.error(`  walkGap [${i}..${j}) @${start}..${end} threw: ${e.message}`); return null; }
+    if (process.env.NIF_GAPDEBUG && probe.o !== end)
+      console.error(`  walkGap [${i}..${j}) @${start}..${end} landed ${probe.o} (off by ${probe.o - end})`);
+    return probe.o === end ? out : null;
+  }
+
   function parseFrom(reader, from, sink) {
     for (let i = from; i < numBlocks;) {
       const type = types[typeIdx[i]];
@@ -305,7 +352,22 @@ export function parseNif(buf, debug = false, lenient = false) {
           } catch { /* keep scanning */ }
         }
         if (found < 0) throw new Error(`resync failed skipping gap blocks ${i}..${j - 1} at ${start}`);
-        if (sink) for (let k = i; k < j; k++) sink[k] = { kind: types[typeIdx[k]], gap: true };
+        // The resync has told us exactly where this gap run ENDS, which turns the run into something
+        // checkable: walk it block by block with whatever parsers we have, and accept the result ONLY
+        // if the walk lands precisely on `found`. Landing on the resync offset is the same proof the
+        // footer gives the file as a whole — a wrong stride cannot arrive at the right byte — so this
+        // reads the texture names out of the gap without putting the gap on the must-parse path.
+        //
+        // Zero-regression by construction: any file whose property layouts we get wrong (a version
+        // these bodies were never written for, an unparsed type in the run) simply misses the landing
+        // and keeps the gap behaviour it has always had. That matters — the 705 building models and
+        // the peaks all parse TODAY because this run is skipped wholesale, and promoting these types
+        // to MUSTPARSE would have made every one of them depend on bodies no render had ever exercised.
+        if (sink) {
+          const walked = walkGap(i, j, start, found);
+          for (let k = i; k < j; k++)
+            sink[k] = walked ? walked[k - i] : { kind: types[typeIdx[k]], gap: true };
+        }
         reader.o = found;
         i = j;
         continue;

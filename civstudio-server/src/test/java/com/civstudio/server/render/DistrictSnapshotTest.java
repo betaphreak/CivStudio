@@ -116,4 +116,28 @@ class DistrictSnapshotTest {
 			assertEquals(plot.y(), d.y(), "plot " + i + " reports its raster y");
 		}
 	}
+
+	/**
+	 * The improvement leg (docs/terrain-3d.md §P5a). Undeveloped ground reports {@code null}; a plot
+	 * the sim has developed reports the bare {@code IMPROVEMENT_*} key. This is the ONLY path by
+	 * which an improvement can reach a client — the baked world plot data carries none, improvements
+	 * being built by the sim rather than world-invariant — so the sprites drew nothing until it
+	 * existed.
+	 */
+	@Test
+	void projectsTheImprovementRaisedOnAPlot() {
+		GameSession s = new GameSession(42);
+		Province dh = s.getWorldMap().findByName("Dhenijansar").orElseThrow();
+		Settlement c = s.newSettlement("Test", START, 30, 26, 5, 2, dh);
+		c.claimPlot(new PlotOccupant() {
+		});
+
+		assertNull(project(c).districts().get(0).improvement(), "undeveloped ground reports no improvement");
+
+		Plot p = c.getDistrictPlots().get(0);
+		p.raiseImprovement(s.getTerrainRegistry().improvement("IMPROVEMENT_FARM"), true);
+
+		assertEquals("IMPROVEMENT_FARM", project(c).districts().get(0).improvement(),
+				"a developed plot reports its improvement's Civ4 type key, verbatim");
+	}
 }

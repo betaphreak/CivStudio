@@ -8,7 +8,10 @@ and rise with the tilt, and **relief is props**: PEAK plots carry Civ4's own mou
 ground, so the terracing is gone. Gated on a frame diff at the seam against the 2D path (mean **4.73**/255 —
 P4b improved it from 5.12) plus a geometric check that the props land on the 2D bake's own rects, and a check
 that ground-anchored content stands on the terrain rather than on its sea-level shadow. P5 (prop art at the
-oblique angle) remains.
+oblique angle) remains, **resequenced 2026-07-27** by an art-coverage audit: improvements first (100%
+modelled, already baked, blocked only on a missing feed field), then the 122 of 1,865 buildings that have
+a model at all, with housing a design call and **units cut** (99% of them are animated skeletal meshes).
+The top-down projector is removed with it, and routes become ribbons — §P5.
 
 ## The target
 
@@ -598,11 +601,16 @@ That is the intended reversal: the heightmap now contributes ~2.5× what a peak 
 dwarfed it. The absolute mesh range is [0, 4.834] source px because the elevation floor is deliberately not
 subtracted (a uniform offset is invisible from any camera — see `heightfield.plotHeight`).
 
-### P5 — prop art at the oblique angle — art in hand, 94% readable
+### P5 — prop art at the oblique angle — RESEQUENCED 2026-07-27
 
-Buildings and units. Where the C2C asset question lands: pre-rendering from NIF in Blender sidesteps the
-`.kf`/`.kfm` animation-import risk entirely, and the ~700 Firaxis-origin models of ~6,086 need a
-decision. See [`civ4-files.md`](civ4-files.md).
+**P5 was scoped as "buildings and units". An art-coverage audit says that is the wrong order and the wrong
+set** — buildings are the *weakest* of the three prop classes, improvements are the strongest and are
+already baked, and units are not a P5 problem at all. The extraction narrative below is unchanged and
+still the foundation; §The coverage audit and §The resequenced plan supersede the scope.
+
+Where the C2C asset question lands: pre-rendering from NIF sidesteps the `.kf`/`.kfm` animation-import
+risk entirely, and the ~700 Firaxis-origin models of ~6,086 need a decision. See
+[`civ4-files.md`](civ4-files.md).
 
 **The building models are extracted and they read.** `art/structures/buildings` across `Art0.FPK` +
 `C2C{0..3}.FPK` + `C2CPatch0.FPK` yields **705 `.nif` and 1,361 `.dds` over 279 building directories
@@ -644,6 +652,159 @@ The remaining 43 are mostly the gap-resync giving up on long runs of unparsed bl
 19 of its cluster were being lost to the same bug. Nothing consumes that atlas today (the city marker is
 screen-space; see `plots.mjs`), so the committed `trees-city.webp` is stale rather than wrong. Rebake it
 deliberately if anything starts drawing it.
+
+#### The coverage audit (2026-07-27) — how much art there actually is
+
+"705 models extracted at 94% parse" measures the *reader*, not the *coverage*. Joining eos's own catalogs
+against C2C's art defines measures the coverage, and it lands very differently per class. Method: each
+`BUILDING_*` → its `<ArtDefineTag>` in `Assets/XML/Buildings/*.xml` → that tag's `<NIF>` in
+`Assets/XML/Art/CIV4ArtDefines_Building.xml`; likewise for improvements and units.
+
+| class | rows | with a real `<NIF>` | distinct models | coverage |
+|---|---|---|---|---|
+| **buildings** (eos's 1,865 imported) | 1,865 | **122** | 108 | **6.5%** |
+| **improvements** (C2C's whole set) | 108 | **108** | 78 | **100%** |
+| **units** (C2C's whole set) | 4,372 | 4,372 | 3,576 | 100%, but see below |
+
+**Buildings — 6.5%, and 0% of what is actually built.** Of eos's 1,865 rows, 58 point at `Art/Empty.nif`
+and 1,685 carry an empty `<NIF/>`. That is not an import gap: C2C models wonders and notable structures
+and leaves ordinary buildings as button icons, which is why the city screen draws procedural blocks
+(`footprints.plotBlocks`) rather than art. Worse for the city view — **every one of the 43
+`BUILDING_HOUSING_*` rows has an empty `<NIF/>`**, and housing is what households actually raise (they
+build only housing + upgrades). The most numerous structure in any colony can never be a C2C prop.
+The 122 that *are* covered are well aimed, though: granary, forge, barracks, castle, aqueduct, harbor,
+courthouse, elder council, herbalist, apothecary — classic Civ4 city-scene art, mostly in era.
+
+**Improvements — 100% covered, already baked, and drawing nothing.** All 108 improvement art infos name a
+real NIF (farm, cottage/hamlet/village/town, mine, pasture, plantation, lumbermill, workshop, quarry) —
+exactly the props the target screenshot is made of. And `web/build.mjs → bakeImprovementOverlays()`
+**already renders three of them through `tools/nifbake`** and commits the sprites
+(`web/assets/improvements/imp-{farm,mine,quarry}.webp`), over a table written to extend.
+`plots.mjs → improvementSprite()` is wired to draw them.
+
+They draw nothing, and **the blocker is data, not art**. The engine's `Plot.improvement()` is real —
+`NFirm` raises `IMPROVEMENT_FARM`, `SimulationHarness` raises `IMPROVEMENT_HUNTING_CAMP`, and
+`ImprovementExporter` imports 12 types — but `DistrictView`, the live per-plot feed, carries `buildings` /
+`underway` / `fiefLord` / `households` / `larder` / `larderFloor` / `farms` and **no `improvement`**. The
+sim raises farms; the browser is never told. (The *baked* world plot data has no improvement either, and
+that is correct: improvements are built by the sim, not world-invariant.)
+
+**Units — 100% modelled and 99% animated, which makes them a different project.** 4,331 of the 4,372 unit
+art infos name a `<KFM>`: they are animated skeletal meshes whose rest pose is a T-pose, so a static
+front-elevation render of one is not a unit. The pre-render-in-Blender argument that makes buildings safe
+is exactly what fails here. **Units are cut from P5** and tracked with the animation question
+([`c2c-unit-import.md`](c2c-unit-import.md)), not with the terrain.
+
+#### The resequenced plan
+
+- **P5a — improvements. ✅ BUILT 2026-07-27** (see §P5a as built, below).
+- **P5b — the 122 buildings that have models.** Replace `footprints.plotBlocks`'s procedural blocks for
+  covered ids and keep blocks as the fallback for the other 94%. Needs a new import leg that does not
+  exist: `BuildingInfo` has no art field, so building id → art define tag → NIF has to be exported.
+- **P5c — housing.** Has no C2C art by construction, so this is a design call rather than a bake: either
+  the settlement-tier improvement models stand in (cottage → hamlet → village → town is *already* a tier
+  ladder, and `build.mjs`'s own comment calls them "settlement-TIER art"), or housing stays procedural
+  blocks.
+
+#### P5a as built (2026-07-27) — and the bug under the bug
+
+The plan above said the art was ready and only a feed field was missing. **The feed field was real; the
+art claim was wrong**, and the correction is the more useful half of this phase.
+
+`imp-farm.webp` had been committed since the Civ4 art port as a sheet of **wooden planks and a gate
+arch**. Not a farm. Three causes, peeled in order, each looking like the answer until it wasn't:
+
+1. **The flat-plane filter.** `gatherTriangles` drops near-horizontal meshes ("the base it sits on").
+   Suspected first, and wrong: `flat: 'keep'` was added, and for a farm it makes things *worse* — the
+   model's ground decal (`farm_shadow.dds`) becomes a large dark plane at tilt. The original filter is
+   right; the option stays for genuinely flat subjects.
+2. **The projection.** Suspected second, also not the cause. A `pitch` option was added (and kept, see
+   below), but pitching alone left the model still made of planks.
+3. **`renderNif` was a SINGLE-TEXTURE renderer** — the actual bug. It took one `.dds` and painted it
+   over every triangle. That is fine for a tree or a peak (one mesh, one skin) and wrong for every
+   improvement: `an_eu_farm01` has four meshes over **three** skins — `barn.dds` (a stone barn),
+   `farm_light.dds` (the field), `farm_shadow.dds` (its decal). Painting all of it with
+   `farm_diff256.dds` is exactly, precisely, a sheet of planks.
+
+**Why the link was unreachable, and how it was made safe.** `NiTexturingProperty`/`NiSourceTexture`
+have parsers but are not in `MUSTPARSE`, so the resync skipped them wholesale and they came back
+`gap: true`. Promoting them would have put all 705 building models onto bodies no render had ever
+exercised. Instead `walkGap` re-walks each skipped run and **accepts the result only if the walk lands
+exactly on the offset the resync already proved** — the same standard the footer sets for the file.
+A wrong stride cannot arrive at the right byte, and a file we get wrong simply keeps the gap behaviour
+it always had. Zero regression by construction.
+
+Walking those runs immediately surfaced two more phantom fields, both the same shape as the material
+arrays in `niTriShape`, both found by hand-decoding rather than guessing at strides:
+
+| block | phantom | how it was localised |
+|---|---|---|
+| `NiMaterialProperty` | a `u16` Flags (a 10.x field, gone at 20.0.0.0) | with it consumed the colours read as noise; without it they read ambient/diffuse/specular (1,1,1), emissive (0,0,0), glossiness 10.0, alpha 1.0 — the aligned signature |
+| `NiTexturingProperty` | same `u16` Flags, **plus** an unread `Num Shader Textures` | reading a `u32` after the name gives Apply Mode 2 (MODULATE) and Texture Count 7 — Civ4's own values — and the missing count left the walk exactly 4 bytes short of the `NiSourceTexture` that follows |
+
+**Result.** Across the whole extracted corpus (1,022 `.nif`): **963 parse (94.2%)**, matching the 93.9%
+baseline above — no regression — and **1,600 of 2,389 shapes (67%) now resolve their own skin**. The
+peak atlas re-bakes **byte-identical**, which is the gate that says single-material bakes are untouched.
+
+**What shipped.** `DistrictView.improvement` (from `Plot.improvement()`, the only path by which live
+improvements can reach a browser); `web/js/improvements.mjs`, a per-frame layer rather than a province-
+texture stamp *because* improvements are live state; `improvement-cell.mjs` (pure, unit-tested) for the
+variant/mirror choice; the bake extended from 3 improvements to **10**, rendered at **32°** above the
+horizon (`TILT_MAX = 58` from vertical) rather than as a front elevation; and the props **fade in with
+the tilt** on the P4b `RELIEF_FADE_DEG` argument — a 32° elevation of a barn laid under a straight-down
+camera is the wrong drawing, so below the ramp there is simply no prop.
+
+Verified end to end against a live local session by `tools/webverify/improvement-shot.mjs`, which
+reports the chain rather than a picture: 74 plots, **14 carrying `IMPROVEMENT_FARM`**, 10 atlases
+loaded, 14 drawable, 0 console errors. Two traps it encodes for next time: **Escape OPENS the lobby**
+on this page (so the reflexive "dismiss the dialog" covers the map with a bigger one — `#buildchoice`
+must be hidden directly), and `plotPxAt()` **with no arguments** samples source (0,0); under the tilted
+camera the scale is a function of position, so the argument-less form reads ~0.2 px at deep zoom and a
+`plotPx > 0.5` guard silently skips the entire layer at exactly the zooms it exists for.
+
+**Left open.** `IMPROVEMENT_PLANTATION` renders but bakes to nothing — it is a field of small plants and
+every connected component falls under the extractor's minimum, which is a reasonable outcome for a
+cutter built to isolate individual plants. Nothing raises it in the sim, so it is noted, not chased.
+And `FOOTPRINT = 0.38` is an eyeballed constant: a barn cell is about 1:1.9, so the fraction is also
+roughly half the prop's height in plots. It wants a look from someone with taste, not another
+measurement.
+
+#### The top-down projector goes, and routes become ribbons
+
+**Decided 2026-07-27.** `tools/nifbake/render.mjs` had two projections: the front-elevation `renderNif`
+(trees, cactus, peaks, buildings) and a separate top-down road/route mode (`renderRoute` /
+`renderRouteNif` / `routeGeomAt` / `findRouteGeom` / `routeHalfExtent`) written because road meshes lie
+flat at Z≈0. **The top-down mode is removed**, along with the route bake in `web/build.mjs` and the
+committed `web/assets/routes/*.webp` atlases. P5a therefore bakes improvements **front-elevation only** —
+there is no flat path to fall back to, and a prop that stands is the whole point of the phase.
+
+That leaves routes needing a drawing, and the constraint that decides it is a band one:
+`routes.drawRoutes` fades in at **band 3.5–4.5**, a band and a half *below* where 3D engages, and draws
+for no-WebGL clients too. So route art cannot simply move into the mesh — deleting the tiles without a
+replacement silently drops routes across the whole 3.5–5 window.
+
+The replacement is the one this codebase already proves for rivers
+([`river-rendering.md`](river-rendering.md)): **routes become vector ribbons** — polylines along the
+network, stroked with a per-tier width and projected through `core.projectOn`, which since P4 drapes on
+terrain height. One code path covers every band: flat at 3.5, draped over the mesh at 6.5, and correct
+without WebGL. It also retires the auto-tiling (`route-tiling.mjs`'s mask → piece → rotation), because a
+ribbon meets its neighbours by *being continuous* rather than by matching stamped cells at plot edges.
+
+**✅ DONE 2026-07-27.** Deleted: `renderRoute` / `renderRouteNif` / `routeGeomAt` / `findRouteGeom` /
+`routeHalfExtent` and the `--route` CLI branch (~130 lines of `render.mjs`), `bakeRoutes` +
+`routeArtPaths` + the `ROUTE_TIERS`/`ROUTE_PIECES`/`SIZE_ROUTE` config in `web/build.mjs`, the three
+committed `web/assets/routes/*.webp`, `web/js/route-tiling.mjs` (+ its test), the `routes` key from
+the asset manifest and from `WorldBundle`'s whitelist, and `core.ROUTES`. Added: `route-ribbon.mjs`
+(pure, 8 unit tests) + a rewritten `routes.mjs`. The seam tests in `route-index.test.mjs` were
+**ported, not dropped** — cross-province fusion is still asserted, as spokes rather than pieces.
+
+Two things the rewrite had to get right that the tiling never faced, both consequences of the tilted
+camera: a ribbon's **edge midpoint is projected in its own right** rather than interpolated on screen
+(under perspective the halfway point of a plot is not the halfway point of its projection, and
+interpolating there kinks every join), and the stroke width comes from `plotPxAt(x, y)` **at the
+plot** — the argument-less form samples source (0,0) and would size every ribbon by the map's far
+corner, the same trap P5a hit.
+
 
 ## Retiring the 2D path — when, and how much of it
 

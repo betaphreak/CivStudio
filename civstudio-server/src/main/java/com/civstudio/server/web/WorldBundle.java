@@ -284,7 +284,9 @@ public final class WorldBundle {
 		// authored land-transition cells and hill overlay — docs/land-blend-plan.md.
 		for (String k : List.of("map", "realms", "terrainColors", "terrainLayer", "terrainTiles",
 				"landBlend", "hillWash", "river",
-				"sea", "shore", "ice", "bonusIcons", "trees", "routes", "improvementOverlays",
+				// no "routes": routes are vector ribbons drawn from the engine's per-plot RouteType
+				// (web/js/route-ribbon.mjs), not baked art — there is no atlas left to ship
+				"sea", "shore", "ice", "bonusIcons", "trees", "improvementOverlays",
 				"districtTiles", "seaBands", "beach", "foam", "coastMask", "coastTiles", "loading",
 				"fow"))
 			root.set(k, manifest.get(k));

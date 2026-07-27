@@ -1,12 +1,28 @@
-# Route rendering — baking Civ4 roads/trails/rails to map sprites
+# Route rendering — the trail/road/rail network as vector ribbons
 
-**Status (2026-07-15):** **all three gaps BUILT** — the art bake (gap A), the engine→client
-per-plot channel (gap B), and the per-plot draw layer (gap C). Route segment art is baked from
-the Civ4/C2C `.nif` meshes to per-tier WebP sprite atlases, shipped in the map bundle
-(`BUNDLE.routes`); trail-laying bands' routed plots ride the render snapshot (`routePlots`); and
-the `routes` layer (`web/js/routes.mjs`) auto-tiles them per plot. In the caravan demo the colony's
-own **winter explorer levies** (no hand-seeded bands) pioneer the trails, which draw as roads
-radiating from the settlement.
+**Status (2026-07-27): THE ART BAKE IS GONE; ROUTES ARE RIBBONS.** Gap A (baking Civ4 route meshes
+to per-tier WebP atlases) and the per-plot auto-tiling that consumed them have been **deleted** —
+`tools/nifbake`'s top-down route projection, `bakeRoutes` in `web/build.mjs`, the three committed
+`web/assets/routes/*.webp`, `web/js/route-tiling.mjs`, and `BUNDLE.routes`. The draw layer now
+strokes **polylines between plot centres** (`web/js/route-ribbon.mjs` + `routes.mjs`).
+
+Two reasons, and only the second is about looks:
+
+1. **A stamped square cell only meets its neighbour while a plot is an axis-aligned square on
+   screen.** Under the tilted 3D camera a plot is a trapezoid, so a rotated square sprite no longer
+   lines up at the shared edge and the network came apart at exactly the joins the tiling existed to
+   make. A ribbon meets its neighbours by *being continuous*, which no projection can break — and
+   every vertex goes through `core.projectOn`, so it drapes on the terrain for free (P4).
+2. **The atlases came out of the one projection in `nifbake` that was not a camera view of a model.**
+   Deleting that path was the point; see [`terrain-3d.md`](terrain-3d.md) §The top-down projector
+   goes, and routes become ribbons.
+
+The engine→client channel is unchanged: per-plot `RouteType` still rides the viewport-windowed feed
+(§Viewport-windowed route persistence), and `routes.mjs` maps a type onto a tier itself — a property
+of the engine's route ladder rather than of any atlas. In the caravan demo the colony's own **winter
+explorer levies** (no hand-seeded bands) still pioneer the trails.
+
+**Gaps B and C remain BUILT** — the per-plot channel and the draw layer — in ribbon form.
 
 **Update (2026-07-19):** gap B's snapshot channel is being **replaced by a viewport-windowed feed**
 (see [§Viewport-windowed route persistence](#viewport-windowed-route-persistence-superseding-gap-b)

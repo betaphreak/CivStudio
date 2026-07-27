@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { routeType, routeVersion, applyProvince, clearRoutes } from "./route-index.mjs";
-import { routePiece, neighbourMask } from "./route-tiling.mjs";
+import { spokes } from "./route-ribbon.mjs";
 
 // the index is module-global (one per page); reset between tests so they don't bleed
 function reset() { clearRoutes(); }
@@ -66,21 +66,20 @@ test("cross-province seam fuses via the global index", () => {
   // province A owns the plot at (5,5); province B owns its eastern neighbour (6,5). Same tier.
   applyProvince(1, [{ x: 5, y: 5, type: "ROUTE_TRAIL" }]);
   const tierAt = (x, y) => routeType(x, y);   // both provinces carry ROUTE_TRAIL, so type == tier here
-  // before B loads, (5,5) sees no neighbour → isolated nub
-  let mask = neighbourMask((dx, dy) => tierAt(5 + dx, 5 + dy) === "ROUTE_TRAIL");
-  assert.deepEqual(routePiece(mask), { piece: "iso", rot: 0 }, "no neighbour yet → stub");
+  // before B loads, (5,5) sees no neighbour → nothing to run to
+  let s = spokes((dx, dy) => tierAt(5 + dx, 5 + dy) === "ROUTE_TRAIL");
+  assert.deepEqual(s, [], "no neighbour yet → no spoke");
   // B's layer arrives — now (5,5)'s eastern neighbour is routed, across the province seam
   applyProvince(2, [{ x: 6, y: 5, type: "ROUTE_TRAIL" }]);
-  mask = neighbourMask((dx, dy) => tierAt(5 + dx, 5 + dy) === "ROUTE_TRAIL");
-  assert.deepEqual(routePiece(mask), { piece: "end", rot: 1 },
-    "the boundary plot now points east into province B (end pointing E)");
+  s = spokes((dx, dy) => tierAt(5 + dx, 5 + dy) === "ROUTE_TRAIL");
+  assert.deepEqual(s, [[1, 0]],
+    "the boundary plot now runs east into province B");
 });
 
 test("different tiers do not fuse across the seam", () => {
   reset();
   applyProvince(1, [{ x: 5, y: 5, type: "ROUTE_TRAIL" }]);
   applyProvince(2, [{ x: 6, y: 5, type: "ROUTE_ROAD" }]);   // a road, not a trail
-  const mask = neighbourMask((dx, dy) => routeType(5 + dx, 5 + dy) === "ROUTE_TRAIL");
-  assert.deepEqual(routePiece(mask), { piece: "iso", rot: 0 },
-    "a trail does not fuse into a neighbouring road");
+  const s = spokes((dx, dy) => routeType(5 + dx, 5 + dy) === "ROUTE_TRAIL");
+  assert.deepEqual(s, [], "a trail does not fuse into a neighbouring road");
 });

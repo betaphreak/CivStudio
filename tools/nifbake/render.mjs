@@ -27,6 +27,20 @@ function compose(p, l) {                      // parent ∘ local
 const local = b => ({ T: b.translation, R: b.rotation, s: b.scale });
 const ID = { T: [0, 0, 0], R: [1, 0, 0, 0, 1, 0, 0, 0, 1], s: 1 };
 
+// The texture file a shape is skinned with: its NiTexturingProperty's base texture → that
+// NiSourceTexture's file name. Null when the link is missing (an older parse where the property
+// blocks were skipped as a gap, or a shape with no texturing property), which the caller reads as
+// "use the single fallback texture" — the behaviour every bake had before multi-material support.
+function shapeTexture(B, shape) {
+  for (const p of shape.props || []) {
+    const prop = B[p];
+    if (!prop || prop.kind !== 'NiTexturingProperty' || !(prop.base >= 0)) continue;
+    const src = B[prop.base];
+    if (src && src.file) return src.file;
+  }
+  return null;
+}
+
 function gatherTriangles(nif, opts = {}) {
   const B = nif.blocks;
   const referenced = new Set();
@@ -45,11 +59,17 @@ function gatherTriangles(nif, opts = {}) {
       const zext = zr[1] - zr[0], foot = Math.max(xr[1] - xr[0], yr[1] - yr[0]);
       if (process.env.NIF_DEBUG) console.error(`  trishape verts=${g.vertices.length} tris=${g.triangles.length} xext=${(xr[1]-xr[0]).toFixed(1)} yext=${(yr[1]-yr[0]).toFixed(1)} zext=${zext.toFixed(1)}`);
       // 'low' keeps spreading low plants (grass/wheat), dropping only flat ground quads;
-      // default drops any near-horizontal plane so an upright plant (cactus) stands alone
-      const flat = opts.flat === 'low' ? zext < 2 : zext < 0.28 * foot;
+      // default drops any near-horizontal plane so an upright plant (cactus) stands alone.
+      // 'keep' drops NOTHING — for GROUND improvements, where the near-horizontal plane is not a
+      // base to discard but the entire subject: a farm is a field, and filtering it leaves the
+      // gate and fence posts standing alone, which is what an_eu_farm01 baked to for as long as
+      // this filter applied to it (docs/terrain-3d.md §P5a).
+      const flat = opts.flat === 'keep' ? false
+        : opts.flat === 'low' ? zext < 2 : zext < 0.28 * foot;
+      const tex = shapeTexture(B, b);
       if (process.env.NIF_NOFILTER || !flat)
         for (const t of g.triangles)
-          tris.push({ p: [wv[t[0]], wv[t[1]], wv[t[2]]], uv: [g.uvs[t[0]], g.uvs[t[1]], g.uvs[t[2]]] });
+          tris.push({ p: [wv[t[0]], wv[t[1]], wv[t[2]]], uv: [g.uvs[t[0]], g.uvs[t[1]], g.uvs[t[2]]], tex });
     }
     (b.children || []).forEach(c => walk(c, w));
   }
@@ -66,13 +86,20 @@ function render(tris, tex, size) {
   const W = Math.max(8, Math.round(wspan * sc + 2 * pad)), H = Math.max(8, Math.round(hspan * sc + 2 * pad));
   const px = x => pad + (x - minx) * sc, py = z => H - pad - (z - minz) * sc;   // Z up → image up
   const rgba = Buffer.alloc(W * H * 4), depth = new Float32Array(W * H).fill(1e9);
-  const TW = tex.width, TH = tex.height, td = tex.rgba;
-  const sample = (u, v) => {
+  // `tex` is either one decoded texture (single-material: trees, peaks — every bake before P5a) or a
+  // {name -> decoded} map plus a `fallback`, for a model whose meshes name different skins. A farm is
+  // barn.dds + farm_light.dds + farm_shadow.dds; skinning all three with one of them is what made the
+  // committed imp-farm.webp a sheet of planks.
+  const one = tex && tex.rgba ? tex : null;
+  const pick = t => one || tex.byName[t.tex] || tex.fallback;
+  const sample = (skin, u, v) => {
+    const TW = skin.width, TH = skin.height, td = skin.rgba;
     let sx = Math.floor((u - Math.floor(u)) * TW), sy = Math.floor((v - Math.floor(v)) * TH);
     if (sx < 0) sx += TW; if (sy < 0) sy += TH; const o = (sy * TW + sx) * 4;
     return [td[o], td[o + 1], td[o + 2], td[o + 3]];
   };
   for (const t of tris) {                     // scanline-fill each triangle, depth = mean Y
+    const skin = pick(t); if (!skin) continue;
     const A = [px(t.p[0][0]), py(t.p[0][2])], Bp = [px(t.p[1][0]), py(t.p[1][2])], C = [px(t.p[2][0]), py(t.p[2][2])];
     const meanY = (t.p[0][1] + t.p[1][1] + t.p[2][1]) / 3;
     const x0 = Math.max(0, Math.floor(Math.min(A[0], Bp[0], C[0]))), x1 = Math.min(W - 1, Math.ceil(Math.max(A[0], Bp[0], C[0])));
@@ -85,7 +112,7 @@ function render(tris, tex, size) {
       if (l0 < -0.001 || l1 < -0.001 || l2 < -0.001) continue;
       const u = l0 * t.uv[0][0] + l1 * t.uv[1][0] + l2 * t.uv[2][0];
       const v = l0 * t.uv[0][1] + l1 * t.uv[1][1] + l2 * t.uv[2][1];
-      const [r, g, bl, a] = sample(u, v); if (a < 40) continue;
+      const [r, g, bl, a] = sample(skin, u, v); if (a < 40) continue;
       const idx = y * W + x; if (meanY >= depth[idx]) continue; depth[idx] = meanY;
       const o = idx * 4; rgba[o] = r; rgba[o + 1] = g; rgba[o + 2] = bl; rgba[o + 3] = a;
     }
@@ -113,11 +140,44 @@ export function encodePng(W, H, rgba) {
   return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 
+// Rotate a triangle's world vertices about the X axis by `deg`, so the orthographic front view that
+// follows becomes an OBLIQUE view — the camera's own angle rather than an elevation.
+//
+// This is what makes ground art renderable at all. The front view (X right, Z up, Y depth) sees a
+// flat improvement edge-on: a farm's field has almost no Z extent, so it collapses to a line and the
+// sprite is whatever happens to stand up around it. Pitching the model over by the angle the map
+// camera actually reaches (band-math.TILT_MAX = 58°, Civ4's own CAMERA_LOWER_PITCH) shows the field
+// in the same foreshortening the player sees it in. 0° leaves every existing bake byte-identical.
+function pitchTriangles(tris, deg) {
+  if (!deg) return tris;
+  const r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r);
+  const rot = ([x, y, z]) => [x, y * c - z * s, y * s + z * c];
+  return tris.map(t => ({ ...t, p: t.p.map(rot) }));   // ...t: keep `tex` — dropping it re-skins the model
+}
+
+/**
+ * Decode every skin the gathered triangles name, resolving each against the model's own directory
+ * (which is where Civ4 keeps them — `barn.dds` beside `an_eu_farm01.nif`). A name that will not
+ * resolve or decode is dropped to the fallback rather than failing the bake: a missing skin should
+ * cost one mesh its texture, not the whole model its render.
+ */
+function decodeSkins(nifPath, texPath, tris) {
+  const fallback = texPath ? decodeDds(fs.readFileSync(texPath)) : null;
+  const names = new Set(tris.map(t => t.tex).filter(Boolean));
+  if (!names.size) return fallback;                     // single-material: the pre-P5a path, unchanged
+  const dir = path.dirname(nifPath), byName = {};
+  for (const n of names) {
+    const file = path.join(dir, path.basename(n));
+    try { byName[n] = decodeDds(fs.readFileSync(file)); }
+    catch { if (process.env.NIF_DEBUG) console.error(`  skin not resolved: ${n}`); }
+  }
+  return { byName, fallback };
+}
+
 export function renderNif(nifPath, texPath, size = 128, opts = {}) {
   const nif = parseNif(fs.readFileSync(nifPath), false, true);   // lenient: tolerate tail desync
-  const tris = gatherTriangles(nif, opts);
-  const tex = decodeDds(fs.readFileSync(texPath));
-  return render(tris, tex, size);   // untrimmed, so components stay spatially separated
+  const tris = pitchTriangles(gatherTriangles(nif, opts), opts.pitch || 0);
+  return render(tris, decodeSkins(nifPath, texPath, tris), size);   // untrimmed: components stay separated
 }
 
 // 4-connected components on the alpha channel — each spatially-separate plant becomes one
@@ -195,145 +255,19 @@ export function bakeNifGroup(variants, name, webAssets, size = 220, opts = {}) {
   fs.writeFileSync(path.join(webAssets, file), encodePng(totW, maxH, rgba));
   return { src: `assets/${file}`, w: totW, h: maxH, sprites };
 }
+// THE TOP-DOWN PROJECTION IS GONE (2026-07-27). This renderer had a second path — renderRouteNif /
+// renderRoute / routeGeomAt / findRouteGeom / routeHalfExtent, ~130 lines — that projected a road
+// mesh from above (image X = world X, image Y = world Y) instead of viewing it with a camera, plus
+// its own hand-rolled geometry locator to get around the resync. It existed for one consumer, the
+// route atlas bake, and it was the one thing here that was not a view of a model. Routes are vector
+// ribbons now (web/js/route-ribbon.mjs), which need no art and drape on the 3D terrain, so the path
+// and its three committed WebP atlases went with it. See docs/terrain-3d.md §The top-down projector
+// goes, and routes become ribbons.
 
-// ================================ road / route mode =================================
-// Roads differ from the tree/cactus billboards in two ways the front-view renderNif can't
-// handle, so they get their own path (see docs/route-rendering.md):
-//   1. They lie FLAT on the ground (the mesh spans X-Y at Z≈0), so we project TOP-DOWN —
-//      image X = world X, image Y = world Y, higher Z wins — not the X-Z front view.
-//   2. The stock parseNif resync rejects them: a road's NiTriShape and its NiTriShapeData
-//      are separated by a 7-block run (texturing/material/alpha + an animated-alpha
-//      NiAlphaController→NiFloatInterpolator→NiFloatData chain with no parser), and the
-//      resync's sane() UV bound (0..3, tuned for 0..1 billboards) rejects the road's
-//      TILING UVs (V repeats down a segment). So we locate the geometry directly, by
-//      scanning for the NiTriShapeData whose parse consumes EXACTLY to EOF — a strong,
-//      self-contained lock that needs no resync heuristic.
-
-// Read a length-prefixed vec/scalar stream as a NiTriShapeData starting at byte `off`; return
-// the geometry (verts/uvs/tris) iff it parses and consumes to EOF, else null. Mirrors
-// niGeometryData/niTriShapeData in nif.mjs for the 20.0.0.4, no-normals road layout.
-function routeGeomAt(buf, off) {
-  let o = off;
-  const u16 = () => { const v = buf.readUInt16LE(o); o += 2; return v; };
-  const u32 = () => { const v = buf.readUInt32LE(o); o += 4; return v; };
-  const i32 = () => { const v = buf.readInt32LE(o); o += 4; return v; };
-  const u8 = () => buf[o++];
-  const f32 = () => { const v = buf.readFloatLE(o); o += 4; return v; };
-  const bool = () => u8() !== 0;
-  const vec3 = () => [f32(), f32(), f32()];
-  try {
-    i32();                                             // Group ID
-    const nv = u16(); if (nv < 3 || nv > 5000) return null;
-    u8(); u8();                                        // Keep / Compress flags
-    if (!bool()) return null;                          // Has Vertices
-    const verts = []; for (let i = 0; i < nv; i++) verts.push(vec3());
-    const vflags = u16(); const hasN = bool();
-    if (hasN) for (let i = 0; i < nv; i++) vec3();
-    if (hasN && (vflags & 4096)) for (let i = 0; i < nv * 2; i++) vec3();
-    vec3(); f32();                                     // Center, Radius
-    if (bool()) for (let i = 0; i < nv; i++) { f32(); f32(); f32(); f32(); }  // Colors
-    const numUV = vflags & 63; const uvs = [];
-    for (let s = 0; s < numUV; s++) { const set = []; for (let i = 0; i < nv; i++) set.push([f32(), f32()]); if (s === 0) uvs.push(...set); }
-    u16(); i32();                                      // Consistency, Additional Data ref
-    const ntri = u16(); u32(); const hasT = bool();
-    const tris = []; if (hasT) for (let i = 0; i < ntri; i++) tris.push([u16(), u16(), u16()]);
-    if (!tris.length || !tris.every(t => t[0] < nv && t[1] < nv && t[2] < nv)) return null;
-    if (uvs.length !== nv) return null;
-    const numMatch = u16(); for (let i = 0; i < numMatch; i++) { const n = u16(); for (let j = 0; j < n; j++) u16(); }
-    const numRoots = u32(); if (numRoots > 1000) return null; for (let i = 0; i < numRoots; i++) i32();
-    if (o !== buf.length) return null;                 // consumed exactly to EOF → the real block
-    return { nv, verts, uvs, tris };
-  } catch { return null; }
-}
-function findRouteGeom(buf) {
-  for (let o = 100; o < buf.length - 20; o++) { const g = routeGeomAt(buf, o); if (g) return g; }
-  return null;
-}
-
-// top-down raster of a flat route quad; the texture WRAPS (roads tile their surface down
-// the segment). Two placements:
-//  • `square` given (a world half-extent): render into a fixed `size`×`size` cell mapping world
-//    [-square,square]² → the cell, CENTERED and UNTRIMMED. This registers every piece of a tier
-//    to one plot cell so connections reach the same edges and a 90°-rotation stays aligned — the
-//    form the per-plot grid renderer needs (docs/route-rendering.md).
-//  • otherwise: fit the piece's own bbox and trim to alpha (compact, for standalone/debug).
-function renderRoute(g, tex, size, square) {
-  const { verts, uvs, tris } = g;
-  let W, H, px, py;
-  if (square) {
-    W = H = size;
-    const sc = (size - 2) / (2 * square), cx = size / 2, cy = size / 2;
-    px = x => cx + x * sc; py = y => cy - y * sc;                 // world origin → cell centre; +Y up
-  } else {
-    let mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9;
-    for (const p of verts) { mnx = Math.min(mnx, p[0]); mxx = Math.max(mxx, p[0]); mny = Math.min(mny, p[1]); mxy = Math.max(mxy, p[1]); }
-    const wspan = mxx - mnx, hspan = mxy - mny, span = Math.max(wspan, hspan) || 1;
-    const pad = 1, sc = (size - 2 * pad) / span;
-    W = Math.max(4, Math.round(wspan * sc + 2 * pad)); H = Math.max(4, Math.round(hspan * sc + 2 * pad));
-    px = x => pad + (x - mnx) * sc; py = y => H - pad - (y - mny) * sc;   // world +Y (North) → image up
-  }
-  const rgba = Buffer.alloc(W * H * 4), depth = new Float32Array(W * H).fill(-1e9);
-  const TW = tex.width, TH = tex.height, td = tex.rgba;
-  const sample = (u, v) => {
-    let sx = Math.floor((u - Math.floor(u)) * TW), sy = Math.floor((v - Math.floor(v)) * TH);
-    if (sx < 0) sx += TW; if (sy < 0) sy += TH; const q = (sy * TW + sx) * 4;
-    return [td[q], td[q + 1], td[q + 2], td[q + 3]];
-  };
-  for (const t of tris) {
-    const A = [px(verts[t[0]][0]), py(verts[t[0]][1])], B = [px(verts[t[1]][0]), py(verts[t[1]][1])], C = [px(verts[t[2]][0]), py(verts[t[2]][1])];
-    const meanZ = (verts[t[0]][2] + verts[t[1]][2] + verts[t[2]][2]) / 3;
-    const x0 = Math.max(0, Math.floor(Math.min(A[0], B[0], C[0]))), x1 = Math.min(W - 1, Math.ceil(Math.max(A[0], B[0], C[0])));
-    const y0 = Math.max(0, Math.floor(Math.min(A[1], B[1], C[1]))), y1 = Math.min(H - 1, Math.ceil(Math.max(A[1], B[1], C[1])));
-    const d = (B[1] - C[1]) * (A[0] - C[0]) + (C[0] - B[0]) * (A[1] - C[1]); if (Math.abs(d) < 1e-6) continue;
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      const l0 = ((B[1] - C[1]) * (x - C[0]) + (C[0] - B[0]) * (y - C[1])) / d;
-      const l1 = ((C[1] - A[1]) * (x - C[0]) + (A[0] - C[0]) * (y - C[1])) / d;
-      const l2 = 1 - l0 - l1;
-      if (l0 < -0.001 || l1 < -0.001 || l2 < -0.001) continue;
-      const u = l0 * uvs[t[0]][0] + l1 * uvs[t[1]][0] + l2 * uvs[t[2]][0];
-      const v = l0 * uvs[t[0]][1] + l1 * uvs[t[1]][1] + l2 * uvs[t[2]][1];
-      const [r, gg, bl, a] = sample(u, v); if (a < 8) continue;
-      const idx = y * W + x; if (meanZ <= depth[idx]) continue; depth[idx] = meanZ;
-      const q = idx * 4; rgba[q] = r; rgba[q + 1] = gg; rgba[q + 2] = bl; rgba[q + 3] = a;
-    }
-  }
-  return square ? { W, H, rgba } : trim({ W, H, rgba });   // fixed cells keep their registration
-}
-
-/**
- * Render one flat Civ4 route segment .nif to a top-down 2D sprite. Returns {W,H,rgba}, or null if
- * the geometry can't be located / the texture is unreadable. With `opts.square` (a world
- * half-extent, e.g. from {@link routeHalfExtent}) it renders a registered, untrimmed `size`×`size`
- * plot cell (for the grid renderer); otherwise a compact alpha-trimmed sprite. See
- * docs/route-rendering.md; build.mjs `bakeRoutes` packs these into per-tier atlases.
- */
-export function renderRouteNif(nifPath, texPath, size = 96, opts = {}) {
-  const g = findRouteGeom(fs.readFileSync(nifPath));
-  if (!g) return null;
-  const tex = decodeDds(fs.readFileSync(texPath));
-  return renderRoute(g, tex, size, opts.square);
-}
-
-/**
- * The plot half-extent of a route segment mesh — max(|x|,|y|) over its vertices, i.e. how far the
- * road reaches toward the plot edge. Measured on a tier's straight piece, it's the common `square`
- * every piece of that tier is rendered at so they share one registered cell. Null if no geometry.
- */
-export function routeHalfExtent(nifPath) {
-  const g = findRouteGeom(fs.readFileSync(nifPath));
-  if (!g) return null;
-  let e = 0;
-  for (const [x, y] of g.verts) e = Math.max(e, Math.abs(x), Math.abs(y));
-  return e;
-}
-
-// Debug CLI:  node render.mjs <nif> <tex> <out.png> [size]           (front-view feature)
-//             node render.mjs --route <nif> <tex> <out.png> [size]   (top-down route)
+// Debug CLI:  node render.mjs <nif> <tex> <out.png> [size]
 if (process.argv[1] && /render\.mjs$/.test(process.argv[1])) {
-  const args = process.argv.slice(2);
-  const route = args[0] === '--route';
-  const [nifPath, texPath, out, size] = route ? args.slice(1) : args;
-  const img = route ? renderRouteNif(nifPath, texPath, +size || 96) : renderNif(nifPath, texPath, +size || 128);
+  const [nifPath, texPath, out, size] = process.argv.slice(2);
+  const img = renderNif(nifPath, texPath, +size || 128);
   fs.writeFileSync(out, encodePng(img.W, img.H, img.rgba));
-  console.error(`rendered ${route ? 'route ' : ''}${path.basename(nifPath)} -> ${out} (${img.W}x${img.H})`);
+  console.error(`rendered ${path.basename(nifPath)} -> ${out} (${img.W}x${img.H})`);
 }

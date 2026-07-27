@@ -40,10 +40,18 @@ import java.util.List;
  * @param farms     how many of the colony's necessity farms work for this hamlet — its own food
  *                  engine (city-of-hamlets V3). A hamlet with farms is an exporter, one without
  *                  lives off its home plots and its lord's imports
+ * @param improvement the Civ4 improvement raised on this plot (the verbatim {@code IMPROVEMENT_*}
+ *                  key — a {@code FARM} under a necessity firm, a {@code HUNTING_CAMP}), or
+ *                  {@code null} on undeveloped ground. Distinct from {@link #buildings()}: a plot
+ *                  carries at most ONE improvement, it is the third leg of the plot's yield after
+ *                  terrain and feature, and it is what the client draws as ground art. Live state,
+ *                  so it can only reach the browser here — the baked world plot data has no
+ *                  improvement and correctly never will, improvements being built by the sim
+ *                  rather than world-invariant. See {@code docs/terrain-3d.md} §P5a
  */
 public record DistrictView(int index, int x, int y, List<PlacedBuilding> buildings,
 		List<Underway> underway, String fiefLord, int households,
-		double larder, double larderFloor, int farms) {
+		double larder, double larderFloor, int farms, String improvement) {
 
 	/**
 	 * One finished building on the plot, as a bare eos-native id (the verbatim C2C

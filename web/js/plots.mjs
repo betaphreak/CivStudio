@@ -3,7 +3,7 @@
 // the draw pass that blits them. What used to also live here now has its own module — the shoreline
 // (coast.mjs), the plot fetch (plotfetch.mjs), the resource icons (bonusicons.mjs), the movement-cost
 // heat (cost.mjs), and the offscreen primitives all three share (plotcanvas.mjs).
-import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, IMPROVEMENT_OVERLAYS, SEA_BANDS, COAST_TILES, HILL_WASH, LAND_BLEND, LY, cam, VIEW, ctx, pll, S } from "./core.mjs";
+import { P, terrainRgb, provSrcBox, provOnScreen, latAtSourceY, K_PLOT, TT, TCOL, RIVER, TREES, SEA_BANDS, COAST_TILES, HILL_WASH, LAND_BLEND, LY, cam, VIEW, ctx, pll, S } from "./core.mjs";
 import { blendConfigs, cornerResolved } from "./terrain-corners.mjs";
 import { shelfColor } from "./water-terrain.mjs";
 import { draw } from "./repaint.mjs";
@@ -64,15 +64,8 @@ const rvImg = loadArt(RIVER, () => { rvReady = true; });
 const treeImg = {}, treeReady = {};
 if (TREES) for (const k of Object.keys(TREES))
   treeImg[k] = loadArt(TREES[k], () => { treeReady[k] = true; for (const p of P) p._tcanvas = null; });
-// Civ4 improvement sprites (build.mjs bakeImprovementOverlays): one sheet per improvement, carrying
-// VARIANT cells — an_eu_farm01/02/03 and friends — so a province of farms is not one stamp repeated.
-// Placement is DEFERRED: nothing carries an `improvement` yet, so this is wired but draws nothing.
-const impImg = {}, impReady = {};
-if (IMPROVEMENT_OVERLAYS) {
-  for (const k of Object.keys(IMPROVEMENT_OVERLAYS)) {
-    impImg[k] = loadArt(IMPROVEMENT_OVERLAYS[k], () => { impReady[k] = true; for (const p of P) p._tcanvas = null; });
-  }
-}
+// (Civ4 improvement sprites load in improvements.mjs, which owns the layer — they are live sim state
+//  drawn per frame, not province-texture content. §P5a.)
 // split the atlas strip into a per-terrain tile canvas, so each can be a repeating
 // pattern (continuous ground texture across plots, no per-plot tile seam)
 function extractTiles() {
@@ -500,11 +493,9 @@ function buildPlotTexCanvas(p) {
   if (bakeFoliage) for (const q of p._plots) {
     if (q.feature) { const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp; featureSprite(o, cx, cy, tpp, q.feature, q.x, q.y); }
   }
-  // improvements: a flat Civ6 SV overlay (farm/mine/quarry) over each improved plot, on top of the
-  // ground + feature. No-op today — nothing carries an `improvement` yet (placement deferred).
-  for (const q of p._plots) {
-    if (q.improvement) { const cx = (q.x - x0) * tpp, cy = (q.y - y0) * tpp; improvementSprite(o, cx, cy, tpp, q.improvement, q.x, q.y); }
-  }
+  // (improvements are NOT baked here. They were, from `q.improvement` — a field the world plot data
+  //  does not carry, so the stamp was dead code for as long as it existed. An improvement is live sim
+  //  state and now arrives on the session feed, drawn per frame by improvements.mjs. §P5a.)
   // (city cores are re-terrained to their countryside in markUrbanPlots; a subtle screen-space
   // marker in city.mjs keeps them locatable — the old Civ4 city sprite was pulled, see there.)
   } // end land-only ground stages
@@ -622,26 +613,6 @@ function stampGrass(o, cx, cy, s, rng) {
       o.stroke();
     }
   }
-  o.restore();
-}
-// A flat Civ6 SV improvement overlay (farm/mine/quarry) centred on an improved plot. A 128² alpha sprite
-// blitted to fill the plot; per-plot horizontal flip breaks the tiling like the feature overlays. Nothing
-// draws if the art isn't loaded, the improvement is uncovered by Civ6, or (today) the plot has no
-// improvement at all — placement is deferred (docs/civ6-art-replacement.md §F).
-function improvementSprite(o, cx, cy, s, improvement, sx, sy) {
-  const sheet = IMPROVEMENT_OVERLAYS && IMPROVEMENT_OVERLAYS[improvement];
-  if (!sheet || !impImg[improvement] || !impReady[improvement]) return;
-  // pick a VARIANT per plot, the way the tree billboards do — the sheet carries Civ4's own
-  // an_eu_farm01/02/03 rather than one model, and stamping the first everywhere reads as a pattern
-  const cells = sheet.sprites && sheet.sprites.length ? sheet.sprites : null;
-  const r = cells ? cells[Math.floor(mkRng(foliageSeed(sx, sy))() * cells.length) % cells.length] : null;
-  const flip = (sx ^ sy) & 1;               // per-plot mirror, so even one variant is not uniform
-  o.save();
-  if (flip) { o.translate(cx + s, cy); o.scale(-1, 1); } else o.translate(cx, cy);
-  if (r) {
-    const k = Math.min(s / r[2], s / r[3]);  // fit the cell in the plot, keeping its aspect
-    o.drawImage(impImg[improvement], r[0], r[1], r[2], r[3], (s - r[2] * k) / 2, (s - r[3] * k) / 2, r[2] * k, r[3] * k);
-  } else o.drawImage(impImg[improvement], 0, 0, s, s);
   o.restore();
 }
 export { drawPlots };

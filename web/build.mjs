@@ -27,7 +27,7 @@ import { decodeCached, resampleRGBA, octagonBacking, compositeCentered } from '.
 import { beachRampFromAtlas } from './beachramp.mjs';
 import { bundleResource, bundleResourceOpt } from './content-source.mjs';
 import { prefetch as anbPrefetch, get as anbGet } from './anbennar.mjs';
-import { bakeNifGroup, renderRouteNif, routeHalfExtent } from '../tools/nifbake/render.mjs';
+import { bakeNifGroup } from '../tools/nifbake/render.mjs';
 import { PEAK_GROUP, PEAK_MANIFEST, peakVariants } from '../tools/fpk/bake-peaks.mjs';
 import sharp from 'sharp';
 
@@ -410,32 +410,11 @@ function assertContiguousX(provs, realmKey) {
 // plots.pack (index inlined below), and expose the terrain display colours the
 // page tints plots with (docs §10). Slice B also bakes a real ground-texture
 // atlas the page draws per plot at deep zoom.
-// ---- routes (roads / trails / rails) config — used by the prefetch below and bakeRoutes() later.
-// docs/route-rendering.md. The three route TIERS the map draws, each a C2C route style: a dirt TRAIL,
-// a stone ROAD, a RAILROAD. Declared here (above the prefetch) so routeArtPaths() can warm them.
-// `byType` maps the engine's Plot.routeType (RouteType.type) onto a tier.
-const ROUTE_TIERS = [
-  { key: 'trail', nifDir: 'path',         prefix: 'road',     tex: 'Art/Terrain/Routes/path/roadprimitive.dds' },
-  { key: 'road',  nifDir: 'roman roads',  prefix: 'road',     tex: 'Art/Terrain/Routes/roman roads/roadroman.dds' },
-  { key: 'rail',  nifDir: 'modrailroads', prefix: 'railroad', tex: 'Art/Terrain/Routes/railroads/railroad.dds' },
-];
-// semantic piece → Civ4 route-model connection (route-models.json) → candidate filename stems, in
-// order (split-LoD styles carry a `-000`, unsplit ones don't). The canonical orientation is baked;
-// the draw layer rotates by 90° multiples to cover the other masks (Civ4 `Rotations "0 90 180 270"`).
-const ROUTE_PIECES = [
-  { name: 'iso',      conn: '-',       stems: ['a00'] },              // isolated nub
-  { name: 'end',      conn: 'N',       stems: ['a01'] },              // terminus (points N)
-  { name: 'straight', conn: 'N S',     stems: ['b03-000', 'b03'] },   // through (│, N–S)
-  { name: 'corner',   conn: 'N E',     stems: ['b05-000', 'b05'] },   // L-turn (└)
-  { name: 'tee',      conn: 'N NE S',  stems: ['c07', 'c07-000'] },   // Y/T junction
-  { name: 'cross',    conn: 'N E S W', stems: ['d01-000', 'd01'] },   // + crossroads
-];
-const ROUTE_BY_TYPE = {
-  ROUTE_TRAIL: 'trail', ROUTE_PATH: 'trail',
-  ROUTE_ROAD: 'road', ROUTE_PAVED_ROAD: 'road',
-  ROUTE_RAILROAD: 'rail',
-};
-const SIZE_ROUTE = 96;   // px longest-side each piece renders at, before atlas packing
+// ROUTES ARE NOT BAKED. They were: three tiers x six connection pieces, rendered through
+// nifbake's top-down route projection into committed WebP atlases the plot layer auto-tiled. Routes
+// are vector ribbons now (web/js/route-ribbon.mjs) — no art, no atlas, no tiling, and they drape on
+// the 3D terrain, which the stamped square cells could not. docs/terrain-3d.md §The top-down
+// projector goes; docs/route-rendering.md.
 
 // The three class backing colours the resource octagons are drawn on. These were sampled out of
 // Civ6's Resources256 atlas; with the Civ6 depot gone they are the measured values, kept as constants
@@ -521,7 +500,6 @@ await (async () => {
       `Art/Terrain/heightmap/coastblendmasks/coastscalemask${String(i).padStart(2, '0')}.tga`),
     'Art/Terrain/features/icepack/icepack_1024.dds', 'Art/Terrain/features/treeleafy/trees_1024.dds',
     'Art/Terrain/features/savanna/palms_1024.dds', 'Art/Terrain/features/swamp/trees1.dds');
-  arts.push(...routeArtPaths());   // the road/rail segment nifs + their textures (bakeRoutes)
   await civ4Prefetch({ arts, files: ['CIV4BonusInfos.xml', 'CIV4ArtDefines_Bonus.xml', 'res/Fonts/GameFont_120.tga'] });
 })();
 // Warm the Anbennar trade-good icon strip + its ordering source for bakeTradeGoodIcons (see anbennar.mjs).
@@ -559,7 +537,6 @@ const ice = bakeIceTile();                   // {src, tile} real Civ4 pack-ice t
 const bonusIcons = bakeBonusIcons();         // {src, cell, cols, index:{type:i}} real Civ4 resource icons, or null
 const tradeGoodIcons = bakeTradeGoodIcons(); // {src, cell, cols, index:{key:col}} Anbennar trade-good icons, or null
 const trees = bakeFeatureSprites();          // {leafy,palm,swamp:{src,w,h,sprites}} real foliage cutouts, or null
-const routes = bakeRoutes();                 // {trail,road,rail:{src,w,h,cell:{piece:[x,y,w,h]}}} baked route sprites, or null
 const improvementOverlays = bakeImprovementOverlays(); // {IMPROVEMENT_*: {src,w,h}} Civ4 improvement models via nifbake, or null
 const districtTiles = null;                   // Civ6-only art, removed — no Civ4 district-hex equivalent exists
 // (seaBands + coastTiles are baked above, ahead of the terrain colours that read them)
@@ -686,7 +663,7 @@ const bboxes = {};                    // ring-less (sea/lake) provinces' plot-ex
 for (const p of provinces) if (p.bbox) bboxes[p.id] = p.bbox;
 const manifest = {
   seed: +SEED,
-  map, realms, fow, terrainColors, terrainLayer, terrainTiles, landBlend, hillWash, river, sea, shore, ice, bonusIcons, trees, routes, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
+  map, realms, fow, terrainColors, terrainLayer, terrainTiles, landBlend, hillWash, river, sea, shore, ice, bonusIcons, trees, improvementOverlays, districtTiles, seaBands, beach, foam, coastMask, coastTiles,
   loading,                            // committed loading-screen art (assets/loading/loading-*.jpg), or []
   bboxes,                             // {provId: [x0,y0,x1,y1]} for ring-less provinces (server can't derive)
 };
@@ -1902,64 +1879,6 @@ function bakeFeatureSprites() {
   return Object.keys(out).length ? out : null;
 }
 
-// Every "Art/..." route path bakeRoutes touches — warmed by the top-of-file prefetch. (The
-// ROUTE_TIERS / ROUTE_PIECES config it reads is declared up top, before the prefetch, to avoid a TDZ.)
-function routeArtPaths() {
-  const out = [];
-  for (const t of ROUTE_TIERS) {
-    out.push(t.tex);
-    for (const p of ROUTE_PIECES) for (const s of p.stems)
-      out.push(`Art/Terrain/Routes/${t.nifDir}/${t.prefix}${s}.nif`);
-  }
-  return out;
-}
-
-// Bake each tier's connection pieces to a horizontal-strip atlas + sprite rects, so the plot layer
-// can auto-tile real Civ4 road/trail/rail art per plot. Every piece of a tier renders into the SAME
-// registered `SIZE_ROUTE`×`SIZE_ROUTE` cell (world half-extent from the tier's straight piece), so
-// the grid renderer stamps one cell per plot and rotates it 90°·n with no re-registration. Returns
-// {trail,road,rail:{src,w,h,cellSize,cell:{piece:[x,y,w,h]},conn:{piece:connString}},
-// byType:{ROUTE_*:tier}} or null when no art resolves.
-function bakeRoutes() {
-  const resolvePiece = (t, stems) => {   // first candidate stem that resolves → local nif path
-    for (const s of stems) { const nif = resolveArt(`Art/Terrain/Routes/${t.nifDir}/${t.prefix}${s}.nif`); if (nif) return nif; }
-    return null;
-  };
-  const tiers = {};
-  for (const t of ROUTE_TIERS) {
-    const texFile = resolveArt(t.tex);
-    if (!texFile) { console.log(`  routes/${t.key}: texture ${t.tex} not resolved, skipped`); continue; }
-    // the plot cell size: how far the tier's straight road reaches toward the plot edge
-    const straightNif = resolvePiece(t, ROUTE_PIECES.find(p => p.name === 'straight').stems);
-    const square = straightNif ? routeHalfExtent(straightNif) : null;
-    if (!square) { console.log(`  routes/${t.key}: straight piece not resolvable, skipped`); continue; }
-    const rendered = [];
-    for (const p of ROUTE_PIECES) {
-      const nif = resolvePiece(t, p.stems);
-      if (!nif) continue;
-      let img = null;
-      try { img = renderRouteNif(nif, texFile, SIZE_ROUTE, { square }); } catch { img = null; }
-      if (img) rendered.push({ name: p.name, conn: p.conn, img });
-    }
-    if (!rendered.length) { console.log(`  routes/${t.key}: no pieces rendered, skipped`); continue; }
-    // pack the equal-size square cells into one RGBA strip
-    const N = rendered.length, W = N * SIZE_ROUTE, H = SIZE_ROUTE;
-    const rgba = Buffer.alloc(W * H * 4), cell = {}, conn = {};
-    rendered.forEach((r, i) => {
-      const ox = i * SIZE_ROUTE, src = r.img.rgba;
-      for (let y = 0; y < SIZE_ROUTE; y++) for (let x = 0; x < SIZE_ROUTE; x++) {
-        const so = (y * SIZE_ROUTE + x) * 4, d = (y * W + ox + x) * 4;
-        rgba[d] = src[so]; rgba[d + 1] = src[so + 1]; rgba[d + 2] = src[so + 2]; rgba[d + 3] = src[so + 3];
-      }
-      cell[r.name] = [ox, 0, SIZE_ROUTE, SIZE_ROUTE]; conn[r.name] = r.conn;
-    });
-    const src = queueWebpRGBA(`routes/routes-${t.key}`, W, H, rgba, { quality: 90 });
-    tiers[t.key] = { src, w: W, h: H, cellSize: SIZE_ROUTE, cell, conn };
-    console.log(`  routes/${t.key}: ${N} pieces (${rendered.map(r => r.name).join(',')}) reach=${square.toFixed(0)} → ${W}×${H}`);
-  }
-  if (!Object.keys(tiers).length) return null;
-  return { ...tiers, byType: ROUTE_BY_TYPE };
-}
 function bakeSpriteGroup(artPath, name) {
   const file = resolveArt(artPath);
   if (!file) return null;
@@ -2046,28 +1965,49 @@ function bakeImprovementOverlays() {
   // animated improvements (swaying crops, a turning mine wheel). Baking them would stamp four nearly
   // identical sprites and call it variety. The `_modern` / `modern` models are ERA swaps, left for
   // whenever improvements gain an era axis.
+  // MULTI-MATERIAL, AND THAT IS THE WHOLE STORY OF THIS BAKE. Improvement models name a different
+  // skin per mesh — an_eu_farm01 is barn.dds (the barn) + farm_light.dds (the field) +
+  // farm_shadow.dds (its ground decal) — and nifbake used to take ONE texture and paint every
+  // triangle with it, which is why the committed imp-farm.webp was a sheet of planks rather than a
+  // barn for as long as it existed. renderNif now resolves each mesh's own NiSourceTexture; the
+  // texture named here survives only as the fallback for a mesh whose link is missing.
+  //
+  // PITCHED, because P5 is prop art at the OBLIQUE angle. The map camera reaches TILT_MAX = 58° from
+  // vertical (band-math.mjs, Civ4's own CAMERA_LOWER_PITCH), i.e. 32° above the horizon, so the props
+  // are rendered from 32° up rather than as a front elevation. It matters most for exactly the models
+  // that read worst edge-on.
+  const PITCH = 32;
   const IMPS = {
-    IMPROVEMENT_FARM:   [['farm/an_eu_farm01.nif', 'farm/an_eu_farm02.nif', 'farm/an_eu_farm03.nif'], 'farm/farm_diff256.dds'],
-    IMPROVEMENT_MINE:   [['mine/mine.nif'],                                                           'mine/mine.dds'],
-    IMPROVEMENT_QUARRY: [['quarry/quarry.nif'],                                                       'quarry/quarry.dds'],
+    IMPROVEMENT_FARM:    [['farm/an_eu_farm01.nif', 'farm/an_eu_farm02.nif', 'farm/an_eu_farm03.nif'], 'farm/farm_diff256.dds'],
+    IMPROVEMENT_MINE:    [['mine/mine.nif'],                     'mine/mine.dds'],
+    IMPROVEMENT_QUARRY:  [['quarry/quarry.nif'],                 'quarry/quarry.dds'],
+    // the cottage line — the settlement-tier ladder's own art (docs/terrain-3d.md §P5c)
+    IMPROVEMENT_COTTAGE: [['cottage/cottage.nif'],               'cottage/citybld_an.dds'],
+    IMPROVEMENT_HAMLET:  [['hamlet/hamlet.nif'],                 'hamlet/citybld_an.dds'],
+    IMPROVEMENT_VILLAGE: [['village/village.nif'],               'village/citybld_an.dds'],
+    IMPROVEMENT_TOWN:    [['town/town.nif'],                     'town/citybld_an.dds'],
+    // the rest of what ImprovementExporter imports and the sim can raise
+    IMPROVEMENT_HUNTING_CAMP: [['camp/camp.nif'],                'camp/camp.dds'],
+    IMPROVEMENT_PASTURE:      [['pasture/pasture.nif'],          'pasture/farm_light.dds'],
+    IMPROVEMENT_PLANTATION:   [['plantation/plantation.nif'],    'plantation/plantation2a.dds'],
+    IMPROVEMENT_LUMBERMILL:   [['lumbermill/lumbermill.nif'],    'lumbermill/indsawmill.dds'],
   };
   const T = 128, out = {};
   for (const [imp, [rels, tex]] of Object.entries(IMPS)) {
     const texFile = resolveArt('Art/Structures/Improvements/' + tex);
-    if (!texFile) continue;
     const variants = rels.map(r => resolveArt('Art/Structures/Improvements/' + r))
       .filter(Boolean).map(nif => ({ nif, tex: texFile }));
     if (!variants.length) continue;
     const name = 'improvements/imp-' + imp.replace('IMPROVEMENT_', '').toLowerCase();
     try {
       const g = bakeNifGroup(variants, name, path.join(WEB, 'assets'), T,
-        { size: T, emit: (n, w, h, rgba) => queueWebpRGBA(name, w, h, rgba, { quality: 88 }) });
+        { size: T, pitch: PITCH, emit: (n, w, h, rgba) => queueWebpRGBA(name, w, h, rgba, { quality: 88 }) });
       if (g) out[imp] = g;                 // {src, w, h, sprites:[[x,y,w,h]…]} — one cell per variant
     } catch (e) { console.log(`  ${imp}: nif render skipped (${e.message})`); }
   }
   if (!Object.keys(out).length) return null;
   const n = Object.values(out).reduce((a, g) => a + (g.sprites ? g.sprites.length : 1), 0);
-  console.log(`  improvement overlays: ${Object.keys(out).length} Civ4 improvements, ${n} variant sprite(s) via nifbake; placement deferred`);
+  console.log(`  improvement overlays: ${Object.keys(out).length} Civ4 improvements, ${n} variant sprite(s) via nifbake @${PITCH}°`);
   return out;
 }
 

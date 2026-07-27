@@ -201,10 +201,13 @@ public final class Snapshots {
 			// the plot's fief-lord (the noble/ruler that holds it), by surname — null = Crown demesne
 			String fiefLord = p.ownerId() == null ? null : ownerNames.get(p.ownerId());
 			int households = byHome.getOrDefault(p, List.of()).size();
+			// the improvement raised on the plot, as its bare IMPROVEMENT_* key — the client joins it
+			// against the baked Civ4 improvement sprites (docs/terrain-3d.md §P5a)
+			String improvement = p.improvement() == null ? null : p.improvement().type();
 			views.add(new DistrictView(i, p.x(), p.y(), buildings,
 					underway.getOrDefault(p, List.of()), fiefLord, households,
 					c.villageLarderStock(p), c.villageLarderFloor(p),
-					farmsByVillage.getOrDefault(p, 0)));
+					farmsByVillage.getOrDefault(p, 0), improvement));
 		}
 		return views;
 	}
