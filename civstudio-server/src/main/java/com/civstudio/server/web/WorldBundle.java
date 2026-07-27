@@ -296,6 +296,18 @@ public final class WorldBundle {
 		// to /api/plots/{id}?v= so a generation change busts the (now immutable) browser cache; MCP
 		// (get_map_version) and API consumers read the same value. See ProvincePlotStore.MAP_VERSION.
 		root.put("mapVersion", com.civstudio.settlement.ProvincePlotStore.MAP_VERSION);
+		// …and the CONTENT version this server booted against — which content snapshot the world data
+		// came from, as distinct from how the plots were generated. Published so drift between the
+		// deployed content store and the committed snapshot is CHECKABLE from outside, with no
+		// credentials: tools/verify-content-parity.mjs compares it against the hash of the committed
+		// world-bundle. Prod silently serving different content from the repo is what made the
+		// 2026-07-27 outage invisible until someone loaded the site.
+		//
+		// Null on a source that carries no stamp (the classpath source), and omitted rather than sent
+		// as null so a consumer can tell "no stamp" from "stamp absent".
+		String contentVersion = com.civstudio.data.WorldSources.contentVersion();
+		if (contentVersion != null)
+			root.put("contentVersion", contentVersion);
 		return root;
 	}
 

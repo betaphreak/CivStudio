@@ -1,0 +1,88 @@
+# Is production still serving a usable world, and the world this repo describes?
+#
+# Both questions were unasked until 2026-07-27, when 501 engine + 132 server + 235 web tests were
+# green while the live map was unreachable — 3,609 provinces stranded under a retired realm key. The
+# suites run against the COMMITTED snapshot; production runs against Strapi. Two content stores,
+# each internally consistent, never compared. No test could have caught it, and none will: this is
+# the only place the comparison happens.
+#
+# Read-only and credential-free — /api/bundle is public — so it can run on a schedule and on every
+# master push without gating anything.
+
+name: Verify prod
+
+on:
+  schedule:
+    - cron: '23 */6 * * *' # every 6 hours, off the hour (runners are busiest on it)
+  workflow_dispatch:
+    inputs:
+      base:
+        description: 'Server to check'
+        default: 'https://dev.civstudio.com'
+  push:
+    branches: [master]
+    paths:
+      # the checks themselves, and the snapshot whose hash they compare against
+      - 'tools/verify-world.mjs'
+      - 'tools/world-invariants.mjs'
+      - 'tools/verify-content-parity.mjs'
+      - 'tools/content-hash.cjs'
+      - 'civstudio-engine/src/test/resources/world-bundle.json.gz'
+      - '.github/workflows/verify-prod.yml'
+
+concurrency:
+  group: verify-prod
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      BASE: ${{ inputs.base || 'https://dev.civstudio.com' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Guard the guards: if the invariant or hash logic is broken, everything below reports green
+      # for the wrong reason — which is precisely the failure mode being defended against.
+      - name: Unit-test the checks
+        run: node --test tools/*.test.mjs
+
+      # Is the served world usable at all? (every province in a realm that exists, no empty realm,
+      # the province count over its floor)
+      - name: World invariants
+        id: world
+        run: node tools/verify-world.mjs "$BASE"
+
+      # Is it the world this repo describes? Runs even when the invariants failed — "broken AND
+      # stale" and "broken but current" call for different fixes, so report both.
+      - name: Content parity with the committed snapshot
+        id: parity
+        if: always()
+        run: node tools/verify-content-parity.mjs "$BASE"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Prod verification — \`$BASE\`"
+            echo
+            echo "| check | result |"
+            echo "| --- | --- |"
+            echo "| world invariants | ${{ steps.world.outcome == 'success' && '✅ usable' || '❌ FAILED' }} |"
+            echo "| content parity | ${{ steps.parity.outcome == 'success' && '✅ matches the repo' || '❌ DRIFTED' }} |"
+            echo
+            if [ "${{ steps.world.outcome }}" != "success" ]; then
+              echo "**The served world is broken.** See the step log for which invariant failed."
+              echo "If it looks stale rather than wrong, the bundle caches need dropping:"
+              echo '`pwsh tools/refresh-content.ps1`'
+              echo
+            fi
+            if [ "${{ steps.parity.outcome }}" != "success" ]; then
+              echo "**Production is not serving the content in this repo.** Reseed (Seed Studio),"
+              echo 'then `pwsh tools/refresh-content.ps1`. If the SNAPSHOT is the stale one instead,'
+              echo '`node tools/verify-content-parity.mjs --restamp` and commit.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

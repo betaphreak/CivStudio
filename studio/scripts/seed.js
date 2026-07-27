@@ -26,6 +26,9 @@ const { readFileSync, existsSync } = require('node:fs');
 const { gunzipSync } = require('node:zlib');
 const { randomBytes } = require('node:crypto');
 const { join, relative, sep } = require('node:path');
+// contentVersion is DERIVED from the content it stamps — see tools/content-hash.cjs for why a
+// hand-written string could not do the job (it is Strapi's world-bundle cache key).
+const { contentHash } = require(join(__dirname, '..', '..', 'tools', 'content-hash.cjs'));
 
 const RES = join(__dirname, '..', '..', 'civstudio-engine', 'src', 'main', 'resources');
 // the exporter build-scratch tree — the --from-generated source (gitignored, under Maven target/).
@@ -659,11 +662,24 @@ function loadRegionEarthMap() {
   return { regions, notes };
 }
 function loadMapVersion() {
-  // In bundle mode the version travels WITH the content — use the snapshot's own meta so a reseed
-  // stamps exactly the content it seeded (rather than today's date over possibly-older content).
+  // In bundle mode the version travels WITH the content — DERIVED from it, not copied from the
+  // snapshot's meta. That distinction is the whole fix: contentVersion is Strapi's cache key for the
+  // world-bundle projection, so a reseed whose data changed but whose stamp did not invalidates
+  // nothing. On 2026-07-27 the six-realm split changed every province's `realm` while the stamp
+  // stayed `seed-2026-07-23`; the reseed reported 5,268 provinces and 0 errors, and prod went on
+  // serving the pre-split world ("Cannor: 0 provinces") because the key had not moved.
+  //
+  // Hashing the payload makes that unstateable: the version cannot fail to move when the content
+  // does. The snapshot's own meta.contentVersion is kept only as a cross-check (tools/
+  // verify-content-parity.mjs restamps it), never as the source of truth.
   if (BUNDLE) {
-    return { mapVersion: BUNDLE.meta.mapVersion, contentVersion: BUNDLE.meta.contentVersion,
-      note: 'Seeded from the committed world-bundle by scripts/seed.js.' };
+    const derived = contentHash(BUNDLE.resources);
+    if (BUNDLE.meta.contentVersion && BUNDLE.meta.contentVersion !== derived)
+      console.log(`[meta] contentVersion ${derived} (snapshot meta says `
+        + `"${BUNDLE.meta.contentVersion}" — the DERIVED value wins; `
+        + 'run `node tools/verify-content-parity.mjs --restamp` to restamp the committed snapshot)');
+    return { mapVersion: BUNDLE.meta.mapVersion, contentVersion: derived,
+      note: 'Seeded from the committed world-bundle by scripts/seed.js; contentVersion derived from its content.' };
   }
   const src = readFileSync(join(RES, '..', 'java', 'com', 'civstudio', 'settlement', 'ProvincePlotStore.java'), 'utf8');
   const m = src.match(/MAP_VERSION\s*=\s*(\d+)/);
