@@ -50,13 +50,25 @@ jobs:
       # web-only pushes sail through and mixed pushes wait for their backend.
       #
       # Fails closed: an unreachable server or an unrecognisable build stamp cannot prove the pairing
-      # is safe. Override with the workflow_dispatch input, or `[skip server-check]` in the commit
-      # message for a push you know is frontend-only.
+      # is safe. Override with the workflow_dispatch input, or the escape token in the commit
+      # SUBJECT for a push you know is frontend-only.
+      #
+      # The subject line, deliberately — not the whole message. Matching anywhere in
+      # `head_commit.message` meant a commit whose BODY merely mentioned the token disabled the gate,
+      # which is exactly what the commit introducing this check did to itself: it documented the
+      # override, and the step silently skipped while the run went green. An escape hatch you can
+      # trip by writing prose is not an escape hatch. Same convention as `[skip ci]`: subject only.
       - name: Server is not behind this build
-        if: >-
-          ${{ inputs.skip_server_check != true
-              && !contains(github.event.head_commit.message, '[skip server-check]') }}
-        run: node tools/verify-server-ahead.mjs --base https://dev.civstudio.com --ref "$GITHUB_SHA"
+        if: ${{ inputs.skip_server_check != true }}
+        run: |
+          subject=$(git log -1 --format=%s "$GITHUB_SHA")
+          case "$subject" in
+            *'[skip server-check]'*)
+              echo "override in commit subject — not checking the server pairing"
+              echo "  $subject"
+              exit 0 ;;
+          esac
+          node tools/verify-server-ahead.mjs --base https://dev.civstudio.com --ref "$GITHUB_SHA"
 
       # The web unit tests (node:test, no dependencies — the site is dependency-free and so are its
       # tests, so this needs no npm install). They gate the deploy: the pure modules under test are
