@@ -11,7 +11,10 @@
 // toggles the session over /control; the play icon reflects the SERVER's state, fed back through
 // syncLiveTransport on every snapshot rather than assumed from the click. The controls are inert
 // (and the clock hidden) outside the Caravans/live view.
-import { liveActive, liveState, controlLive, LIVE_RATES } from "./overlays/live.mjs";
+import { liveActive, liveState, controlLive, LIVE_RATES,
+  buildChoiceDeferred, advisedBuild, liveColony, postCommand } from "./overlays/live.mjs";
+import { toast } from "./toast.mjs";
+import { buildingName } from "./build-catalog.mjs";
 
 const cDate = document.getElementById("cDate");
 const playBtn = document.getElementById("playBtn"), playIcon = document.getElementById("playIcon");
@@ -45,8 +48,26 @@ function clockControllable() {
 
 /** Toggle the live session between running and paused (the play button + the spacebar shortcut). */
 export function togglePlay() {
-  if (liveActive() && canControl() && clockControllable())
-    controlLive(liveState() === "RUNNING" ? "pause" : "resume");
+  if (!(liveActive() && canControl() && clockControllable())) return;
+  if (liveState() === "RUNNING") { controlLive("pause"); return; }
+  // RESUMING while the crown is still waiting on a decree the player dismissed. A plain "resume"
+  // here does nothing useful: the server pauses on an empty ruler queue, so it would tick once,
+  // find the queue still empty, and pause again with the modal — which is exactly the "trying to
+  // unpause brings it up again" trap. Pressing play IS the answer "carry on without me", so the
+  // crown takes its own advice: queue the ★ advised candidate (the ruler brain's highest-weighted
+  // pick — the same one the modal pre-flags) and let the run continue. Submitting resumes the
+  // session server-side, so there is no separate resume to send.
+  if (buildChoiceDeferred()) {
+    const pick = advisedBuild();
+    if (pick) {
+      // say so. Pressing play here commits a real decree on the player's behalf, and a build they
+      // did not choose appearing in the queue with no explanation is worse than the modal was.
+      postCommand({ type: "queueBuild", colony: liveColony()?.name, items: [pick] })
+        .then(ok => { if (ok) toast(`The crown chose <b>${buildingName(pick)}</b> for you.`); });
+      return;
+    }
+  }
+  controlLive("resume");
 }
 
 /** Force paused — modals call this on open; the live session keeps ticking, so this is a no-op. */

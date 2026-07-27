@@ -645,6 +645,43 @@ async function postAsk(question) {
 // bundle (the same one the tech tree + districts read), falling back to a prettified id.
 let bcPick = null;               // the live picker controller (its click order = queue order)
 let bcSubmitted = false;         // a decree is in flight — see syncBuildChoice
+let bcDismissed = false;         // the player waved it away with Esc — see dismissBuildChoice
+let bcCandidates = [];           // the last prompt's candidates, [0] = the crown's own advised pick
+
+/** Whether the decree modal is on screen — the Esc chain's innermost thing to close. */
+export function buildChoiceOpen() {
+  const el = document.getElementById("buildchoice");
+  return !!el && !el.hidden;
+}
+
+/**
+ * Esc on the decree modal: close it without answering. The clock stays where the server put it
+ * (paused, awaiting), and the prompt does NOT come back on the next snapshot — a dismissal the next
+ * frame overrides is not a dismissal. It resets when the await genuinely clears, so the following
+ * decree is a real, new prompt.
+ */
+export function dismissBuildChoice() {
+  const el = document.getElementById("buildchoice");
+  if (!el || el.hidden) return false;
+  el.hidden = true;
+  bcDismissed = true;
+  return true;
+}
+
+/**
+ * Whether the crown is still waiting on a decree the player has dismissed. This is the state that
+ * made "just unpause and watch" impossible: the server pauses on an empty ruler queue, so pressing
+ * play ticks once, finds the queue still empty, and pauses again with the modal — forever. See
+ * clock.togglePlay, which answers it on the player's behalf.
+ */
+export function buildChoiceDeferred() {
+  return bcDismissed && !!(snap && snap.awaitingBuildChoice);
+}
+
+/** The crown's own advised pick — candidate 0, the ruler brain's highest-weighted choice (the ★). */
+export function advisedBuild() {
+  return bcCandidates.length ? bcCandidates[0] : null;
+}
 
 function syncBuildChoice(s) {
   const el = document.getElementById("buildchoice");
@@ -652,8 +689,11 @@ function syncBuildChoice(s) {
   if (!s.awaitingBuildChoice || s.clockState === "STOPPED") {
     el.hidden = true;
     bcSubmitted = false;   // the server cleared the await — the next one is a real, new prompt
+    bcDismissed = false;   // …and so is the next dismissal
     return;
   }
+  bcCandidates = s.buildCandidates || [];
+  if (bcDismissed) return;   // waved away; do not reopen until this await clears
   if (!el.hidden) return; // already open — keep the player's in-progress picks
   // a decree we already submitted is still applying server-side: the queue_build command takes a
   // tick to land, so the snapshot keeps reporting awaitingBuildChoice for a frame or two. Without

@@ -8,6 +8,7 @@ import { zoomAt } from "./main.mjs";
 import { resetView, toggleFullscreen, togglePlay, closePanel } from "./panel.mjs";
 import { setAdvisor } from "./advisors.mjs";
 import { closeCityScreen } from "./city-screen.mjs";
+import { dismissBuildChoice } from "./overlays/live.mjs";
 
 // Open the Spectator Lobby. Via the window seam when the module is already loaded (the common case
 // — the boot flow opens the lobby over the splash), else a dynamic import: a deep link or ?lobby=0
@@ -68,7 +69,11 @@ const REGISTRY = [
     // watermark used to be, before that was taken off the map (2026-07-27). Closing the lobby again
     // is the lobby's own handler, which consumes the key before this one ever sees it.
     run: e => {
-      if (S.cityOpen) { e.preventDefault(); closeCityScreen(); }
+      // the decree modal is the innermost thing on screen when it is up, so it unwinds first —
+      // and dismissing it leaves the clock paused rather than answering for the player (the answer
+      // is clock.togglePlay's job, when they ask the game to carry on)
+      if (dismissBuildChoice()) { e.preventDefault(); }
+      else if (S.cityOpen) { e.preventDefault(); closeCityScreen(); }
       else if (S.techOpen) { e.preventDefault(); setAdvisor("mainmap"); }
       else if (closePanel()) { e.preventDefault(); }
       else { e.preventDefault(); openLobby(); }

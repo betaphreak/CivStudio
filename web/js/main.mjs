@@ -208,6 +208,17 @@ function _fogFill(a) {
   ctx.globalAlpha = 1;
 }
 function drawRealmFogUnder() {
+  // NOT IN POLITICAL VIEW. This pass works by covering everything and letting later layers paint the
+  // world back over it — the land raster restores the land, drawSeaCells restores the water. But
+  // seaCells is gated `notPolitical` (a political map is a diagram: flat ownership polygons over a
+  // plain sea), so under Nation/Culture nothing repaints the water and the entire ocean stayed
+  // parchment. The sea is not unknown, and a political map of a coastline with no sea is unreadable.
+  //
+  // The void BEYOND the crop is still fogged — that is drawRealmFog, after the scene, and it is the
+  // pass that actually carries the "another realm is over there" meaning. What is dropped here is
+  // only the wash over the sea inside the map rect, where drawSeaBase's latitude gradient already
+  // draws a proper ocean.
+  if (isPolitical()) return;
   const a = fowPat ? realmFogFade() : 0;
   if (a > 0.01) _fogFill(a);   // called inside the map clip, before drawRaster
 }
