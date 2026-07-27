@@ -794,7 +794,24 @@ off**; T7 is the first user-visible change.
       Decline renders as ruins in the empty remainder.
 - [ ] **T4b — Water, the expensive half.** *(after T6; independent of T7)* River centre-line clip with
       a bank buffer (port `river-geom.mjs`'s decode); bridges at street crossings; harbour ward (§7a).
-- [ ] **T7 — Store, serve, draw.** The layout written per site as **`json.gz`, keyed by site and not
+- [~] **T7 — Store, serve, draw.** 🚧 **Prototype shipped 2026-07-28** — the first time anything the
+      generator computes leaves the server. `TownView` (the wire projection, in plot-raster space),
+      `TownController` at **`GET /api/sessions/{sid}/town/{provinceId}`** — its own endpoint on the
+      route precedent, keyed by **site**, not colony — and on the client `js/town-style.mjs` (pure,
+      7 node tests), `js/townfetch.mjs` (viewport- and band-bounded, one in flight per site) and
+      `js/town.mjs`, registered in `layers.mjs` over the district chips. It draws the wards as
+      ground, the enclosed water as water, the fortification **coloured by kind**, and a mark at
+      each gate.
+
+      Served against Nathalaire the lead city holds **23 patches, not its full 27**: the four plots
+      nearer a vassal city belong to that city, so the league partition is visible in the payload.
+
+      **Still to do for T7 proper:** the `json.gz` store per site (§3a — the layout is computed per
+      request today, which is microseconds at this size but is not what ruins need), the snapshot
+      dirty flag, and retiring `footprints.mjs` once T6 draws real lots (§8a — the handover is by
+      band until then).
+
+- [ ] **T7 — Store, serve, draw (remaining).** The layout written per site as **`json.gz`, keyed by site and not
       by live `Settlement`** (§3a) with its own version stamp — a dead colony's layout persists as a
       ruin (§2a), so its lifetime is decoupled from the colony's here rather than bolted on later.
       Served from **its own endpoint** with only a `townDirty` flag on the snapshot (§1 Transport);

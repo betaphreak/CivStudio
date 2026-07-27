@@ -15,6 +15,7 @@ import { ctx, px, py, cssVar, VIEW, baseXr, baseYr, sxSrc, sySrc, LABEL_FONT, ce
 import { hasDeepLink } from "../main.mjs";
 import { atLeast, BAND, bandAlpha } from "../bands.mjs";
 import { setRouteSession, invalidateRoutes } from "../routefetch.mjs";
+import { setTownSession } from "../townfetch.mjs";
 import { showLiveLog, ingestLog, ingestChat, resetLog, setChatSender } from "../livelog.mjs";
 import { showNotify, ingestNotify, seedNotify, resetNotify } from "../notify.mjs";
 import { minusDays, LIFETIME_DAYS, MAX_CARDS } from "../notify-age.mjs";
@@ -270,6 +271,7 @@ export function stopLive() {
   if (es) { es.close(); es = null; }
   snap = null; sid = null;
   setRouteSession(null);   // drop the route-index so the next session starts clean
+  setTownSession(null);    // and the town layouts with it
   for (const k in trails) delete trails[k];
   resetLog();
   resetNotify();
@@ -416,6 +418,7 @@ function onSnapshot(s) {
   // changed this frame, so the draw layer refetches only those (routefetch.mjs). The refetch is async
   // and repaints itself when the layer lands, so it does not feed the repaint decision below.
   setRouteSession(s.sessionId);
+  setTownSession(s.sessionId);
   invalidateRoutes(s.routeDirty);
   s.caravans.forEach(c => {
     const t = (trails[c.leader] = trails[c.leader] || []);

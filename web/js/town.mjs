@@ -1,0 +1,102 @@
+"use strict";
+// The TOWN layer (docs/towngen-port.md T7, prototype): a settlement's real layout — the wall line
+// its plots carry, the wards fitted one per plot, and the water it was built around — drawn over the
+// city bands from the server's own answer rather than from anything the client invents.
+//
+// WHAT THIS IS NOT. It is not a footprint grid (js/footprints.mjs' sqrt of blocks) and not a chip
+// per plot (js/districts.mjs): those say "something is built here", and this says WHAT. The two
+// older treatments keep the bands below it (§8a's handover), and the lots that will eventually
+// replace footprints.mjs outright arrive with T6.
+//
+// The layout is served in PLOT-RASTER space, so every point goes through the same projectOn the
+// plot grid uses — which is what makes it survive realm crops, the homography projector and the 3D
+// drape without a coordinate system of its own (§3 Coordinates).
+import { P, ctx, projectOn, isPolitical, plotPxAt, provOnScreen } from "./core.mjs";
+import { band, bandAlpha } from "./bands.mjs";
+import { liveColony } from "./overlays/live.mjs";
+import { townOf, ensureTown } from "./townfetch.mjs";
+import { patchFill, patchStroke, wallStyle, townAlpha } from "./town-style.mjs";
+
+// draw a ring of [x, y] plot-space points as a path. The layout is served in the same source
+// coordinates the plot grid uses, so projectOn — which carries the homography and the 3D ground
+// height — is the only transform needed.
+function ringPath(pts) {
+  if (!pts || pts.length < 2) return false;
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const [x, y] = projectOn(pts[i][0], pts[i][1]);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  return true;
+}
+
+/**
+ * Draw the town layer: for every on-screen province that has a live colony, the layout the server
+ * computed for it. Fetching is bounded to the viewport AND the band, so a world view never asks for
+ * a single layout.
+ */
+export function drawTown() {
+  if (isPolitical()) return;
+  const colony = liveColony();
+  if (!colony) return;                       // WorldMap mode: no session, no towns
+  const a = townAlpha(band()) * bandAlpha(band());
+  if (a <= 0) return;
+
+  const px = plotPxAt();                     // one plot in screen px — the unit every width is in
+  if (!(px > 0)) return;
+
+  for (const p of P) {
+    if (!provOnScreen(p)) continue;          // fetching is bounded to the viewport, and so is drawing
+    const town = townOf(p.id);
+    if (!town) { ensureTown(p.id); continue; }
+    if (!town.patches || !town.patches.length) continue;
+
+    // 1. the wards, as ground
+    ctx.save();
+    ctx.lineWidth = Math.max(0.4, px * 0.02);
+    ctx.strokeStyle = patchStroke(a);
+    for (const patch of town.patches) {
+      if (!ringPath(patch.poly)) continue;
+      ctx.fillStyle = patchFill(patch.walled, a);
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    // 2. the water the town was built around — drawn as absence, so a bay reads as a bay
+    if (town.holes && town.holes.length) {
+      ctx.fillStyle = `rgba(40, 78, 104, ${0.30 * a})`;
+      for (const hole of town.holes) {
+        if (ringPath(hole)) ctx.fill();
+      }
+    }
+
+    // 3. the fortification, one piece per plot edge, coloured by what lies beyond it
+    ctx.lineCap = "round";
+    for (const seg of town.wall || []) {
+      const st = wallStyle(seg.kind);
+      const [fx, fy] = projectOn(seg.line[0][0], seg.line[0][1]);
+      const [tx, ty] = projectOn(seg.line[1][0], seg.line[1][1]);
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = st.stroke;
+      ctx.lineWidth = Math.max(1, px * st.width);
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+    }
+
+    // 4. the gates, as a mark on the line — the roads that actually leave town (§6)
+    for (const gate of town.gates || []) {
+      const [ax, ay] = projectOn(gate.at[0], gate.at[1]);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = wallStyle("ROAD_GATE").stroke;
+      ctx.beginPath();
+      ctx.arc(ax, ay, Math.max(1.5, px * 0.09), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+}

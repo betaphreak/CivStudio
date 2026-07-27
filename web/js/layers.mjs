@@ -25,6 +25,7 @@ import { drawLive } from "./overlays/live.mjs";
 import { drawLabels } from "./labels.mjs";
 import { drawCity } from "./city.mjs";
 import { drawDistricts } from "./districts.mjs";
+import { drawTown } from "./town.mjs";
 import { drawDebugHoles, DEBUG_HOLES } from "./debug-holes.mjs";
 
 const notPolitical = () => !isPolitical();
@@ -91,6 +92,9 @@ export const LAYERS = [
   { id: "improvements",   band: "≥TERRAIN, self-fade", gate: notPolitical, draw: drawImprovements },
   { id: "city",           band: "≥PROVINCE, self-fade", gate: notPolitical, draw: drawCity },
   { id: "districts",      band: "deep (≥~23×), self-fade", gate: notPolitical, draw: drawDistricts },
+  // the real town layout — wall line, wards, the water it was built around (docs/towngen-port.md
+  // T7). Over the district chips, which keep the bands below it (§8a's handover by band).
+  { id: "town",           band: "≥5.5, self-fade", gate: notPolitical, draw: drawTown },
   { id: "labels",         band: "≥PROVINCE, self-fade",    draw: drawLabels },
 ];
 
