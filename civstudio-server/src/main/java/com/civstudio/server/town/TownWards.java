@@ -45,9 +45,9 @@ public record TownWards(Map<Cell, DistrictType> wards, Diagnostics diag) {
 	 * of. Ordered by how much the choice matters: the citadel and the cathedral take the ground they
 	 * want, and the theatre takes what is left.
 	 */
-	private static final List<DistrictType> SPECIALS = List.of(DistrictType.ENCAMPMENT,
-			DistrictType.HOLY_SITE, DistrictType.CAMPUS, DistrictType.COMMERCIAL_HUB,
-			DistrictType.THEATER);
+	private static final List<DistrictType> SPECIALS = List.of(DistrictType.HARBOR,
+			DistrictType.ENCAMPMENT, DistrictType.HOLY_SITE, DistrictType.CAMPUS,
+			DistrictType.COMMERCIAL_HUB, DistrictType.THEATER);
 
 	/** How many plots of town buy one more market. Markets are the one special that scales. */
 	private static final int PLOTS_PER_MARKET = 12;
@@ -115,6 +115,15 @@ public record TownWards(Map<Cell, DistrictType> wards, Diagnostics diag) {
 		/** Whether a noble holds this plot as a fief, rather than it being crown demesne. */
 		default boolean enfeoffed(Cell cell) {
 			return false;
+		}
+
+		/**
+		 * How many of the plot's four edges front water — {@code bitCount(Plot.coast())}, the term
+		 * §7a asks the harbour ward to score on. A plot with water on two or three sides is a
+		 * promontory, and that is where wharves go.
+		 */
+		default int coastEdges(Cell cell) {
+			return 0;
 		}
 	}
 
@@ -213,6 +222,9 @@ public record TownWards(Map<Cell, DistrictType> wards, Diagnostics diag) {
 		double bestScore = 0;
 		for (Cell c : free) {
 			double s = scores.rate(c, type);
+			if (!Double.isFinite(s) || s <= 0) {
+				continue;                           // this ward does not belong on this ground at all
+			}
 			if (best == null || s > bestScore) {
 				best = c;
 				bestScore = s;
@@ -268,6 +280,11 @@ public record TownWards(Map<Cell, DistrictType> wards, Diagnostics diag) {
 		 * central, a theatre where the patriciate is.
 		 */
 		double rate(Cell c, DistrictType type) {
+			// a precondition, not a low score: a town with no waterfront must get NO harbour rather
+			// than its least-inland plot, and a weight alone cannot say that
+			if (type == DistrictType.HARBOR && site.coastEdges(c) <= 0) {
+				return Double.NEGATIVE_INFINITY;
+			}
 			double n = near.getOrDefault(c, 0.0);
 			double h = high.getOrDefault(c, 0.0);
 			double wallish = onWall.contains(c) ? 1 : 0;
@@ -275,6 +292,9 @@ public record TownWards(Map<Cell, DistrictType> wards, Diagnostics diag) {
 			double street = onStreet.contains(c) ? 1 : 0;
 			double lord = site.enfeoffed(c) ? 1 : 0;
 			double base = switch (type) {
+				// the waterfront: the more of a plot fronts water the better, and being ON the quay
+				// the wall already typed is what separates a wharf from a house with a view
+				case HARBOR -> 2.0 * (site.coastEdges(c) / 4.0) + 0.8 * n + 0.6 * wallish;
 				case ENCAMPMENT -> 2.0 * wallish + 1.2 * h + 0.5 * gate - 0.5 * n;
 				case HOLY_SITE -> 1.5 * n + 1.5 * h + 0.5 * lord;
 				// CAMPUS has no ward in the reference and is authored here (§4.1): a scholars'

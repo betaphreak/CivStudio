@@ -122,9 +122,18 @@ public record TownStreets(List<Street> streets, Diagnostics diag) {
 	 * @param kind    whether it reached the centre
 	 * @param toward  what lies out through its outer end — a neighbouring province's name, or
 	 *                {@code null} for a road invented for a town with no recorded crossings
-	 * @param bridges how many river crossings it makes
+	 * @param bridges where it crosses water, in plot space (T4b). A crossing between two orthogonal
+	 *                neighbours is exactly their shared edge's midpoint — which is also where the
+	 *                river's own centre-line crosses that edge, so a bridge lands ON the channel
+	 *                without any intersection arithmetic and cannot disagree with it
 	 */
-	public record Street(List<Pt> points, List<Cell> cells, Kind kind, String toward, int bridges) {
+	public record Street(List<Pt> points, List<Cell> cells, Kind kind, String toward,
+			List<Pt> bridges) {
+
+		/** How many times this street crosses water. */
+		public int crossings() {
+			return bridges.size();
+		}
 	}
 
 	/**
@@ -278,18 +287,20 @@ public record TownStreets(List<Street> streets, Diagnostics diag) {
 			for (int i = 0; i < r.cells().size(); i++) {
 				pinned[i + 1] = visits.getOrDefault(r.cells().get(i), 0) > 1;
 			}
-			int crossings = 0;
+			List<Pt> crossings = new ArrayList<>();
 			for (int i = 0; i + 1 < r.cells().size(); i++) {
-				if (terrain.river(r.cells().get(i), r.cells().get(i + 1))) {
-					crossings++;
+				Cell from = r.cells().get(i);
+				Cell to = r.cells().get(i + 1);
+				if (terrain.river(from, to)) {
+					crossings.add(from.centre().mid(to.centre()));
 				}
 			}
-			bridges += crossings;
+			bridges += crossings.size();
 			if (r.kind() == Kind.MAIN) {
 				arteries++;
 			}
 			streets.add(new Street(Polyline.smooth(raw, pinned, SMOOTH_PASSES),
-					List.copyOf(r.cells()), r.kind(), r.entry().toward(), crossings));
+					List.copyOf(r.cells()), r.kind(), r.entry().toward(), List.copyOf(crossings)));
 		}
 		int junctions = (int) visits.values().stream().filter(n -> n > 1).count();
 		return new TownStreets(List.copyOf(streets),

@@ -39,7 +39,8 @@ import com.civstudio.server.town.geom.TownScale;
 public record TownLots(Map<Cell, List<Lot>> byCell, Diagnostics diag) {
 
 	/** A town with nothing standing on it. */
-	public static final TownLots NONE = new TownLots(Map.of(), new Diagnostics(0, 0, 0, 0, 0));
+	public static final TownLots NONE =
+			new TownLots(Map.of(), new Diagnostics(0, 0, 0, 0, 0, 0));
 
 	/**
 	 * The most lots one plot may be cut into. A bound on legibility first and payload second: a plot
@@ -91,19 +92,24 @@ public record TownLots(Map<Cell, List<Lot>> byCell, Diagnostics diag) {
 	 * @param unfitted  how many lots were asked for and could not be cut — a plot whose block is too
 	 *                  small to hold what stands on it. Reported rather than forced: inventing sliver
 	 *                  lots to hit a number would be worse than saying the block is full
+	 * @param channelled how many were displaced by the river: a plot the channel takes outright
+	 *                  (T4b). Distinct from {@code unfitted} on purpose — one is a block that could
+	 *                  not hold its houses, the other is a plot that is water
 	 */
-	public record Diagnostics(int lots, int buildings, int dwellings, int ruins, int unfitted) {
+	public record Diagnostics(int lots, int buildings, int dwellings, int ruins, int unfitted,
+			int channelled) {
 
 		/** Whether this is worth a log line. */
 		public boolean interesting() {
-			return unfitted > 0 || ruins > 0;
+			return unfitted > 0 || ruins > 0 || channelled > 0;
 		}
 
 		@Override
 		public String toString() {
 			return lots + " lots (" + buildings + " buildings, " + dwellings + " dwellings"
 					+ (ruins > 0 ? ", " + ruins + " ruins" : "") + ")"
-					+ (unfitted > 0 ? ", " + unfitted + " did not fit" : "");
+					+ (unfitted > 0 ? ", " + unfitted + " did not fit" : "")
+					+ (channelled > 0 ? ", " + channelled + " lost to the channel" : "");
 		}
 	}
 
@@ -133,11 +139,14 @@ public record TownLots(Map<Cell, List<Lot>> byCell, Diagnostics diag) {
 	 * @param mesh     the mesh — one patch per plot, and the block each is cut from
 	 * @param wall     its fortification, so an emptied plot inside the walls can ruin rather than
 	 *                 simply vanish; may be {@code null}
+	 * @param river    the channel through town, so lots stand back from the water instead of in it
+	 *                 (T4b); may be {@code null} for a dry town
 	 * @param density  how crowded each plot is
 	 * @param siteSeed the site's layout seed
 	 * @return the lots, or {@link #NONE} for an empty mesh
 	 */
-	public static TownLots of(TownMesh mesh, TownWall wall, Density density, long siteSeed) {
+	public static TownLots of(TownMesh mesh, TownWall wall, TownRiver river, Density density,
+			long siteSeed) {
 		if (mesh == null || mesh.isEmpty()) {
 			return NONE;
 		}
@@ -147,6 +156,7 @@ public record TownLots(Map<Cell, List<Lot>> byCell, Diagnostics diag) {
 		int dwellings = 0;
 		int ruins = 0;
 		int unfitted = 0;
+		int channelled = 0;
 		for (TownMesh.Patch patch : mesh.patches()) {
 			Cell cell = patch.cell();
 			List<String> here = density.buildings(cell);
@@ -167,8 +177,15 @@ public record TownLots(Map<Cell, List<Lot>> byCell, Diagnostics diag) {
 				unfitted += want;
 				continue;
 			}
-			List<Poly> pieces = Cutter.subdivide(block, want, ALLEY_GAP,
-					TownRng.generator(TownRng.cellKey(siteSeed, cell.x(), cell.y())));
+			// THE CHANNEL (T4b). A dry plot offers its block; a plot the river crosses offers its two
+			// BANKS, so a town on a river builds on both sides of it rather than forfeiting the
+			// smaller half; a confluence offers nothing, because it is water.
+			List<Poly> blocks = river == null ? List.of(block) : river.banks(cell, block);
+			if (blocks.isEmpty()) {
+				channelled += want;
+				continue;
+			}
+			List<Poly> pieces = cut(blocks, want, siteSeed, cell);
 			pieces.removeIf(Poly::isEmpty);
 			if (pieces.isEmpty()) {
 				unfitted += want;
@@ -197,7 +214,39 @@ public record TownLots(Map<Cell, List<Lot>> byCell, Diagnostics diag) {
 			out.put(cell, List.copyOf(lots));
 		}
 		return new TownLots(Map.copyOf(out),
-				new Diagnostics(total, buildings, dwellings, ruins, unfitted));
+				new Diagnostics(total, buildings, dwellings, ruins, unfitted, channelled));
+	}
+
+	/**
+	 * Cut {@code want} lots out of one or more blocks, sharing them out by area so the wider bank of
+	 * a river gets the more houses. Every block gets at least one lot: a bank the cutter can reach is
+	 * a bank somebody lives on, however narrow.
+	 */
+	private static List<Poly> cut(List<Poly> blocks, int want, long siteSeed, Cell cell) {
+		if (blocks.size() == 1) {
+			return Cutter.subdivide(blocks.get(0), want, ALLEY_GAP,
+					TownRng.generator(TownRng.cellKey(siteSeed, cell.x(), cell.y())));
+		}
+		double total = 0;
+		for (Poly b : blocks) {
+			total += b.area();
+		}
+		List<Poly> out = new ArrayList<>();
+		int left = want;
+		for (int i = 0; i < blocks.size(); i++) {
+			Poly b = blocks.get(i);
+			int share = i == blocks.size() - 1 ? left
+					: Math.max(1, Math.min(left - (blocks.size() - 1 - i),
+							(int) Math.round(want * b.area() / Math.max(1e-9, total))));
+			if (share <= 0) {
+				continue;
+			}
+			// a distinct key per bank, so the two sides of a river are not cut identically
+			out.addAll(Cutter.subdivide(b, share, ALLEY_GAP,
+					TownRng.generator(TownRng.cellKey(siteSeed, cell.x(), cell.y() + 4096 * (i + 1)))));
+			left -= share;
+		}
+		return out;
 	}
 
 	/** The lots of one plot — empty for a plot nothing stands on. */

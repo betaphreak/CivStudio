@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { wallStyle, patchFill, patchStroke, townAlpha, BAND_IN, BAND_FULL, WALL_STYLE,
   streetStyle, STREET_STYLE, MIN_STREET_PX, MIN_WALL_PX,
-  wardTint, WARD_TINT, lotStyle, LOT_STYLE, ICON_ENV } from "./town-style.mjs";
+  wardTint, WARD_TINT, lotStyle, LOT_STYLE, ICON_ENV,
+  BRIDGE_STROKE, BRIDGE_CASING, BRIDGE_LENGTH, BRIDGE_WIDTH } from "./town-style.mjs";
 
 // The town layer's pure parts (docs/towngen-port.md T7). The one that matters is the wall styling:
 // a wall here is per-plot-edge and typed by what lies beyond it, so the COLOUR is what shows that
@@ -134,6 +135,28 @@ test("the icons come in after the town itself does", () => {
   // a pile of overlapping icons at the band it first appears
   assert.ok(ICON_ENV[0] >= BAND_IN, "icons never precede the layer");
   assert.ok(ICON_ENV[0] < ICON_ENV[1], "and they fade in over a range like everything else");
+});
+
+// --- T4b: water ---
+
+test("the waterfront reads as water-side ground", () => {
+  // the one ward decided by location rather than by what anybody built on it
+  assert.ok(WARD_TINT.HARBOR, "there is a harbour tint");
+  const blueness = t => t[2] - t[0];
+  const harbour = blueness(WARD_TINT.HARBOR);
+  assert.ok(harbour > 0, "it leans blue");
+  for (const [ward, t] of Object.entries(WARD_TINT)) {
+    if (ward !== "HARBOR") {
+      assert.ok(blueness(t) < harbour, `${ward} reads less like water than the wharves do`);
+    }
+  }
+});
+
+test("a bridge is a crossing, not a widening of the road", () => {
+  // it is drawn ACROSS the street, so it must be longer than it is wide or it reads as a passing
+  // place. The channel itself stays the river ribbon's to draw (§8b).
+  assert.ok(BRIDGE_LENGTH > BRIDGE_WIDTH * 2);
+  assert.notEqual(BRIDGE_STROKE, BRIDGE_CASING, "pale on dark, like the wall and the streets");
 });
 
 test("the ramp is monotone", () => {

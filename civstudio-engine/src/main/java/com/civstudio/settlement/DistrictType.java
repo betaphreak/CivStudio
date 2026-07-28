@@ -36,7 +36,20 @@ public enum DistrictType {
 	/** Culture district ({@link Advisor#CULTURE}). */
 	THEATER,
 	/** Residential/growth district ({@link Advisor#GROWTH}). */
-	NEIGHBORHOOD;
+	NEIGHBORHOOD,
+	/**
+	 * The waterfront ({@code docs/towngen-port.md} §7a, T4b) — the wharves, warehouses and landings
+	 * of a plot that fronts water on more than one side.
+	 * <p>
+	 * <b>The first district derived from LOCATION rather than from buildings</b>, and deliberately
+	 * so: there is no {@code Advisor} branch for "is on the coast", and there could not be — the
+	 * advisor axis classifies what people build, and a harbour is decided by where the water is.
+	 * {@link #fromCategory} therefore never returns this, and a plot that raises harbour buildings
+	 * still reads as {@link #COMMERCIAL_HUB} from its categories; the town generator's location
+	 * scoring is the only thing that assigns it. If a harbour building line ever carries its own
+	 * category, the two answers fold together here and nothing downstream changes.
+	 */
+	HARBOR;
 
 	/**
 	 * The district type a building of the given {@link Advisor} category contributes to

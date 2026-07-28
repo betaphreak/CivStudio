@@ -110,6 +110,7 @@ export const WARD_TINT = {
   COMMERCIAL_HUB: [226, 206, 158],
   THEATER:        [212, 194, 208],
   NEIGHBORHOOD:   [204, 192, 168],   // where most people live, and most of the town
+  HARBOR:         [158, 194, 210],   // the waterfront (T4b) — the one ward decided by LOCATION
 };
 
 const WARD_FALLBACK = WARD_TINT.NEIGHBORHOOD;
@@ -177,6 +178,20 @@ export function lotStyle(kind, alpha) {
     edge: `rgba(52, 44, 34, ${s.edge * a})`,
   };
 }
+
+/**
+ * A BRIDGE (docs/towngen-port.md T4b) — where a street crosses the water.
+ * <p>
+ * Drawn as a mark ON the street rather than as a span of its own, and deliberately: the channel
+ * belongs to the client's one river ribbon, which draws it for every province on the map. A second
+ * rendering served from the town could only ever disagree with the first, by a pixel, in public
+ * (§8b). So the bridge says "the road gets across here" and lets the river say where the river is.
+ */
+export const BRIDGE_STROKE = "#e8dcc0";
+export const BRIDGE_CASING = "rgba(30, 24, 16, 0.75)";
+export const BRIDGE_LENGTH = 0.34;   // across the channel, as a fraction of a plot
+export const BRIDGE_WIDTH = 0.075;
+export const MIN_BRIDGE_PX = 3;
 
 /** The band from which a building's icon stands on its mass. Below it the mass alone reads. */
 export const ICON_ENV = [6.4, 7.0];

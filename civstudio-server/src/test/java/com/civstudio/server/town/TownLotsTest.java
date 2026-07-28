@@ -77,8 +77,8 @@ class TownLotsTest {
 		// THE WHOLE POINT. The reference invents its subdivision target because nothing else knows;
 		// we know, so the count is a fact about the plot rather than a die roll.
 		Footprint fp = town(3, 3);
-		TownLots busy = TownLots.of(mesh(fp), null, flat(List.of(), 10), SEED);
-		TownLots quiet = TownLots.of(mesh(fp), null, flat(List.of(), 2), SEED);
+		TownLots busy = TownLots.of(mesh(fp), null, null, flat(List.of(), 10), SEED);
+		TownLots quiet = TownLots.of(mesh(fp), null, null, flat(List.of(), 2), SEED);
 		assertTrue(busy.diag().lots() > quiet.diag().lots() * 2,
 				busy.diag() + " vs " + quiet.diag());
 	}
@@ -86,8 +86,7 @@ class TownLotsTest {
 	@Test
 	void everyBuildingAndEveryHouseholdGetsItsOwnLot() {
 		Footprint fp = town(2, 2);
-		TownLots lots = TownLots.of(mesh(fp),
-				null, flat(List.of("BUILDING_A", "BUILDING_B"), 3), SEED);
+		TownLots lots = TownLots.of(mesh(fp), null, null, flat(List.of("BUILDING_A", "BUILDING_B"), 3), SEED);
 		for (Cell c : fp.allCells()) {
 			List<Lot> here = lots.of(c);
 			assertEquals(2, count(here, Kind.BUILDING), "one lot per building on " + c);
@@ -102,7 +101,7 @@ class TownLotsTest {
 		// important first and the pieces are sorted by area, so a cathedral gets a cathedral's
 		// footprint without any of this code knowing what a cathedral is
 		Footprint fp = town(1, 1);
-		TownLots lots = TownLots.of(mesh(fp), null,
+		TownLots lots = TownLots.of(mesh(fp), null, null,
 				flat(List.of("BUILDING_CATHEDRAL", "BUILDING_COTTAGE"), 4), SEED);
 		List<Lot> here = lots.of(new Cell(0, 0));
 		assertEquals("BUILDING_CATHEDRAL", here.get(0).building());
@@ -116,7 +115,7 @@ class TownLotsTest {
 
 	@Test
 	void aBuildingLotNamesItsBuildingAndNothingElseDoes() {
-		List<Lot> here = TownLots.of(mesh(town(1, 1)), null, flat(List.of("BUILDING_A"), 3), SEED)
+		List<Lot> here = TownLots.of(mesh(town(1, 1)), null, null, flat(List.of("BUILDING_A"), 3), SEED)
 				.of(new Cell(0, 0));
 		for (Lot lot : here) {
 			if (lot.kind() == Kind.BUILDING) {
@@ -132,7 +131,7 @@ class TownLotsTest {
 		// three lots asked for, but the cutter always produces at least as many pieces as it can fit
 		// — the surplus is garden, not invented houses
 		Footprint fp = town(1, 1);
-		TownLots lots = TownLots.of(mesh(fp), null, flat(List.of(), 3), SEED);
+		TownLots lots = TownLots.of(mesh(fp), null, null, flat(List.of(), 3), SEED);
 		List<Lot> here = lots.of(new Cell(0, 0));
 		assertEquals(3, count(here, Kind.DWELLING));
 		assertEquals(here.size() - 3, count(here, Kind.EMPTY));
@@ -140,7 +139,7 @@ class TownLotsTest {
 
 	@Test
 	void aPlotIsNeverCutPastLegibility() {
-		TownLots lots = TownLots.of(mesh(town(1, 1)), null, flat(List.of(), 400), SEED);
+		TownLots lots = TownLots.of(mesh(town(1, 1)), null, null, flat(List.of(), 400), SEED);
 		assertTrue(lots.of(new Cell(0, 0)).size() <= TownLots.MAX_LOTS,
 				"a plot is one tile; past a dozen blocks it stops reading as a place");
 	}
@@ -154,7 +153,7 @@ class TownLotsTest {
 		Footprint fp = town(3, 3);
 		TownWall wall = TownWall.of(fp, true, 0, new Cell(1, 1).centre(), DRY, List.of());
 		assertTrue(wall.walled());
-		TownLots lots = TownLots.of(mesh(fp), wall, flat(List.of(), 0), SEED);
+		TownLots lots = TownLots.of(mesh(fp), wall, null, flat(List.of(), 0), SEED);
 		assertTrue(lots.diag().ruins() > 0, "the emptied core shows ruins: " + lots.diag());
 		for (Lot lot : lots.of(new Cell(1, 1))) {
 			assertEquals(Kind.RUIN, lot.kind());
@@ -165,7 +164,7 @@ class TownLotsTest {
 	@Test
 	void emptyGroundOutsideTheWallIsJustEmptyGround() {
 		// the same plot with no wall around it has never been anything, so it ruins nothing
-		TownLots lots = TownLots.of(mesh(town(3, 3)), TownWall.NONE, flat(List.of(), 0), SEED);
+		TownLots lots = TownLots.of(mesh(town(3, 3)), TownWall.NONE, null, flat(List.of(), 0), SEED);
 		assertTrue(lots.isEmpty(), "nothing built, nothing drawn: " + lots.diag());
 		assertEquals(0, lots.diag().ruins());
 	}
@@ -177,7 +176,7 @@ class TownLotsTest {
 		// a lot that strays is a house in the next ward, or outside the wall entirely
 		Footprint fp = town(3, 3);
 		TownMesh m = mesh(fp);
-		TownLots lots = TownLots.of(m, null, flat(List.of("BUILDING_A"), 5), SEED);
+		TownLots lots = TownLots.of(m, null, null, flat(List.of("BUILDING_A"), 5), SEED);
 		for (TownMesh.Patch patch : m.patches()) {
 			for (Lot lot : lots.of(patch.cell())) {
 				for (int i = 0; i < lot.poly().size(); i++) {
@@ -192,7 +191,7 @@ class TownLotsTest {
 	void lotsLeaveTheWardBoundaryClearForTheStreet() {
 		Footprint fp = town(2, 2);
 		TownMesh m = mesh(fp);
-		TownLots lots = TownLots.of(m, null, flat(List.of(), 4), SEED);
+		TownLots lots = TownLots.of(m, null, null, flat(List.of(), 4), SEED);
 		for (TownMesh.Patch patch : m.patches()) {
 			for (Lot lot : lots.of(patch.cell())) {
 				for (int i = 0; i < lot.poly().size(); i++) {
@@ -207,7 +206,7 @@ class TownLotsTest {
 
 	@Test
 	void noLotIsDegenerate() {
-		TownLots lots = TownLots.of(mesh(town(3, 3)), null, flat(List.of("BUILDING_A"), 6), SEED);
+		TownLots lots = TownLots.of(mesh(town(3, 3)), null, null, flat(List.of("BUILDING_A"), 6), SEED);
 		for (List<Lot> here : lots.byCell().values()) {
 			for (Lot lot : here) {
 				assertFalse(lot.poly().isEmpty());
@@ -227,12 +226,12 @@ class TownLotsTest {
 		Footprint small = town(2, 2);
 		Footprint grown = Footprint.of(block(0, 0, 4, 4), ALL_LAND);
 		Density d = flat(List.of(), 4);
-		TownLots before = TownLots.of(mesh(small), null, d, SEED);
-		TownLots after = TownLots.of(mesh(grown), null, d, SEED);
+		TownLots before = TownLots.of(mesh(small), null, null, d, SEED);
+		TownLots after = TownLots.of(mesh(grown), null, null, d, SEED);
 		// (0, 0)'s patch changes shape when the town grows around it, so compare a plot whose 5x5
 		// neighbourhood is unchanged: there is none in a 2x2, so compare the counts instead
 		assertEquals(before.of(new Cell(0, 0)).size(), after.of(new Cell(0, 0)).size());
-		assertEquals(TownLots.of(mesh(grown), null, d, SEED).byCell().keySet(),
+		assertEquals(TownLots.of(mesh(grown), null, null, d, SEED).byCell().keySet(),
 				after.byCell().keySet());
 	}
 
@@ -240,8 +239,8 @@ class TownLotsTest {
 	void theSameTownIsCutTheSameWayTwice() {
 		Footprint fp = town(4, 4);
 		Density d = flat(List.of("BUILDING_A"), 3);
-		TownLots a = TownLots.of(mesh(fp), null, d, SEED);
-		TownLots b = TownLots.of(mesh(fp), null, d, SEED);
+		TownLots a = TownLots.of(mesh(fp), null, null, d, SEED);
+		TownLots b = TownLots.of(mesh(fp), null, null, d, SEED);
 		assertEquals(a.byCell(), b.byCell());
 	}
 
@@ -249,9 +248,9 @@ class TownLotsTest {
 	void twoSitesCutTheSameBlockDifferently() {
 		Footprint fp = town(2, 2);
 		Density d = flat(List.of(), 4);
-		List<Lot> a = TownLots.of(TownMesh.of(fp, TownRng.siteSeed(7654321L, 451)), null, d,
+		List<Lot> a = TownLots.of(TownMesh.of(fp, TownRng.siteSeed(7654321L, 451)), null, null, d,
 				TownRng.siteSeed(7654321L, 451)).of(new Cell(0, 0));
-		List<Lot> b = TownLots.of(TownMesh.of(fp, TownRng.siteSeed(7654321L, 4411)), null, d,
+		List<Lot> b = TownLots.of(TownMesh.of(fp, TownRng.siteSeed(7654321L, 4411)), null, null, d,
 				TownRng.siteSeed(7654321L, 4411)).of(new Cell(0, 0));
 		assertNotEquals(a, b);
 	}
@@ -260,8 +259,8 @@ class TownLotsTest {
 
 	@Test
 	void nothingToLayOutIsAnAnswerNotAFailure() {
-		assertSame(TownLots.NONE, TownLots.of(TownMesh.EMPTY, null, flat(List.of(), 5), SEED));
-		assertSame(TownLots.NONE, TownLots.of(null, null, flat(List.of(), 5), SEED));
+		assertSame(TownLots.NONE, TownLots.of(TownMesh.EMPTY, null, null, flat(List.of(), 5), SEED));
+		assertSame(TownLots.NONE, TownLots.of(null, null, null, flat(List.of(), 5), SEED));
 		assertTrue(TownLots.NONE.isEmpty());
 		assertEquals(List.of(), TownLots.NONE.of(new Cell(0, 0)));
 	}
@@ -271,7 +270,7 @@ class TownLotsTest {
 		// a patch cut past MIN_BLOCK_AREA stops, and the shortfall is reported: a block that cannot
 		// hold what stands on it is a fact about the block
 		Footprint fp = town(1, 1);
-		TownLots lots = TownLots.of(mesh(fp), null, flat(List.of(), TownLots.MAX_LOTS), SEED);
+		TownLots lots = TownLots.of(mesh(fp), null, null, flat(List.of(), TownLots.MAX_LOTS), SEED);
 		List<Lot> here = lots.of(new Cell(0, 0));
 		assertEquals(here.size() + lots.diag().unfitted(), TownLots.MAX_LOTS,
 				"every lot asked for is either cut or counted: " + lots.diag());
@@ -287,7 +286,7 @@ class TownLotsTest {
 				List.of(new TownMesh.Patch(new Cell(0, 0), new com.civstudio.server.town.geom.Pt(0.5,
 						0.5), Poly.EMPTY, true)),
 				SEED, new TownMesh.Diagnostics(1, 0, 0));
-		TownLots lots = TownLots.of(degenerate, null, flat(List.of(), 4), SEED);
+		TownLots lots = TownLots.of(degenerate, null, null, flat(List.of(), 4), SEED);
 		assertTrue(lots.isEmpty());
 		assertEquals(4, lots.diag().unfitted());
 	}

@@ -1,8 +1,7 @@
 # Plan: the town generator port (TownGeneratorOS → CivStudio)
 
-**Status:** IN PROGRESS (2026-07-28). **T0–T6 shipped, T7 prototype live**; **T4b** (the expensive
-half of water) and **T7 proper** (the `json.gz` store, the snapshot dirty flag) remain — see §9 for
-the state of each. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
+**Status:** IN PROGRESS (2026-07-28). **T0–T6 and T4b shipped, T7 prototype live**; only **T7
+proper** (the `json.gz` store, the snapshot dirty flag) remains — see §9. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
 gates, streets, wards and building lots — by porting the generation core of [Watabou's Medieval
 Fantasy City Generator] (`C:\Code\TownGeneratorOS`, Haxe/OpenFL, GPL-3) and driving it from **live
 sim state** instead of from scratch randomness.
@@ -584,6 +583,9 @@ would otherwise have to reopen:
   with no existing analogue anywhere in the codebase.
 - **Harbour ward.** One new ward class scoring on `bitCount(coast())`. Small, but it needs T4's quay.
 
+✅ **All three shipped in T4b** (see §9), and the first item cost far less than budgeted: the decode
+is already engine-side, so what was ported is the centre-line *construction* and not a decoder.
+
 **Caveat, and it matters for tuning:** the imported heightmap is continental and low-frequency —
 `heightfield.mjs` records a test province spanning only 99..145 of 255 — so *within one settlement*
 the raw elevation range is small. Relief carries more signal at city scale. Scale the two terms
@@ -642,7 +644,7 @@ scope, not adjacent cleanup:
 | --- | --- |
 | `district-plots.mjs nearestPlots()` | Decides *which urban plots are the city* on the client. T2 makes that the server's answer and §2b reuses the same nearest-first ranking for the walled-core cap — leaving it here restores the §2.1 disagreement by hand. |
 | `cost.mjs costFactor()` | Already a hand copy of the engine's `ProvincePlotPool.slopeFactor` constants (`0.06 / 3.5 / 0.05 / cap 8`). T5's slope-weighted A* would be the **third** copy. One owner, served value or served constants. **Half-done (T5):** `slopeFactor` is now public and the street router calls it rather than copying it, so there are still two — the engine's and the client's. Collapsing the client's is unchanged work and unblocked. |
-| `river-geom.mjs` | T4b ports the decode to Java. Decide there whether Java becomes authoritative and serves the polyline, or we knowingly maintain two decoders — two that drift give bridges that miss the route ribbon by a pixel, in public. |
+| ~~`river-geom.mjs`~~ | ✅ **Resolved in T4b, and it was a false dilemma.** The decode is already engine-side (`Plot` carries `river()`/`riverAdj()`/`riverClass()` as fields; the client unpacks a *packed* code only because the plot feed sends one). And the town never draws the channel — the ribbon is the client's, once, for every province — so there is no second rendering to drift. What T4b uses internally is the centre-line *construction*, and its output is an absence of houses rather than a line that could be wrong. |
 | `heightfield.mjs` corner rule | T5/T6 score streets and wards on height in Java while the 3D mesh derives corner heights in JS. If the two disagree, lots float off the drape. |
 
 Smaller, optional, and not blocking: `hamlet-food.mjs isFed()` encodes an engine rule the server
@@ -889,8 +891,48 @@ off**; T7 is the first user-visible change.
       one CAMPUS, one THEATER, two COMMERCIAL_HUBs and sixteen NEIGHBORHOODs — carrying 177 dwelling
       lots. No buildings, which is correct and is exactly the case §4b exists for: the sim has
       claimed one plot, and the city still reads as a city.
-- [ ] **T4b — Water, the expensive half.** *(after T6; independent of T7)* River centre-line clip with
-      a bank buffer (port `river-geom.mjs`'s decode); bridges at street crossings; harbour ward (§7a).
+- [x] **T4b — Water, the expensive half.** ✅ **Shipped 2026-07-28.** `TownRiver` (the channel and
+      its banks), bridges as places on `TownStreets.Street`, and the `HARBOR` ward, 18 new tests.
+
+      **The §8b decision, and it turned out to be a false dilemma.** The plan expected T4b to port
+      `river-geom.mjs`' decode to Java and then choose: make Java authoritative and serve the
+      polyline, or knowingly keep two decoders that drift. Neither is needed, for two reasons.
+      **The decode is already engine-side** — `river-geom.mjs` unpacks a *packed* river code because
+      the plot feed sends packed codes to the browser, while a `Plot` carries `river()`,
+      `riverAdj()` and `riverClass()` as fields. There is nothing to port. And **the town never
+      draws the channel**: the river ribbon is drawn once, by the client, for every province on the
+      map. This phase uses the same centre-line construction internally — to hold lots off the water
+      and to place bridges — and emits no ribbon of its own, so the drift §8b feared (two renderings
+      disagreeing by a pixel, in public) cannot arise. The town's use of the water shows up as an
+      **absence of houses**, not as a second line that could be wrong.
+
+      **Banks, not a forfeit.** A plot the channel crosses gives up the channel and a bank buffer on
+      each side, and offers its **two banks** — so a town on a river builds on both sides of it
+      rather than losing the smaller half. The lots are shared between them by area, each bank cut
+      from its own key so the two sides are not cut identically. A confluence (three or four links)
+      is not approximated at all: the plot is water, and nothing stands there.
+
+      **Where it approximates, and where it does not.** A straight run is exactly a chord between
+      two edge midpoints. A bend takes the straight chord between its two edge midpoints instead of
+      the curve through the centre — cutting the corner by up to a quarter of a plot, accepted at a
+      scale where a lot is symbolic anyway (§3). Nothing else is approximate.
+
+      **A bridge needs no intersection arithmetic.** T5 already paid for each crossing; T4b turns
+      the price into a place. A street steps between two orthogonal neighbours, so its crossing is
+      their shared edge's midpoint — which is *also* where the river's own centre-line crosses that
+      edge. The bridge lands on the channel by construction and cannot disagree with it.
+
+      **The harbour is the first district decided by LOCATION rather than by buildings** (§7a's one
+      new ward, scoring on `bitCount(coast())`). There is no `Advisor` branch for "is on the coast"
+      and there could not be — the advisor axis classifies what people build. So `DistrictType`
+      grew a `HARBOR` that `fromCategory` never returns, and its placement is a **precondition**
+      rather than a weight: a town with no waterfront gets no wharves at all, which no amount of
+      scoring could have said.
+
+      **On the two named sites:** Dhenijansar, the river capital, gets a real channel through its
+      plots with reaches built on from both banks; Nathalaire, 20 quay to 5 curtain, gets exactly
+      one harbour ward and no channel at all. The two halves of §7a are independent and both are
+      read off the plots' own state.
 - [~] **T7 — Store, serve, draw.** 🚧 **Prototype shipped 2026-07-28** — the first time anything the
       generator computes leaves the server. `TownView` (the wire projection, in plot-raster space),
       `TownController` at **`GET /api/sessions/{sid}/town/{provinceId}`** — its own endpoint on the

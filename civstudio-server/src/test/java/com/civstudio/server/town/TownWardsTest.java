@@ -162,6 +162,33 @@ class TownWardsTest {
 	}
 
 	@Test
+	void theWharvesGoWhereTheWaterIs() {
+		// T4b's one new ward (§7a), scoring on bitCount(coast()): a plot with water on two sides is
+		// a promontory, and that is where a harbour goes
+		Cell promontory = new Cell(4, 2);
+		Site shore = new Site() {
+
+			@Override
+			public int coastEdges(Cell cell) {
+				return cell.equals(promontory) ? 2 : cell.x() == 4 ? 1 : 0;
+			}
+		};
+		assertEquals(DistrictType.HARBOR, wards(town(5, 5), new Cell(2, 2), shore).of(promontory));
+	}
+
+	@Test
+	void anInlandTownGetsNoHarbourAtAll() {
+		// a PRECONDITION, not a low score: the least-inland plot of a town nowhere near water must
+		// not become its docks, and a weight alone could never say that
+		TownWards w = wards(town(5, 5), new Cell(2, 2), BARE);
+		assertEquals(0, w.diag().counts().getOrDefault(DistrictType.HARBOR, 0),
+				"no water, no wharves: " + w.diag());
+		for (DistrictType t : w.wards().values()) {
+			assertNotEquals(DistrictType.HARBOR, t);
+		}
+	}
+
+	@Test
 	void aNoblesFiefPullsTheTheatreTowardIt() {
 		// the term the reference could not have had: it invented a patriciate, and we have a real one
 		Cell fief = new Cell(3, 2);

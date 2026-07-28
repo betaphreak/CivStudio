@@ -212,7 +212,11 @@ class TownStreetsTest {
 		TownStreets streets = lay(fp, TownWall.NONE, centre, river, List.of(EAST));
 
 		assertEquals(1, streets.diag().bridges(), "it crossed the channel exactly once");
-		assertEquals(1, streets.streets().get(0).bridges());
+		assertEquals(1, streets.streets().get(0).crossings());
+		// T4b: a bridge is a PLACE, and it is exactly the shared edge midpoint of the two plots the
+		// street steps between — which is also where the river's own centre-line crosses that edge,
+		// so it lands on the channel without any intersection arithmetic
+		assertEquals(new Pt(2.0, 1.5), streets.streets().get(0).bridges().get(0));
 		assertTrue(streets.diag().interesting(), "a bridge is worth a log line");
 	}
 

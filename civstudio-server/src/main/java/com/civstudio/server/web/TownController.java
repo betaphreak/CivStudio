@@ -19,6 +19,7 @@ import com.civstudio.server.town.ColonyWall;
 import com.civstudio.server.town.Footprint;
 import com.civstudio.server.town.TownLots;
 import com.civstudio.server.town.TownMesh;
+import com.civstudio.server.town.TownRiver;
 import com.civstudio.server.town.TownRng;
 import com.civstudio.server.town.TownStreets;
 import com.civstudio.server.town.TownWall;
@@ -87,8 +88,9 @@ public class TownController {
 		ColonySite site = ColonySite.of(colony, hs.session().plotPoolIfPresent(provinceId), streets);
 		Cell centre = colony.getCityCenter() == null ? null
 				: new Cell(colony.getCityCenter().x(), colony.getCityCenter().y());
+		TownRiver river = TownRiver.of(footprint, site);
 		TownWards wards = TownWards.of(footprint, wall, streets, centre, site, seed);
-		TownLots lots = TownLots.of(mesh, wall, site, seed);
+		TownLots lots = TownLots.of(mesh, wall, river, site, seed);
 		return fresh(TownView.of(provinceId, colony.getName(), footprint, mesh, wall, streets, wards,
 				lots));
 	}

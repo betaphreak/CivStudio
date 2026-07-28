@@ -33,10 +33,13 @@ import com.civstudio.server.town.geom.Pt;
  * @param wall     the fortified plot edges, each typed by what lies beyond it (T4)
  * @param gates    the ways through the line, and what each faces
  * @param streets  the street network, gates inward, as a tree rooted at the centre (T5)
+ * @param bridges  where the streets cross water (T4b). Places, not a count — and NOT a river: the
+ *                 channel itself is drawn once by the client's own river ribbon for every province
+ *                 on the map, and a second one served from here could only disagree with it (§8b)
  */
 public record TownView(int province, String colony, boolean walled, double[][] outline,
 		List<double[][]> holes, List<TownView.PatchView> patches, List<TownView.WallView> wall,
-		List<TownView.GateView> gates, List<TownView.StreetView> streets) {
+		List<TownView.GateView> gates, List<TownView.StreetView> streets, double[][] bridges) {
 
 	/**
 	 * One plot's patch, and what stands on it.
@@ -102,7 +105,7 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 	/** An empty layout — a site with no town on it. */
 	public static TownView empty(int province) {
 		return new TownView(province, null, false, new double[0][], List.of(), List.of(), List.of(),
-				List.of(), List.of());
+				List.of(), List.of(), new double[0][]);
 	}
 
 	/**
@@ -146,11 +149,13 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 					new double[] {at.x(), at.y()}));
 		}
 		List<StreetView> lines = new ArrayList<>(streets.streets().size());
+		List<Pt> crossings = new ArrayList<>();
 		for (TownStreets.Street s : streets.streets()) {
-			lines.add(new StreetView(s.kind().name(), s.toward(), s.bridges(), points(s.points())));
+			lines.add(new StreetView(s.kind().name(), s.toward(), s.crossings(), points(s.points())));
+			crossings.addAll(s.bridges());
 		}
 		return new TownView(province, colony, wall.walled(), points(footprint.outer()), holes,
-				patches, segments, gates, lines);
+				patches, segments, gates, lines, points(crossings));
 	}
 
 	private static double[][] points(List<Pt> pts) {

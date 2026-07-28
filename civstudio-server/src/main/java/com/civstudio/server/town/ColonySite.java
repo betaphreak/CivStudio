@@ -52,7 +52,7 @@ import com.civstudio.tech.Advisor;
  * town thickens. It is the most visible uncalibrated number in the plan and it is all in one method
  * so it can be tuned in one place.
  */
-public final class ColonySite implements TownWards.Site, TownLots.Density {
+public final class ColonySite implements TownWards.Site, TownLots.Density, TownRiver.Water {
 
 	/**
 	 * How much 1444 development one synthetic household is worth at the centre. Development runs
@@ -173,6 +173,29 @@ public final class ColonySite implements TownWards.Site, TownLots.Density {
 	public boolean enfeoffed(Cell cell) {
 		Plot p = plots.get(cell);
 		return p != null && p.ownerId() != null;
+	}
+
+	@Override
+	public int coastEdges(Cell cell) {
+		Plot p = plots.get(cell);
+		return p == null ? 0 : Integer.bitCount(p.coast() & 0xF);
+	}
+
+	// --- TownRiver.Water ----------------------------------------------------------------------
+
+	@Override
+	public boolean river(Cell cell) {
+		Plot p = plots.get(cell);
+		return p != null && p.river();
+	}
+
+	@Override
+	public int links(Cell cell) {
+		Plot p = plots.get(cell);
+		// the engine has already decoded this: the client's river-geom.mjs unpacks a PACKED code
+		// because the plot feed sends packed codes, and a Plot carries the fields outright. There is
+		// no decoder to port and none to keep in step (docs/towngen-port.md §8b, settled in T4b).
+		return p == null ? 0 : p.riverAdj();
 	}
 
 	// --- TownLots.Density ---------------------------------------------------------------------

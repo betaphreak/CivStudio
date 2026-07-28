@@ -19,7 +19,9 @@ import { townOf, ensureTown } from "./townfetch.mjs";
 import { drawBuildIcon } from "./build-catalog.mjs";
 import { patchFill, patchStroke, wallStyle, TOWN_ENV, WALL_CASING, CASING_EXTRA, MIN_WALL_PX,
   streetStyle, STREET_CASING, STREET_CASING_EXTRA, MIN_STREET_PX,
-  lotStyle, ICON_ENV, ICON_PLOT_FRACTION, MIN_ICON_PX } from "./town-style.mjs";
+  lotStyle, ICON_ENV, ICON_PLOT_FRACTION, MIN_ICON_PX,
+  BRIDGE_STROKE, BRIDGE_CASING, BRIDGE_LENGTH, BRIDGE_WIDTH, MIN_BRIDGE_PX }
+  from "./town-style.mjs";
 
 // draw a ring of [x, y] plot-space points as a path. The layout is served in the same source
 // coordinates the plot grid uses, so projectOn — which carries the homography and the 3D ground
@@ -176,6 +178,32 @@ export function drawTown() {
     for (const seg of town.wall || [])
       line(seg, wallStyle(seg.kind).stroke,
            Math.max(MIN_WALL_PX, px * wallStyle(seg.kind).width));
+
+    // 4b. the bridges — where a street gets across the water (T4b). A mark on the road, not a span:
+    // the channel is the river ribbon's to draw, and a second one here could only disagree with it.
+    // The stroke runs across the street, so it reads as a crossing rather than as a widening.
+    if (town.bridges && town.bridges.length) {
+      const w = Math.max(MIN_BRIDGE_PX, px * BRIDGE_WIDTH);
+      const half = Math.max(MIN_BRIDGE_PX * 2, px * BRIDGE_LENGTH) / 2;
+      for (const [bx, by] of town.bridges) {
+        // the crossing is a plot-edge midpoint, so the channel runs along one axis and the road the
+        // other: probe a plot-space step to find which way is "across" once projected
+        const [cx, cy] = projectOn(bx, by);
+        const [ax, ay] = projectOn(bx + 0.25, by);
+        let dx = ax - cx, dy = ay - cy;
+        const len = Math.hypot(dx, dy) || 1;
+        dx = dx / len * half;
+        dy = dy / len * half;
+        for (const [style, width] of [[BRIDGE_CASING, w + 2], [BRIDGE_STROKE, w]]) {
+          ctx.strokeStyle = style;
+          ctx.lineWidth = width;
+          ctx.beginPath();
+          ctx.moveTo(cx - dx, cy - dy);
+          ctx.lineTo(cx + dx, cy + dy);
+          ctx.stroke();
+        }
+      }
+    }
 
     // 5. the gates, as a mark on the line — the roads that actually leave town (§6)
     for (const gate of town.gates || []) {
