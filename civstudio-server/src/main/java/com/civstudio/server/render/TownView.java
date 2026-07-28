@@ -4,9 +4,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.civstudio.server.town.Footprint;
+import com.civstudio.server.town.TownLots;
 import com.civstudio.server.town.TownMesh;
 import com.civstudio.server.town.TownStreets;
 import com.civstudio.server.town.TownWall;
+import com.civstudio.server.town.TownWards;
 import com.civstudio.server.town.geom.Poly;
 import com.civstudio.server.town.geom.Pt;
 
@@ -37,14 +39,29 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 		List<TownView.GateView> gates, List<TownView.StreetView> streets) {
 
 	/**
-	 * One plot's patch.
+	 * One plot's patch, and what stands on it.
 	 *
 	 * @param x      the plot's raster x
 	 * @param y      the plot's raster y
 	 * @param walled whether it stands inside the wall ({@code false} for a suburb — §2b)
+	 * @param ward   its {@code DistrictType} — the plot's own district, not a second vocabulary
+	 *               (T6, §4): where the sim has built, this is the fold of the buildings' categories
 	 * @param poly   the patch outline
+	 * @param lots   the blocks within it, biggest first — buildings, then dwellings, then yard
 	 */
-	public record PatchView(int x, int y, boolean walled, double[][] poly) {
+	public record PatchView(int x, int y, boolean walled, String ward, double[][] poly,
+			List<TownView.LotView> lots) {
+	}
+
+	/**
+	 * One lot within a patch.
+	 *
+	 * @param kind     {@code BUILDING}, {@code DWELLING}, {@code EMPTY} or {@code RUIN}
+	 * @param building the {@code BUILDING_*} id standing here, or {@code null} — the client joins it
+	 *                 against the building catalog for a name and its C2C button icon
+	 * @param poly     the lot outline
+	 */
+	public record LotView(String kind, String building, double[][] poly) {
 	}
 
 	/**
@@ -97,17 +114,25 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 	 * @param mesh      its mesh
 	 * @param wall      its fortification
 	 * @param streets   its streets
+	 * @param wards     what each patch is
+	 * @param lots      the blocks within each patch
 	 * @return the wire projection
 	 */
 	public static TownView of(int province, String colony, Footprint footprint, TownMesh mesh,
-			TownWall wall, TownStreets streets) {
+			TownWall wall, TownStreets streets, TownWards wards, TownLots lots) {
 		List<double[][]> holes = new ArrayList<>(footprint.waterHoles().size());
 		for (Poly hole : footprint.waterHoles()) {
 			holes.add(points(hole));
 		}
 		List<PatchView> patches = new ArrayList<>(mesh.patches().size());
 		for (TownMesh.Patch p : mesh.patches()) {
-			patches.add(new PatchView(p.cell().x(), p.cell().y(), p.walled(), points(p.poly())));
+			com.civstudio.settlement.DistrictType ward = wards.of(p.cell());
+			List<LotView> blocks = new ArrayList<>();
+			for (TownLots.Lot lot : lots.of(p.cell())) {
+				blocks.add(new LotView(lot.kind().name(), lot.building(), points(lot.poly())));
+			}
+			patches.add(new PatchView(p.cell().x(), p.cell().y(), p.walled(),
+					ward == null ? null : ward.name(), points(p.poly()), blocks));
 		}
 		List<WallView> segments = new ArrayList<>(wall.segments().size());
 		for (TownWall.Segment s : wall.segments()) {

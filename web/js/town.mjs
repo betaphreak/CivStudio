@@ -3,10 +3,11 @@
 // its plots carry, the wards fitted one per plot, and the water it was built around — drawn over the
 // city bands from the server's own answer rather than from anything the client invents.
 //
-// WHAT THIS IS NOT. It is not a footprint grid (js/footprints.mjs' sqrt of blocks) and not a chip
-// per plot (js/districts.mjs): those say "something is built here", and this says WHAT. The two
-// older treatments keep the bands below it (§8a's handover), and the lots that will eventually
-// replace footprints.mjs outright arrive with T6.
+// WHAT THIS IS NOT. It is not a footprint grid and not a chip per plot (js/districts.mjs): those
+// said "something is built here", and this says WHAT. js/footprints.mjs' sqrt-grid of blocks is
+// GONE — T6's lots are cut to a plot's real households and buildings, which is what that grid was
+// standing in for. The district chips keep the bands below this one and fade out as it fades in
+// (§8a's handover), and only on the province a town is actually drawn for.
 //
 // The layout is served in PLOT-RASTER space, so every point goes through the same projectOn the
 // plot grid uses — which is what makes it survive realm crops, the homography projector and the 3D
@@ -15,8 +16,10 @@ import { P, ctx, projectOn, isPolitical, plotPxAt, provOnScreen } from "./core.m
 import { bandAlpha } from "./bands.mjs";
 import { liveColony } from "./overlays/live.mjs";
 import { townOf, ensureTown } from "./townfetch.mjs";
+import { drawBuildIcon } from "./build-catalog.mjs";
 import { patchFill, patchStroke, wallStyle, TOWN_ENV, WALL_CASING, CASING_EXTRA, MIN_WALL_PX,
-  streetStyle, STREET_CASING, STREET_CASING_EXTRA, MIN_STREET_PX } from "./town-style.mjs";
+  streetStyle, STREET_CASING, STREET_CASING_EXTRA, MIN_STREET_PX,
+  lotStyle, ICON_ENV, ICON_PLOT_FRACTION, MIN_ICON_PX } from "./town-style.mjs";
 
 // draw a ring of [x, y] plot-space points as a path. The layout is served in the same source
 // coordinates the plot grid uses, so projectOn — which carries the homography and the 3D ground
@@ -31,6 +34,19 @@ function ringPath(pts) {
   }
   ctx.closePath();
   return true;
+}
+
+// the screen centre of a lot, for standing its icon on. The mean of the corners rather than the
+// area centroid: a lot is a convex block from the cutter, so the two barely differ, and this one
+// costs no cross products per frame.
+function lotCentre(pts) {
+  let sx = 0, sy = 0;
+  for (const [px, py] of pts) {
+    const [x, y] = projectOn(px, py);
+    sx += x;
+    sy += y;
+  }
+  return [sx / pts.length, sy / pts.length];
 }
 
 /**
@@ -62,15 +78,47 @@ export function drawTown() {
     const px = plotPxAt(town.patches[0].x, town.patches[0].y);
     if (!(px > 0)) continue;
 
-    // 1. the wards, as ground
+    // 1. the wards, as ground — tinted by what each patch IS (T6). The tint is the plot's own
+    // DistrictType, so this is the same axis the district chips and the city screen speak.
     ctx.save();
     ctx.lineWidth = Math.max(0.4, px * 0.02);
     ctx.strokeStyle = patchStroke(a);
     for (const patch of town.patches) {
       if (!ringPath(patch.poly)) continue;
-      ctx.fillStyle = patchFill(patch.walled, a);
+      ctx.fillStyle = patchFill(patch.walled, a, patch.ward);
       ctx.fill();
       ctx.stroke();
+    }
+
+    // 1b. the lots — what actually stands on the ground (T6 §4a). Buildings draw as coloured
+    // masses sized by the block they took, which is the reference art's own treatment (§2c) and
+    // the reason the biggest building gets the biggest block server-side.
+    ctx.lineWidth = Math.max(0.3, px * 0.012);
+    const icons = [];                          // deferred: icons stand ON the masses, above them all
+    for (const patch of town.patches) {
+      for (const lot of patch.lots || []) {
+        if (!ringPath(lot.poly)) continue;
+        const style = lotStyle(lot.kind, a);
+        ctx.fillStyle = style.fill;
+        ctx.fill();
+        ctx.strokeStyle = style.edge;
+        ctx.stroke();
+        if (lot.building) icons.push(lot);
+      }
+    }
+
+    // 1c. a building's icon, standing on its mass — placed the way bonus icons are placed, which
+    // is the one piece of machinery for this the client already had. Held back to its own band:
+    // below it there is no room, and a town of overlapping buttons says less than the masses do.
+    const iconAlpha = bandAlpha(ICON_ENV);
+    const iconPx = px * ICON_PLOT_FRACTION;
+    if (iconAlpha > 0 && iconPx >= MIN_ICON_PX) {
+      ctx.globalAlpha = iconAlpha;
+      for (const lot of icons) {
+        const [cx, cy] = lotCentre(lot.poly);
+        drawBuildIcon(ctx, lot.building, cx, cy, iconPx);
+      }
+      ctx.globalAlpha = 1;
     }
 
     // 2. the water the town was built around — drawn as absence, so a bay reads as a bay

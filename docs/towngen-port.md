@@ -1,8 +1,8 @@
 # Plan: the town generator port (TownGeneratorOS → CivStudio)
 
-**Status:** IN PROGRESS (2026-07-28). **T0–T5 shipped, T7 prototype live**; T6 (wards + lots), T4b
-(the expensive half of water) and T7 proper (the `json.gz` store) remain — see §9 for the state of
-each. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
+**Status:** IN PROGRESS (2026-07-28). **T0–T6 shipped, T7 prototype live**; **T4b** (the expensive
+half of water) and **T7 proper** (the `json.gz` store, the snapshot dirty flag) remain — see §9 for
+the state of each. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
 gates, streets, wards and building lots — by porting the generation core of [Watabou's Medieval
 Fantasy City Generator] (`C:\Code\TownGeneratorOS`, Haxe/OpenFL, GPL-3) and driving it from **live
 sim state** instead of from scratch randomness.
@@ -618,7 +618,11 @@ stands on a plot; that is how the two-footprint disagreement of §2.1 happened i
 
 - **Retired outright:** `js/footprints.mjs`' `sqrt`-grid of blocks, and the district-icon /
   neighborhood-chip drawing of the same plots at these bands. A real lot with a real building sprite
-  on it says everything the chip said, better.
+  on it says everything the chip said, better. ✅ **Done in T6** — `footprints.mjs` and its tests are
+  deleted, and the chips fade out over `TOWN_ENV` as the town fades in. **With one condition the
+  plan did not anticipate:** the chips retire only on the province a town is actually drawn for.
+  Everywhere else there is no session and no colony, so no town — and a chip is still the only thing
+  saying "a city stands here". Retiring them globally would empty the map at deep zoom.
 - **Moved server-side, not merely replaced:** `district-plots.mjs nearestPlots()`. The footprint is
   T2's answer now, so the client must stop computing a second one (see the JS→Java note below).
 - **Kept, band-scoped:** the icon/chip treatments stay alive **below** band 5.5, where there is no
@@ -834,12 +838,57 @@ off**; T7 is the first user-visible change.
 
       **On Nathalaire:** a nine-plot artery out to the Flooded Coast, three landings off the quay,
       three junctions, no bridges. Those numbers are a regression assertion.
-- [ ] **T6 — Wards + lots.** `rateLocation` over real sim state (§4); block subdivision **fitted to
-      the real household and building counts** (§4a) **plus the starting core's synthetic population**
-      (§4b — a founded city is generated at its historical size, not as empty blocks), lots assigned
-      buildings → dwellings → empty;
-      **outskirts thinning + gate clustering** for the extramural belt (§2b). `CAMPUS` authored.
-      Decline renders as ruins in the empty remainder.
+- [x] **T6 — Wards + lots.** ✅ **Shipped 2026-07-28.** `TownWards` (the `rateLocation` half),
+      `TownLots` (the fitted subdivision) and `ColonySite` (the engine adapter, real state plus
+      §4b's synthetic core), 40 tests. On the client the patches are tinted by ward, the lots draw
+      as blocks, a building draws as a **coloured mass sized by the block it took** with its C2C
+      button standing on it, and `footprints.mjs` is **gone** (§8a).
+
+      **A ward is a district, not a second vocabulary.** Where the sim has built, the type is
+      already decided — the fold of the buildings' advisor categories — and the scoring gets no
+      vote; `district-buildout.md` forbids the client inventing district identity and this is the
+      server half of the same rule. What the scoring decides is the rest: the 1444 core, which would
+      otherwise be twenty identical blocks. The weights are the reference generator's instincts
+      stated over things the map actually knows — and one it could not have had: it *invented* a
+      patriciate, and we have a real one (`Plot.ownerId`, the fiefs of `city-of-hamlets-plan.md`).
+
+      **The subdivision is fitted, and that is the payoff of the whole port.** The reference bisects
+      a block until each half falls under a random threshold because nothing else knows how many
+      buildings a ward holds. We know: `householdsByHomePlot` and `Plot.buildings()`. So a plot with
+      twelve households and three buildings *looks* different from one with two households, because
+      it is. Pieces are sorted by area and buildings take them first, so a cathedral gets a
+      cathedral's footprint — §2c's "notable buildings as large coloured masses", arrived at without
+      any of the code knowing what a cathedral is.
+
+      **§9a.1 is answered** — the synthetic density function, the plan's most visible uncalibrated
+      number. A base off `development()` (÷6, capped at 6), falling away from the centre (halving
+      every 4 plots), plus one household on a street because a town thickens along its roads. All in
+      one method, so it tunes in one place. The three fences of §4b hold: **real state always wins**
+      (any household or building and the synthesis does not run — not "is blended with", does not
+      run), it is **render-only**, and it is **derived, not stored**.
+
+      Three findings:
+      - **Height must be normalised against the town, not the byte range.** The imported heightmap
+        is continental (§7's caveat — a whole settlement spans forty units of 255), so scored
+        absolutely every plot in town reads as flat and the term does nothing at all. Against the
+        town's own span, a six-unit rise is the high ground, which is what it is.
+      - **A keyed nudge is what stops a map of towns being a tiling.** Deterministic tie-breaks on
+        `(y, x)` put every flat town's cathedral on the same corner. A ±0.15 nudge keyed on
+        `(site, x, y)` separates near-ties by site while staying reproducible.
+      - **The cutter needs one generator per plot, never one per town.** A shared stream makes a
+        plot's blocks depend on how many plots were cut before it, so building on one side of town
+        re-cuts every block on the other — T3's ulp-drift bug again, in a different costume.
+
+      **Not built:** outskirts thinning and gate clustering for the extramural belt (§2b). They
+      would thin the *invented* half only — real households are where they are, and culling them
+      would contradict §4a outright — so they are a refinement of the synthetic layer, not of the
+      town. Decline **is** built: a walled plot that emptied out draws ruins rather than vanishing
+      (§2a), since the wall is a high-water mark and the hollowing happens inside it.
+
+      **On Nathalaire at founding:** 23 patches — one CITY_CENTER, one ENCAMPMENT, one HOLY_SITE,
+      one CAMPUS, one THEATER, two COMMERCIAL_HUBs and sixteen NEIGHBORHOODs — carrying 177 dwelling
+      lots. No buildings, which is correct and is exactly the case §4b exists for: the sim has
+      claimed one plot, and the city still reads as a city.
 - [ ] **T4b — Water, the expensive half.** *(after T6; independent of T7)* River centre-line clip with
       a bank buffer (port `river-geom.mjs`'s decode); bridges at street crossings; harbour ward (§7a).
 - [~] **T7 — Store, serve, draw.** 🚧 **Prototype shipped 2026-07-28** — the first time anything the
@@ -901,8 +950,10 @@ are cities and therefore all-urban.
 
 ## 9a. Open for the owner
 
-1. **The synthetic density function (§4b).** How `development()` becomes households per patch. The
-   most visible uncalibrated number in the plan, and Dhenijansar's 30 is the number to tune against.
+1. ~~**The synthetic density function (§4b).**~~ ✅ **Answered in T6** (`ColonySite.synthetic`): a
+   base off `development()` (÷6, capped at 6), halving every 4 plots from the centre, +1 on a
+   street. Still the most visible uncalibrated number in the plan — it is now in one method so it
+   tunes in one place, and Dhenijansar's 30 remains the second number to tune against.
 2. **Generation cost at worldgen scale (§3a).** Per-session, per-site, on demand is fine today; a
    Dwarf-Fortress-style aging pass multiplies it by thousands of sites × centuries. Nobody needs to
    solve that now, but T1 should **measure** a single layout's cost so the later decision is made

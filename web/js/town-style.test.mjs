@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { wallStyle, patchFill, patchStroke, townAlpha, BAND_IN, BAND_FULL, WALL_STYLE,
-  streetStyle, STREET_STYLE, MIN_STREET_PX, MIN_WALL_PX } from "./town-style.mjs";
+  streetStyle, STREET_STYLE, MIN_STREET_PX, MIN_WALL_PX,
+  wardTint, WARD_TINT, lotStyle, LOT_STYLE, ICON_ENV } from "./town-style.mjs";
 
 // The town layer's pure parts (docs/towngen-port.md T7). The one that matters is the wall styling:
 // a wall here is per-plot-edge and typed by what lies beyond it, so the COLOUR is what shows that
@@ -73,6 +74,66 @@ test("a street never outdraws the wall it runs up to", () => {
   // enclosure and the actual enclosure as decoration
   assert.ok(streetStyle("MAIN").width <= wallStyle("CURTAIN").width);
   assert.ok(MIN_STREET_PX < MIN_WALL_PX, "and it stays the thinner of the two when zoomed out");
+});
+
+// --- T6: wards and lots ---
+
+test("every district reads as its own ground", () => {
+  const tints = new Set(Object.values(WARD_TINT).map(t => t.join()));
+  assert.equal(tints.size, Object.keys(WARD_TINT).length, "no two wards look the same");
+  for (const [ward, t] of Object.entries(WARD_TINT)) {
+    assert.equal(t.length, 3, `${ward} is an rgb triple`);
+    for (const c of t) assert.ok(c >= 0 && c <= 255, `${ward} channel in range`);
+  }
+});
+
+test("a district this client has not heard of reads as ordinary ground", () => {
+  // a new DistrictType must never leave a hole where a ward should be
+  assert.deepEqual(wardTint("DISTRICT_OF_THE_FUTURE"), WARD_TINT.NEIGHBORHOOD);
+  assert.deepEqual(wardTint(undefined), WARD_TINT.NEIGHBORHOOD);
+});
+
+test("the ward tints the walled ground and a suburb stays outside the scheme", () => {
+  // §2b: the suburb reading cooler and thinner is what makes the wall legible as an enclosure
+  assert.notEqual(patchFill(true, 1, "HOLY_SITE"), patchFill(true, 1, "ENCAMPMENT"));
+  assert.equal(patchFill(false, 1, "HOLY_SITE"), patchFill(false, 1, "ENCAMPMENT"),
+    "a suburb is a suburb whatever district it is");
+  assert.equal(patchFill(true, 1), patchFill(true, 1, "NEIGHBORHOOD"),
+    "no ward at all falls back to residential");
+});
+
+test("a building is the heaviest thing on the ground and a yard the lightest", () => {
+  // §2c's contrast: notable buildings as solid masses against the fine grain of the ordinary town
+  const alphaOf = s => Number(s.match(/,\s*([0-9.]+)\)$/)[1]);
+  const a = k => alphaOf(lotStyle(k, 1).fill);
+  assert.ok(a("BUILDING") > a("DWELLING"));
+  assert.ok(a("DWELLING") > a("RUIN"));
+  assert.ok(a("RUIN") > a("EMPTY"));
+});
+
+test("a ruin is grey where a dwelling is warm", () => {
+  // decline has to read as decline, not as a differently-sized house
+  assert.notDeepEqual(LOT_STYLE.RUIN.fill, LOT_STYLE.DWELLING.fill);
+  const [r, g, b] = LOT_STYLE.RUIN.fill;
+  assert.ok(Math.max(r, g, b) - Math.min(r, g, b) < 20, "the ruin tint is near-neutral");
+});
+
+test("an unknown lot kind draws as a dwelling rather than vanishing", () => {
+  assert.deepEqual(lotStyle("PAGODA_OF_THE_FUTURE", 1), lotStyle("DWELLING", 1));
+});
+
+test("lot fills scale with the band alpha and clamp", () => {
+  const alphaOf = s => Number(s.match(/,\s*([0-9.]+)\)$/)[1]);
+  assert.equal(alphaOf(lotStyle("BUILDING", 0).fill), 0);
+  assert.ok(alphaOf(lotStyle("BUILDING", 0.5).fill) < alphaOf(lotStyle("BUILDING", 1).fill));
+  assert.equal(alphaOf(lotStyle("BUILDING", 9).fill), alphaOf(lotStyle("BUILDING", 1).fill));
+});
+
+test("the icons come in after the town itself does", () => {
+  // the masses have to establish the place before buttons are stamped on it, or a dense ward is
+  // a pile of overlapping icons at the band it first appears
+  assert.ok(ICON_ENV[0] >= BAND_IN, "icons never precede the layer");
+  assert.ok(ICON_ENV[0] < ICON_ENV[1], "and they fade in over a range like everything else");
 });
 
 test("the ramp is monotone", () => {

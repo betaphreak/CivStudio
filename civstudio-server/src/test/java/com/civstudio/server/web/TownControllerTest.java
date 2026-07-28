@@ -121,6 +121,50 @@ class TownControllerTest {
 	}
 
 	@Test
+	void everyPatchSaysWhatItIsAndWhatStandsOnIt() {
+		TownView town = serve().town(NATHALAIRE);
+		int withLots = 0;
+		java.util.Set<String> wards = new java.util.HashSet<>();
+		for (TownView.PatchView p : town.patches()) {
+			assertNotNull(p.ward(), "a patch is a plot, and a plot has a district");
+			wards.add(p.ward());
+			if (!p.lots().isEmpty()) {
+				withLots++;
+			}
+			for (TownView.LotView lot : p.lots()) {
+				assertNotNull(lot.kind());
+				assertTrue(lot.poly().length >= 3, "a lot is a polygon");
+				assertEquals(2, lot.poly()[0].length, "and a point is [x, y]");
+				if ("BUILDING".equals(lot.kind())) {
+					assertNotNull(lot.building(), "a building lot names its building");
+				} else {
+					assertNull(lot.building(), lot.kind() + " carries no building id");
+				}
+			}
+		}
+		assertTrue(wards.contains("CITY_CENTER"), "the founding plot is in there: " + wards);
+		assertTrue(wards.size() >= 4, "a city is more than one kind of ground: " + wards);
+		assertTrue(withLots > town.patches().size() / 2,
+				withLots + " of " + town.patches().size() + " patches have somebody on them");
+	}
+
+	@Test
+	void aFoundedCityIsPopulatedOnDayOne() {
+		// §4b end to end: the sim has claimed one plot, and the city still reads as a city rather
+		// than as a curtain wall around empty blocks
+		TownView town = serve().town(NATHALAIRE);
+		int dwellings = 0;
+		for (TownView.PatchView p : town.patches()) {
+			for (TownView.LotView lot : p.lots()) {
+				if ("DWELLING".equals(lot.kind())) {
+					dwellings++;
+				}
+			}
+		}
+		assertTrue(dwellings > 20, "a development-27 city houses more than a hamlet: " + dwellings);
+	}
+
+	@Test
 	void everyPointIsInPlotRasterSpace() {
 		// the coordinate contract (§3): the client projects these with the same projectOn the plot
 		// grid uses, so they must be plot coordinates and not pixels or normalised anything

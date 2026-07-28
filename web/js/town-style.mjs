@@ -94,17 +94,96 @@ export function wallStyle(kind) {
 }
 
 /**
- * A patch's fill. Extramural patches (suburbs outside the wall — §2b) read thinner and cooler than
- * the walled core, which is what makes the wall legible as an enclosure rather than a decoration.
+ * The WARDS (docs/towngen-port.md T6) — one tint per DistrictType, as rgb triples the fills below
+ * mix into the ground colour.
+ * <p>
+ * A ward here is the plot's own district, not a second vocabulary: where the sim has built, the
+ * type is the fold of its buildings' advisor categories, so these colours are the same axis the
+ * district chips and the city screen already speak. Kept low-saturation on purpose — this is ground
+ * under a town, and a saturated ward map would read as a political overlay rather than as a place.
+ */
+export const WARD_TINT = {
+  CITY_CENTER:    [232, 214, 176],   // the plaza: the brightest ground in town
+  CAMPUS:         [186, 202, 214],   // scholars' quarter — authored, no reference equivalent (§4.1)
+  HOLY_SITE:      [216, 202, 222],
+  ENCAMPMENT:     [206, 176, 166],
+  COMMERCIAL_HUB: [226, 206, 158],
+  THEATER:        [212, 194, 208],
+  NEIGHBORHOOD:   [204, 192, 168],   // where most people live, and most of the town
+};
+
+const WARD_FALLBACK = WARD_TINT.NEIGHBORHOOD;
+
+/**
+ * A ward's tint, falling back to the residential one for a district this client has not heard of —
+ * a new district type should read as ordinary ground, never as a hole in the town.
+ *
+ * @param {string} ward the DistrictType name
+ * @returns {number[]} an [r, g, b] triple
+ */
+export function wardTint(ward) {
+  return WARD_TINT[ward] || WARD_FALLBACK;
+}
+
+/**
+ * A patch's fill, tinted by its ward. Extramural patches (suburbs outside the wall — §2b) read
+ * thinner and cooler than the walled core, which is what makes the wall legible as an enclosure
+ * rather than a decoration.
  *
  * @param {boolean} walled whether the patch is inside the wall
  * @param {number} alpha the layer's band alpha
+ * @param {string} [ward] its DistrictType, if the server sent one
  * @returns {string} an rgba fill
  */
-export function patchFill(walled, alpha) {
+export function patchFill(walled, alpha, ward) {
   const a = Math.max(0, Math.min(1, alpha));
-  return walled ? `rgba(214, 198, 168, ${0.20 * a})` : `rgba(180, 186, 170, ${0.11 * a})`;
+  if (!walled) return `rgba(180, 186, 170, ${0.11 * a})`;
+  const [r, g, b] = wardTint(ward);
+  return `rgba(${r}, ${g}, ${b}, ${0.30 * a})`;
 }
+
+/**
+ * The LOTS (docs/towngen-port.md T6 §4a) — what stands on a block.
+ * <p>
+ * A building is a coloured MASS, not an outline: §2c's reference draws its palaces, temples and
+ * warehouses as solid blocks against the fine grain of the ordinary town, and that contrast is most
+ * of what makes the picture read as a city rather than a street plan. A dwelling is quieter, a yard
+ * quieter still, and a ruin is the ground going grey — decline rendered inside a wall that never
+ * contracts (§2a).
+ */
+export const LOT_STYLE = {
+  BUILDING: { fill: [206, 180, 132], alpha: 0.88, edge: 0.62 },
+  DWELLING: { fill: [178, 162, 134], alpha: 0.70, edge: 0.40 },
+  EMPTY:    { fill: [150, 154, 116], alpha: 0.28, edge: 0.16 },
+  RUIN:     { fill: [124, 121, 116], alpha: 0.48, edge: 0.26 },
+};
+
+const LOT_FALLBACK = LOT_STYLE.DWELLING;
+
+/**
+ * A lot's fill and edge. An unknown kind draws as a dwelling rather than vanishing — a block in the
+ * wrong shade beats a hole in the town.
+ *
+ * @param {string} kind BUILDING, DWELLING, EMPTY or RUIN
+ * @param {number} alpha the layer's band alpha
+ * @returns {{fill: string, edge: string}} the two rgba strings
+ */
+export function lotStyle(kind, alpha) {
+  const a = Math.max(0, Math.min(1, alpha));
+  const s = LOT_STYLE[kind] || LOT_FALLBACK;
+  const [r, g, b] = s.fill;
+  return {
+    fill: `rgba(${r}, ${g}, ${b}, ${s.alpha * a})`,
+    edge: `rgba(52, 44, 34, ${s.edge * a})`,
+  };
+}
+
+/** The band from which a building's icon stands on its mass. Below it the mass alone reads. */
+export const ICON_ENV = [6.4, 7.0];
+
+/** How much of a plot a building's icon takes, and the floor below which it is not worth drawing. */
+export const ICON_PLOT_FRACTION = 0.30;
+export const MIN_ICON_PX = 9;
 
 /**
  * A patch's edge — the ward boundary. Faint: the wards are ground, not a diagram, and the wall is

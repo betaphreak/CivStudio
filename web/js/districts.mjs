@@ -13,9 +13,9 @@
 import { P, ctx, plotPxAt, provOnScreen, isPolitical, BUNDLE, projectOn, pllOn } from "./core.mjs";
 import { drawBuildIcon } from "./build-catalog.mjs";
 import { bandAlpha } from "./bands.mjs";
+import { TOWN_ENV } from "./town-style.mjs";
 import { liveColony } from "./overlays/live.mjs";
 import { nearestPlots, indexDistricts, plotKey, buildingsOf } from "./district-plots.mjs";
-import { footprintCells, plotBlocks } from "./footprints.mjs";
 
 // --- Civ6 district-hex chips (D4a): {TYPE: {src,w,h}} → loaded Images. We draw NEIGHBORHOOD
 // (+ its baked ABANDONED variant); CITY_CENTER is a last-ditch fallback. ---
@@ -82,15 +82,6 @@ function drawNeighborhood(active, cx, cy, s, center = false) {
   if (fake) ctx.restore();
 }
 
-// --- owner tints: whose building this is, at a glance (the feed's owner classes) ---
-const OWNER_TINT = {
-  RULER: "#c9a24a",       // the crown's gold
-  NOBLE: "#9b7bc0",       // an aristocratic violet
-  HOUSEHOLD: "#c3ab8b",   // warm hearth stone
-  NONE: "#8b8b86",        // unowned — orphaned or inherited ground
-};
-const tintOf = owner => OWNER_TINT[owner] || OWNER_TINT.NONE;
-
 // draw one building's button icon on a small plinth centred at (cx, cy), sized to `s` px
 function drawBuildingIcon(id, cx, cy, s) {
   // plinth: a soft shadow ellipse so the icon reads as sitting in the district
@@ -114,46 +105,20 @@ function drawPlotIcons(dist, cx, cy, plotPx) {
   }
 }
 
-// (2b) DEEP LOD (band 6, docs/zoom-bands.md) — the plot as ground with blocks on it: one footprint
-// per building, owner-tinted, and a part-filled scaffold for anything still rising. This is where a
-// settlement stops being icons and starts being a place.
-function drawPlotFootprints(dist, x0, y0, plotPx) {
-  const blocks = plotBlocks(buildingsOf(dist), dist.underway);
-  if (!blocks.length) return;
-  const cells = footprintCells(blocks.length, plotPx, x0, y0);
-  for (let i = 0; i < blocks.length; i++) {
-    const b = blocks[i], c = cells[i];
-    if (b.progress == null) {
-      ctx.fillStyle = tintOf(b.owner);
-      ctx.fillRect(c.x, c.y, c.w, c.h);
-      // a thin south/east shadow so a block reads as standing, not painted on
-      ctx.fillStyle = "rgba(24,20,16,0.28)";
-      ctx.fillRect(c.x, c.y + c.h, c.w + 1, 1);
-      ctx.fillRect(c.x + c.w, c.y, 1, c.h + 1);
-    } else {
-      // a scaffold: the outline of what will stand, filled from the ground up by progress
-      const built = c.h * b.progress;
-      ctx.fillStyle = tintOf(b.owner);
-      ctx.globalAlpha *= 0.75;
-      ctx.fillRect(c.x, c.y + c.h - built, c.w, built);
-      ctx.globalAlpha /= 0.75;
-      ctx.strokeStyle = tintOf(b.owner);
-      ctx.lineWidth = Math.max(0.6, c.w * 0.06);
-      ctx.setLineDash([c.w * 0.22, c.w * 0.16]);
-      ctx.strokeRect(c.x, c.y, c.w, c.h);
-      ctx.setLineDash([]);
-    }
-  }
-}
-
 /** The district view — a small district chip on every city's urban plots (abandoned unless the plot
  *  is one the live colony's districts occupy; its centre plot draws the CITY_CENTER art) + the POV
- *  colony's buildings, each on the plot it actually stands on. Icons at the overview zoom, real
- *  footprints past band 6. Fades in at deep zoom (reading a city's plots). */
+ *  colony's buildings, each on the plot it actually stands on, as icons. Fades in at deep zoom
+ *  (reading a city's plots) and back out again as the TOWN layer takes the same ground (§8a). */
 export function drawDistricts() {
   const chips = bandAlpha([4.5, 5.5]);          // the neighborhood chips, past the interim pip
-  const icons = bandAlpha([4.5, 5.5, 6.0, 6.8]); // building icons: fade out as footprints take over
-  const feet = bandAlpha([6.0, 6.8]);            // band-6 footprints (docs/zoom-bands.md)
+  const icons = bandAlpha([4.5, 5.5, 6.0, 6.8]); // building icons: fade out as the town takes over
+  // THE HANDOVER TO THE TOWN LAYER (docs/towngen-port.md §8a). Over its bands town.mjs is the only
+  // thing drawing built ground: two surfaces cannot both claim to say what stands on a plot, and
+  // that is exactly how the two-footprint disagreement of §2.1 happened. So the chips fade out as
+  // the town fades in — but ONLY on the province the town is actually drawn for. Everywhere else
+  // there is no session, no colony and no town, and a chip is still the only thing saying "a city
+  // stands here"; retiring it globally would empty the map at deep zoom.
+  const handover = 1 - bandAlpha(TOWN_ENV);
   if (chips <= 0.01 || isPolitical()) return;
   const plotPx = plotPxAt();
   if (plotPx < 2) return;            // too small to read
@@ -168,10 +133,12 @@ export function drawDistricts() {
   // (1) geographic: a small district chip on every city's urban core plots. Abandoned by default
   // (an unlinked map site); active on the live colony's province — but only on the plots its
   // districts actually occupy, the rest of that core being unbuilt ground.
-  ctx.globalAlpha = chips;
   for (const p of P) {
     if (!p._plots || !p._plots.length || !provOnScreen(p)) continue;
     const live = p === liveProv;
+    const a = live ? chips * handover : chips;   // the town supersedes the chips on its own ground
+    if (a <= 0.01) continue;
+    ctx.globalAlpha = a;
     for (const q of p._plots) {
       if (!q.urban) continue;
       const active = live && (!built || built.has(q));
@@ -192,13 +159,12 @@ export function drawDistricts() {
       const has = Number.isFinite(dist.x) && Number.isFinite(dist.y);
       const [px0, py0] = has ? projectOn(dist.x, dist.y) : [centre.x - plotPx / 2, centre.y - plotPx / 2];
       const x0 = px0, y0 = py0;
+      // no footprints here any more: the sqrt-grid of blocks this drew past band 6 was a placeholder
+      // for exactly what T6 now serves — real lots, cut to the plot's real households and buildings,
+      // with the building standing on its own block. §8a retires it rather than layering it under.
       if (icons > 0.01) {
         ctx.globalAlpha = icons;
         drawPlotIcons(dist, x0 + plotPx / 2, y0 + plotPx / 2, plotPx);
-      }
-      if (feet > 0.01) {
-        ctx.globalAlpha = feet;
-        drawPlotFootprints(dist, x0, y0, plotPx);
       }
     }
   }

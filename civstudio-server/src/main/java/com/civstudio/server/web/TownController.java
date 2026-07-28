@@ -13,13 +13,17 @@ import com.civstudio.server.HostedSession;
 import com.civstudio.server.SessionHost;
 import com.civstudio.server.render.TownView;
 import com.civstudio.server.town.ColonyFootprint;
+import com.civstudio.server.town.ColonySite;
 import com.civstudio.server.town.ColonyStreets;
 import com.civstudio.server.town.ColonyWall;
 import com.civstudio.server.town.Footprint;
+import com.civstudio.server.town.TownLots;
 import com.civstudio.server.town.TownMesh;
 import com.civstudio.server.town.TownRng;
 import com.civstudio.server.town.TownStreets;
 import com.civstudio.server.town.TownWall;
+import com.civstudio.server.town.TownWards;
+import com.civstudio.server.town.geom.GridOutline.Cell;
 import com.civstudio.settlement.Settlement;
 
 /**
@@ -72,13 +76,21 @@ public class TownController {
 				hs.session().plotPoolIfPresent(provinceId), hs.colonies());
 		if (footprint.isEmpty())
 			return fresh(TownView.empty(provinceId));
-		TownMesh mesh = TownMesh.of(footprint,
-				TownRng.siteSeed(hs.session().getSeed(), provinceId));
+		long seed = TownRng.siteSeed(hs.session().getSeed(), provinceId);
+		TownMesh mesh = TownMesh.of(footprint, seed);
 		TownWall wall = ColonyWall.of(colony, hs.session().plotPoolIfPresent(provinceId),
 				hs.session().getWorldMap(), footprint);
 		TownStreets streets = ColonyStreets.of(colony, hs.session().plotPoolIfPresent(provinceId),
 				hs.session().getWorldMap(), footprint, mesh, wall);
-		return fresh(TownView.of(provinceId, colony.getName(), footprint, mesh, wall, streets));
+		// what stands on each plot, and how crowded it is — real sim state, plus the synthetic
+		// population of the 1444 core the sim has not reached (T6, §4a/§4b)
+		ColonySite site = ColonySite.of(colony, hs.session().plotPoolIfPresent(provinceId), streets);
+		Cell centre = colony.getCityCenter() == null ? null
+				: new Cell(colony.getCityCenter().x(), colony.getCityCenter().y());
+		TownWards wards = TownWards.of(footprint, wall, streets, centre, site, seed);
+		TownLots lots = TownLots.of(mesh, wall, site, seed);
+		return fresh(TownView.of(provinceId, colony.getName(), footprint, mesh, wall, streets, wards,
+				lots));
 	}
 
 	// a town grows as its colony builds, so it is served fresh like the route layer rather than

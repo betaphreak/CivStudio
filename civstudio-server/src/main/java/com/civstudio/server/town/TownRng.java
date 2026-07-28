@@ -57,6 +57,35 @@ public final class TownRng {
 		return mix(siteSeed ^ (0xD6E8FEB86659FD93L * x) ^ (0xA0761D6478BD642FL * y));
 	}
 
+	/**
+	 * A key as a fraction in {@code [0, 1)} — the form a score nudge or a threshold wants.
+	 * <p>
+	 * Takes the <b>top</b> 53 bits, not the bottom ones: the low bits of a mixed word are the least
+	 * well distributed, and a tie-break that leans one way is a town whose wards all cluster in the
+	 * same corner.
+	 *
+	 * @param key a key from {@link #cellKey}
+	 * @return the fraction
+	 */
+	public static double unit(long key) {
+		return (key >>> 11) * 0x1.0p-53;
+	}
+
+	/**
+	 * A generator for one plot of one site — for the block cutters, which take a {@code
+	 * RandomGenerator} rather than a key.
+	 * <p>
+	 * <b>One generator per plot, never one per town.</b> A shared stream would make a patch's lots
+	 * depend on how many patches were cut before it, so building on one side of town would re-cut
+	 * every block on the other — the same order-sensitivity this whole class exists to avoid.
+	 *
+	 * @param key a key from {@link #cellKey}
+	 * @return a generator seeded from it
+	 */
+	public static java.util.random.RandomGenerator generator(long key) {
+		return new java.util.Random(key);
+	}
+
 	/** SplitMix64's finaliser — a full-avalanche 64-bit mix, in {@code long} arithmetic. */
 	static long mix(long z) {
 		z += 0x9E3779B97F4A7C15L;
