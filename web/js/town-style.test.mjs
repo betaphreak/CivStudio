@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { wallStyle, patchFill, patchStroke, townAlpha, BAND_IN, BAND_FULL, WALL_STYLE }
-  from "./town-style.mjs";
+import { wallStyle, patchFill, patchStroke, townAlpha, BAND_IN, BAND_FULL, WALL_STYLE,
+  streetStyle, STREET_STYLE, MIN_STREET_PX, MIN_WALL_PX } from "./town-style.mjs";
 
 // The town layer's pure parts (docs/towngen-port.md T7). The one that matters is the wall styling:
 // a wall here is per-plot-edge and typed by what lies beyond it, so the COLOUR is what shows that
@@ -54,6 +54,25 @@ test("the layer fades in over the city bands and not before", () => {
   assert.ok(townAlpha((BAND_IN + BAND_FULL) / 2) < 1);
   assert.equal(townAlpha(BAND_FULL), 1);
   assert.equal(townAlpha(9), 1, "and stays up at the deepest zoom");
+});
+
+test("the high street is drawn heavier than the lanes that join it", () => {
+  // the server already decided which is which (MAIN reached the centre, STREET ended on another),
+  // so the client's only job is not to throw that away
+  assert.ok(streetStyle("MAIN").width > streetStyle("STREET").width);
+  assert.notEqual(streetStyle("MAIN").stroke, streetStyle("STREET").stroke);
+});
+
+test("an unknown street kind falls back to a lane rather than vanishing", () => {
+  assert.deepEqual(streetStyle("BOULEVARD_OF_THE_FUTURE"), STREET_STYLE.STREET);
+  assert.deepEqual(streetStyle(undefined), STREET_STYLE.STREET);
+});
+
+test("a street never outdraws the wall it runs up to", () => {
+  // the wall is the subject at these bands; a street wider than the curtain would read as the
+  // enclosure and the actual enclosure as decoration
+  assert.ok(streetStyle("MAIN").width <= wallStyle("CURTAIN").width);
+  assert.ok(MIN_STREET_PX < MIN_WALL_PX, "and it stays the thinner of the two when zoomed out");
 });
 
 test("the ramp is monotone", () => {

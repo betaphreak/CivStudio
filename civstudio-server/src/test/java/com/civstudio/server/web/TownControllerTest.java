@@ -76,6 +76,51 @@ class TownControllerTest {
 	}
 
 	@Test
+	void theStreetsTravelAsSmoothedLinesThatKnowWhatTheyAre() {
+		TownView town = serve().town(NATHALAIRE);
+		assertFalse(town.streets().isEmpty(), "a city has streets");
+		long arteries = town.streets().stream().filter(s -> "MAIN".equals(s.kind())).count();
+		assertTrue(arteries >= 1, "at least one reaches the centre");
+		for (TownView.StreetView s : town.streets()) {
+			assertTrue(s.line().length >= 2, "a street is a line");
+			assertEquals(2, s.line()[0].length, "and a point is [x, y]");
+			assertTrue(s.bridges() >= 0);
+		}
+		// the corner-cutting happened server-side, so the client draws what it is given: a street
+		// that ran nine plots arrives with far more than nine points
+		assertTrue(town.streets().stream().anyMatch(s -> s.line().length > 20),
+				"the artery arrives smoothed, not as a plot-to-plot staircase");
+	}
+
+	@Test
+	void aStreetEndsWhereItJoinsAnother() {
+		// the junction pinning of Polyline, checked on the wire: a branch's last point must be a
+		// point the artery also has, or every crossroads draws a gap
+		TownView town = serve().town(NATHALAIRE);
+		TownView.StreetView artery = town.streets().stream().filter(s -> "MAIN".equals(s.kind()))
+				.findFirst().orElseThrow();
+		for (TownView.StreetView s : town.streets()) {
+			if ("MAIN".equals(s.kind())) {
+				continue;
+			}
+			double[] end = s.line()[s.line().length - 1];
+			boolean onSomeStreet = false;
+			for (TownView.StreetView other : town.streets()) {
+				if (other == s) {
+					continue;
+				}
+				for (double[] p : other.line()) {
+					if (p[0] == end[0] && p[1] == end[1]) {
+						onSomeStreet = true;
+					}
+				}
+			}
+			assertTrue(onSomeStreet, "the branch ends on a street the town already has");
+		}
+		assertNotNull(artery);
+	}
+
+	@Test
 	void everyPointIsInPlotRasterSpace() {
 		// the coordinate contract (§3): the client projects these with the same projectOn the plot
 		// grid uses, so they must be plot coordinates and not pixels or normalised anything

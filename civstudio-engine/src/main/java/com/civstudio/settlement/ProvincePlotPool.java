@@ -662,9 +662,22 @@ public final class ProvincePlotPool {
 		return flat * slopeFactor(to.elevation() - from.elevation());
 	}
 
-	// Tobler's slope factor for a heightmap elevation delta (plot entered minus plot left)
-	// between two adjacent plots, clamped to [SLOPE_FACTOR_MIN, SLOPE_FACTOR_CAP].
-	private static double slopeFactor(int elevationDelta) {
+	/**
+	 * Tobler's slope factor for a heightmap elevation delta (plot entered minus plot left) between
+	 * two adjacent plots, clamped to {@code [SLOPE_FACTOR_MIN, SLOPE_FACTOR_CAP]}. {@code 1.0} on the
+	 * flat, below 1 on a gentle downhill, above 1 on any steep grade either way.
+	 * <p>
+	 * <b>Public because it must have exactly one owner.</b> The web client already carries a hand
+	 * copy of these constants ({@code web/js/cost.mjs costFactor()}), and the town generator's street
+	 * router (the server's {@code town.TownStreets}) would have been the third — three copies of a
+	 * calibration that drift apart silently, giving streets that contour a hill the caravans climb
+	 * straight over. See {@code docs/towngen-port.md} §8b. This is a pure function of one int and
+	 * touches no pool state.
+	 *
+	 * @param elevationDelta the 0..255 heightmap difference, entered plot minus left plot
+	 * @return the multiplier on that step's flat cost
+	 */
+	public static double slopeFactor(int elevationDelta) {
 		double slope = elevationDelta * SLOPE_PER_ELEVATION_UNIT;
 		double f = Math.exp(TOBLER_K * (Math.abs(slope + TOBLER_OFFSET) - TOBLER_OFFSET));
 		return Math.min(SLOPE_FACTOR_CAP, Math.max(SLOPE_FACTOR_MIN, f));

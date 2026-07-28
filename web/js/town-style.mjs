@@ -9,12 +9,20 @@
 // Nathalaire comes out 20 quay to 5 curtain because its plots say they front water, and a glance at
 // the map should show that without anyone having to be told.
 
-/** The fortification kinds, and how each reads. Widths are fractions of a plot. */
+/**
+ * The fortification kinds, and how each reads. Widths are fractions of a plot.
+ * <p>
+ * THESE ARE REAL FRACTIONS AGAIN. They were once about twice this, because the layer sampled its
+ * plot size at source (0, 0) rather than at the town and got 0.24 px for a plot that was 330 px
+ * across — so every width collapsed onto MIN_WALL_PX and "make the wall thicker" could only mean
+ * raising a number that never applied. With the sampling fixed the wall scales with the zoom, and
+ * these values put it at roughly the same few px it read at when the layer was first accepted.
+ */
 export const WALL_STYLE = {
-  CURTAIN:    { stroke: "#f2e8d0", width: 0.13, label: "wall" },
-  QUAY:       { stroke: "#6fc4ea", width: 0.11, label: "quay" },
-  ROAD_GATE:  { stroke: "#ffcf5c", width: 0.20, label: "gate" },
-  RIVER_GATE: { stroke: "#79e3cf", width: 0.17, label: "water gate" },
+  CURTAIN:    { stroke: "#f2e8d0", width: 0.060, label: "wall" },
+  QUAY:       { stroke: "#6fc4ea", width: 0.050, label: "quay" },
+  ROAD_GATE:  { stroke: "#ffcf5c", width: 0.090, label: "gate" },
+  RIVER_GATE: { stroke: "#79e3cf", width: 0.075, label: "water gate" },
 };
 
 /**
@@ -26,12 +34,52 @@ export const WALL_STYLE = {
  * have to look for.
  */
 export const WALL_CASING = "rgba(24, 20, 14, 0.85)";
-export const CASING_EXTRA = 0.055;   // plot-fractions added to the segment's width
+export const CASING_EXTRA = 0.024;   // plot-fractions added to the segment's width
 
 /** The narrowest a wall may draw, in screen px, so it survives being zoomed away from. */
 export const MIN_WALL_PX = 2.5;
 
 const FALLBACK = WALL_STYLE.CURTAIN;
+
+/**
+ * The streets (docs/towngen-port.md T5). Widths are fractions of a plot, as everywhere here.
+ * <p>
+ * PALE, NOT DARK. The reference art (§2c) is fine grey blocks against a *dense white* street
+ * network, and it reads that way for a reason: at this scale the streets are the negative space
+ * between the built ground, so they have to be lighter than what they separate or the town looks
+ * like a diagram of drainage. The artery is wider than its branches — that is the whole difference
+ * between a high street and a lane, and the server has already decided which is which.
+ * <p>
+ * WARMER AND NARROWER THAN THE WALL, and that is the load-bearing part. Drawn at the wall's own
+ * near-white and near its width, the two became indistinguishable on screen: the enclosure stopped
+ * reading as an enclosure and the town looked like a tangle. The wall is the subject at these
+ * bands; the streets are what fills it.
+ */
+export const STREET_STYLE = {
+  MAIN:   { stroke: "#e6d3a4", width: 0.042 },
+  STREET: { stroke: "#d0be93", width: 0.026 },
+};
+
+/** The dark casing under a street, for the same reason the wall has one: pale needs an edge. */
+export const STREET_CASING = "rgba(38, 30, 20, 0.55)";
+export const STREET_CASING_EXTRA = 0.016;
+
+/** The narrowest a street may draw, in screen px. Thinner than a wall — it is not the subject. */
+export const MIN_STREET_PX = 1.5;
+
+const STREET_FALLBACK = STREET_STYLE.STREET;
+
+/**
+ * The style for a street kind. As with the wall, an unknown kind falls back rather than vanishing:
+ * a lane drawn as a lane when the server called it something new is a far better failure than a
+ * street network with a hole in it.
+ *
+ * @param {string} kind MAIN or STREET
+ * @returns {{stroke: string, width: number}} its style
+ */
+export function streetStyle(kind) {
+  return STREET_STYLE[kind] || STREET_FALLBACK;
+}
 
 /**
  * The style for a wall segment kind. An unknown kind — an older client against a newer server —

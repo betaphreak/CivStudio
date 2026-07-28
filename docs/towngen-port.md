@@ -1,10 +1,11 @@
 # Plan: the town generator port (TownGeneratorOS → CivStudio)
 
-**Status:** PLAN (2026-07-27). Nothing implemented. This is the sequenced plan for giving a
-settlement a **real medieval town layout** — walls, gates, streets, wards and building lots — by
-porting the generation core of [Watabou's Medieval Fantasy City Generator]
-(`C:\Code\TownGeneratorOS`, Haxe/OpenFL, GPL-3) and driving it from **live sim state** instead of
-from scratch randomness.
+**Status:** IN PROGRESS (2026-07-28). **T0–T5 shipped, T7 prototype live**; T6 (wards + lots), T4b
+(the expensive half of water) and T7 proper (the `json.gz` store) remain — see §9 for the state of
+each. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
+gates, streets, wards and building lots — by porting the generation core of [Watabou's Medieval
+Fantasy City Generator] (`C:\Code\TownGeneratorOS`, Haxe/OpenFL, GPL-3) and driving it from **live
+sim state** instead of from scratch randomness.
 
 **Companion to:** [`district-buildout.md`](district-buildout.md) (the district contract this rides —
 its D5 "generator view" is what this fulfils), [`district-generator.md`](district-generator.md) (the
@@ -636,7 +637,7 @@ scope, not adjacent cleanup:
 | Client logic | Why it moves |
 | --- | --- |
 | `district-plots.mjs nearestPlots()` | Decides *which urban plots are the city* on the client. T2 makes that the server's answer and §2b reuses the same nearest-first ranking for the walled-core cap — leaving it here restores the §2.1 disagreement by hand. |
-| `cost.mjs costFactor()` | Already a hand copy of the engine's `ProvincePlotPool.slopeFactor` constants (`0.06 / 3.5 / 0.05 / cap 8`). T5's slope-weighted A* would be the **third** copy. One owner, served value or served constants. |
+| `cost.mjs costFactor()` | Already a hand copy of the engine's `ProvincePlotPool.slopeFactor` constants (`0.06 / 3.5 / 0.05 / cap 8`). T5's slope-weighted A* would be the **third** copy. One owner, served value or served constants. **Half-done (T5):** `slopeFactor` is now public and the street router calls it rather than copying it, so there are still two — the engine's and the client's. Collapsing the client's is unchanged work and unblocked. |
 | `river-geom.mjs` | T4b ports the decode to Java. Decide there whether Java becomes authoritative and serves the polyline, or we knowingly maintain two decoders — two that drift give bridges that miss the route ribbon by a pixel, in public. |
 | `heightfield.mjs` corner rule | T5/T6 score streets and wards on height in Java while the 3D mesh derives corner heights in JS. If the two disagree, lots float off the drape. |
 
@@ -782,10 +783,57 @@ off**; T7 is the first user-visible change.
       have been walled as a single hut, which is precisely the failure §2.1 exists to prevent. Both
       named sites are cities and both hid it. The core now takes urban ground first and keeps going
       into the nearest plots until the site's development is housed.
-- [ ] **T5 — Streets.** A* from each gate to the centre under **one weight function carrying both the
-      slope penalty and the water terms** (sea blocked, rivers crossable at bridge cost — §7, §7a);
-      artery deduplication; smoothing. Unwalled settlements radiate from the centre to the footprint
-      edge.
+- [x] **T5 — Streets.** ✅ **Shipped 2026-07-28.** `TownStreets` (routing, artery deduplication,
+      smoothing), `ColonyStreets` (the engine adapter) and `geom.Polyline` (open polylines,
+      corner-cutting with pinned vertices), 30 tests. Each way in is routed to the centre over the
+      plots under **one weight function carrying the slope penalty, the bridge cost and the reuse
+      discount**; the path is cut at the first plot already carrying a street, so the network is a
+      **tree** and no stretch is ever drawn twice. A street that reaches the centre is `MAIN`, one
+      that ends on another is a branch.
+
+      **The reuse discount is what makes a high street.** Without it every gate routes its own
+      near-optimal line and the town gets a fan of parallel roads; with it the second gate would
+      rather walk further to join the first. It also costs the A* its heuristic: a discounted step
+      can fall below any distance-based estimate, so the router is **Dijkstra**, not A* — an
+      inadmissible heuristic here does not fail, it quietly returns a street that mysteriously
+      declines to join the high street.
+
+      **The slope term is borrowed, not copied** — `ProvincePlotPool.slopeFactor` is now public and
+      the router calls it (§8b). The client's `cost.mjs` hand copy would otherwise have become the
+      third, and three copies of a calibration that drift give streets contouring a hill the
+      caravans walk straight over.
+
+      **Four-connected on purpose**, matching the footprint's components, the patch grid clips and
+      the wall: a street can never squeeze through a diagonal gap the wall considers closed, and a
+      river crossing stays exactly one plot edge — something the terrain can answer without
+      approximation. The streets do not read as a grid for it, because they run through the mesh's
+      *jittered* seeds and are then corner-cut.
+
+      **`WAYS_IN`, and why a walled town needs a floor** (owner's model, followed through): a gate
+      goes only in a curtain segment, so Nathalaire's 20-quay-to-5-curtain line yields exactly
+      **one** gate — a correct wall and a wrong town, a city of twenty-seven plots with a single
+      road. The shortfall is made up from the town's own outward edges, which on such a town are its
+      **landings**: a waterfront city's traffic comes in over the water. Unwalled settlements are
+      left alone when their neighbours give them any lanes at all.
+
+      Three findings, all the same shape as T1's — <b>a plausible-looking answer that is wrong</b>:
+      - **Greedy-by-distance bearings collapse on a compact town.** Aiming the invented roads at the
+        town's own farthest boundary plots reads well and fails exactly where it is needed: the far
+        plots of a settlement whose centre sits off to one side all lie in the same arc, so angular
+        thinning left three bearings out of eight, all pointing the same way. Dividing **the
+        compass** instead gives roads leaving in every direction by construction, and the boundary
+        edge for each is still a real one.
+      - **Smoothing detaches every junction** unless the shared vertex is pinned. Chaikin moves an
+        interior vertex by up to a quarter of a plot, so a branch ending on an artery parts company
+        with it visibly. `Polyline.smooth` therefore smooths in runs *between* pins.
+      - **The client sampled its plot size at source (0, 0).** `plotPxAt()` with no argument probes
+        the origin, and under the tilted camera the scale is a function of position — it came back
+        at 0.24 px for a plot that was 330 px across. Every width in the town layer had been
+        collapsing onto its `MIN_*_PX` floor, which is why "make the wall thicker" could only ever
+        mean raising a number that never applied. `improvements.mjs` carries the same warning.
+
+      **On Nathalaire:** a nine-plot artery out to the Flooded Coast, three landings off the quay,
+      three junctions, no bridges. Those numbers are a regression assertion.
 - [ ] **T6 — Wards + lots.** `rateLocation` over real sim state (§4); block subdivision **fitted to
       the real household and building counts** (§4a) **plus the starting core's synthetic population**
       (§4b — a founded city is generated at its historical size, not as empty blocks), lots assigned
@@ -805,6 +853,10 @@ off**; T7 is the first user-visible change.
 
       Served against Nathalaire the lead city holds **23 patches, not its full 27**: the four plots
       nearer a vassal city belong to that city, so the league partition is visible in the payload.
+
+      **T5 rides the same wire** (`TownView.streets`, smoothed server-side), so a street arrives as
+      a polyline the client only has to project and stroke — and the widths finally mean something,
+      since the layer now samples its plot size at the town rather than at source (0, 0).
 
       **Still to do for T7 proper:** the `json.gz` store per site (§3a — the layout is computed per
       request today, which is microseconds at this size but is not what ruins need), the snapshot

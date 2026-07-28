@@ -5,6 +5,7 @@ import java.util.List;
 
 import com.civstudio.server.town.Footprint;
 import com.civstudio.server.town.TownMesh;
+import com.civstudio.server.town.TownStreets;
 import com.civstudio.server.town.TownWall;
 import com.civstudio.server.town.geom.Poly;
 import com.civstudio.server.town.geom.Pt;
@@ -29,10 +30,11 @@ import com.civstudio.server.town.geom.Pt;
  * @param patches  one ward-shaped patch per plot (the mesh, §4)
  * @param wall     the fortified plot edges, each typed by what lies beyond it (T4)
  * @param gates    the ways through the line, and what each faces
+ * @param streets  the street network, gates inward, as a tree rooted at the centre (T5)
  */
 public record TownView(int province, String colony, boolean walled, double[][] outline,
 		List<double[][]> holes, List<TownView.PatchView> patches, List<TownView.WallView> wall,
-		List<TownView.GateView> gates) {
+		List<TownView.GateView> gates, List<TownView.StreetView> streets) {
 
 	/**
 	 * One plot's patch.
@@ -68,10 +70,22 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 	public record GateView(int x, int y, String toward, double[] at) {
 	}
 
+	/**
+	 * One street, already smoothed.
+	 *
+	 * @param kind    {@code MAIN} for an artery reaching the centre, {@code STREET} for a branch
+	 *                ending on another street
+	 * @param toward  what lies out through its outer end, or {@code null}
+	 * @param bridges how many river crossings it makes
+	 * @param line    the polyline, outer end first
+	 */
+	public record StreetView(String kind, String toward, int bridges, double[][] line) {
+	}
+
 	/** An empty layout — a site with no town on it. */
 	public static TownView empty(int province) {
 		return new TownView(province, null, false, new double[0][], List.of(), List.of(), List.of(),
-				List.of());
+				List.of(), List.of());
 	}
 
 	/**
@@ -82,10 +96,11 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 	 * @param footprint its footprint
 	 * @param mesh      its mesh
 	 * @param wall      its fortification
+	 * @param streets   its streets
 	 * @return the wire projection
 	 */
 	public static TownView of(int province, String colony, Footprint footprint, TownMesh mesh,
-			TownWall wall) {
+			TownWall wall, TownStreets streets) {
 		List<double[][]> holes = new ArrayList<>(footprint.waterHoles().size());
 		for (Poly hole : footprint.waterHoles()) {
 			holes.add(points(hole));
@@ -105,8 +120,20 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 			gates.add(new GateView(g.segment().cell().x(), g.segment().cell().y(), g.toward(),
 					new double[] {at.x(), at.y()}));
 		}
+		List<StreetView> lines = new ArrayList<>(streets.streets().size());
+		for (TownStreets.Street s : streets.streets()) {
+			lines.add(new StreetView(s.kind().name(), s.toward(), s.bridges(), points(s.points())));
+		}
 		return new TownView(province, colony, wall.walled(), points(footprint.outer()), holes,
-				patches, segments, gates);
+				patches, segments, gates, lines);
+	}
+
+	private static double[][] points(List<Pt> pts) {
+		double[][] out = new double[pts.size()][];
+		for (int i = 0; i < pts.size(); i++) {
+			out[i] = new double[] {pts.get(i).x(), pts.get(i).y()};
+		}
+		return out;
 	}
 
 	private static double[][] points(Poly poly) {
