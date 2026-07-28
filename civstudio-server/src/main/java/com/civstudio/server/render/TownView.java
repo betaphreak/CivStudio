@@ -59,12 +59,17 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 	/**
 	 * One lot within a patch.
 	 *
+	 * @param id       a stable name for this lot: {@code "<x>:<y>#<index>"} (§3a). Keyed by the PLOT
+	 *                 and not by a position in the layout's own lists, because a cell's coordinates
+	 *                 are stable across a regeneration, a generator version bump and a colony's
+	 *                 death, and a list index is stable across none of them — which is what lets an
+	 *                 authored name override outlive the shape it was written against
 	 * @param kind     {@code BUILDING}, {@code DWELLING}, {@code EMPTY} or {@code RUIN}
 	 * @param building the {@code BUILDING_*} id standing here, or {@code null} — the client joins it
 	 *                 against the building catalog for a name and its C2C button icon
 	 * @param poly     the lot outline
 	 */
-	public record LotView(String kind, String building, double[][] poly) {
+	public record LotView(String id, String kind, String building, double[][] poly) {
 	}
 
 	/**
@@ -84,10 +89,12 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 	 *
 	 * @param x      the gate plot's raster x
 	 * @param y      the gate plot's raster y
+	 * @param side   which edge of that plot it stands in — with {@code x}/{@code y} this is the
+	 *               gate's stable name (§3a), the same {@code (cell, side)} key the wall uses
 	 * @param toward what lies through it — a neighbouring province's name
 	 * @param at     the gate's midpoint, where a street meets the line
 	 */
-	public record GateView(int x, int y, String toward, double[] at) {
+	public record GateView(int x, int y, String side, String toward, double[] at) {
 	}
 
 	/**
@@ -131,8 +138,11 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 		for (TownMesh.Patch p : mesh.patches()) {
 			com.civstudio.settlement.DistrictType ward = wards.of(p.cell());
 			List<LotView> blocks = new ArrayList<>();
-			for (TownLots.Lot lot : lots.of(p.cell())) {
-				blocks.add(new LotView(lot.kind().name(), lot.building(), points(lot.poly())));
+			List<TownLots.Lot> here = lots.of(p.cell());
+			for (int i = 0; i < here.size(); i++) {
+				TownLots.Lot lot = here.get(i);
+				blocks.add(new LotView(p.cell().x() + ":" + p.cell().y() + "#" + i, lot.kind().name(),
+						lot.building(), points(lot.poly())));
 			}
 			patches.add(new PatchView(p.cell().x(), p.cell().y(), p.walled(),
 					ward == null ? null : ward.name(), points(p.poly()), blocks));
@@ -145,8 +155,8 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 		List<GateView> gates = new ArrayList<>(wall.gates().size());
 		for (TownWall.Gate g : wall.gates()) {
 			Pt at = g.segment().mid();
-			gates.add(new GateView(g.segment().cell().x(), g.segment().cell().y(), g.toward(),
-					new double[] {at.x(), at.y()}));
+			gates.add(new GateView(g.segment().cell().x(), g.segment().cell().y(),
+					g.segment().side().name(), g.toward(), new double[] {at.x(), at.y()}));
 		}
 		List<StreetView> lines = new ArrayList<>(streets.streets().size());
 		List<Pt> crossings = new ArrayList<>();
@@ -156,6 +166,44 @@ public record TownView(int province, String colony, boolean walled, double[][] o
 		}
 		return new TownView(province, colony, wall.walled(), points(footprint.outer()), holes,
 				patches, segments, gates, lines, points(crossings));
+	}
+
+	/**
+	 * This layout, keeping an <b>older</b> layout's wall where the older one had one and this does
+	 * not — §2a's high-water mark, which is a promise the generator alone cannot keep.
+	 * <p>
+	 * <b>Why this is needed at all.</b> The wall is fitted from the colony's <em>current</em> tier
+	 * ({@code isPermanent()}, true from {@code TOWN} up), so a settlement that starves back down
+	 * loses its fortifications outright — walls that took a century to raise gone in the year the
+	 * granary failed. §2a says the opposite in as many words: <em>the wall records the maximum
+	 * extent the settlement ever reached, it is re-fitted only when the footprint grows, and decline
+	 * is rendered inside it</em>. Found by running the demo forward nineteen years, where Nathalaire
+	 * fell from METROPOLIS to TOWN and its whole line disappeared between two frames.
+	 * <p>
+	 * The patches keep their new shapes and their new lots — a hollowing town is exactly what should
+	 * be drawn inside a wall that stayed — and only their {@code walled} flag is taken from the old
+	 * core. That is safe because a living colony's plot set is monotone (§2a), so every plot the old
+	 * wall enclosed is still part of the town.
+	 *
+	 * @param older the previously stored layout, or {@code null}
+	 * @return this layout, or one wearing the older wall
+	 */
+	public TownView keepingWallOf(TownView older) {
+		if (older == null || !older.walled() || this.walled || older.wall().isEmpty()) {
+			return this;
+		}
+		java.util.Set<Long> core = new java.util.HashSet<>();
+		for (WallView w : older.wall()) {
+			core.add((long) w.x() << 32 | (w.y() & 0xFFFFFFFFL));
+		}
+		List<PatchView> kept = new ArrayList<>(patches.size());
+		for (PatchView p : patches) {
+			boolean inside = core.contains((long) p.x() << 32 | (p.y() & 0xFFFFFFFFL));
+			kept.add(inside == p.walled() ? p
+					: new PatchView(p.x(), p.y(), inside, p.ward(), p.poly(), p.lots()));
+		}
+		return new TownView(province, colony, true, outline, holes, List.copyOf(kept), older.wall(),
+				older.gates(), streets, bridges);
 	}
 
 	private static double[][] points(List<Pt> pts) {

@@ -75,5 +75,5 @@ public record ColonyView(String name, boolean alive, String date, int population
 		List<AdvisorView> advisors, List<String> knownTechs, int startingDistricts,
 		String culture, List<DistrictView> districts,
 		String researchingTech, double researchProgress, String tier, int provinceId,
-		Integer centerX, Integer centerY, BuildQueueView queue) {
+		Integer centerX, Integer centerY, BuildQueueView queue, int townRev) {
 }

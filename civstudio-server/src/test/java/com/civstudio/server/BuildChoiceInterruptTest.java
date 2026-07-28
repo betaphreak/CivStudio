@@ -43,10 +43,15 @@ class BuildChoiceInterruptTest {
 		String prior = System.getProperty(FLAG);
 		System.setProperty(FLAG, "true");
 		SessionHost host = new SessionHost();
-		HostedSession hs = host.create(SessionSpec.caravanDemo(7654321L, DHENIJANSAR));
+		// A SINGLE-PLAYER session, and that is the point: the interrupt is a save slot's feature.
+		// This used to found a DEMO, because the demo was player-driven too — until that turned out
+		// to freeze the deployed public demo on its opening days waiting for a decree from a visitor
+		// who is not signed in and never asked to drive (see SessionKind.playerChoosesBuilds).
+		HostedSession hs = host.create(SessionSpec.caravanDemo(7654321L, DHENIJANSAR), "tester",
+				SessionKind.SINGLE_PLAYER, null, null);
 		try {
 			hs.start();
-			// the demo is player-driven, so its heuristic is off: the queue genuinely runs dry. Wait
+			// a save slot is player-driven, so its heuristic is off: the queue genuinely runs dry. Wait
 			// for the CLOCK too — an idle queue shows in a cadence frame a moment before the pause
 			// itself lands, and the point here is that the clock really stops.
 			SessionSnapshot waiting = await(hs,

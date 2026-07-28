@@ -1,7 +1,9 @@
 # Plan: the town generator port (TownGeneratorOS → CivStudio)
 
-**Status:** IN PROGRESS (2026-07-28). **T0–T6 and T4b shipped, T7 prototype live**; only **T7
-proper** (the `json.gz` store, the snapshot dirty flag) remains — see §9. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
+**Status:** ✅ **COMPLETE (2026-07-28)** — T0 through T7, including T4b. The generator runs
+server-side, the layout is stored per site as `json.gz` on the `.map` volume, and the web viewer
+draws it. What remains is refinement, not phases: §11's era/race vocabularies, the deferred
+per-lot hit-testing, and the tuning §9a still calls uncalibrated. This is the sequenced plan for giving a settlement a **real medieval town layout** — walls,
 gates, streets, wards and building lots — by porting the generation core of [Watabou's Medieval
 Fantasy City Generator] (`C:\Code\TownGeneratorOS`, Haxe/OpenFL, GPL-3) and driving it from **live
 sim state** instead of from scratch randomness.
@@ -933,7 +935,7 @@ off**; T7 is the first user-visible change.
       plots with reaches built on from both banks; Nathalaire, 20 quay to 5 curtain, gets exactly
       one harbour ward and no channel at all. The two halves of §7a are independent and both are
       read off the plots' own state.
-- [~] **T7 — Store, serve, draw.** 🚧 **Prototype shipped 2026-07-28** — the first time anything the
+- [x] **T7a — Store, serve, draw (the prototype).** ✅ **Shipped 2026-07-28** — the first time anything the
       generator computes leaves the server. `TownView` (the wire projection, in plot-raster space),
       `TownController` at **`GET /api/sessions/{sid}/town/{provinceId}`** — its own endpoint on the
       route precedent, keyed by **site**, not colony — and on the client `js/town-style.mjs` (pure,
@@ -949,17 +951,47 @@ off**; T7 is the first user-visible change.
       a polyline the client only has to project and stroke — and the widths finally mean something,
       since the layer now samples its plot size at the town rather than at source (0, 0).
 
-      **Still to do for T7 proper:** the `json.gz` store per site (§3a — the layout is computed per
-      request today, which is microseconds at this size but is not what ruins need), the snapshot
-      dirty flag, and retiring `footprints.mjs` once T6 draws real lots (§8a — the handover is by
-      band until then).
+      All three of its "still to do" items landed: `footprints.mjs` is retired (T6, §8a), and the
+      store and the dirty flag are below.
 
-- [ ] **T7 — Store, serve, draw (remaining).** The layout written per site as **`json.gz`, keyed by site and not
-      by live `Settlement`** (§3a) with its own version stamp — a dead colony's layout persists as a
-      ruin (§2a), so its lifetime is decoupled from the colony's here rather than bolted on later.
-      Served from **its own endpoint** with only a `townDirty` flag on the snapshot (§1 Transport);
-      `js/town.mjs` registered in `layers.mjs` over bands 5.5→8, **retiring the surfaces it
-      supersedes** (§8a); C2C building sprites stamped into lots; 3D drape via `setGroundHeight`.
+- [x] **T7b — Store, serve, draw (the store).** ✅ **Shipped 2026-07-28.** `TownStore` (one `json.gz` per site
+      per session under `<PLOT_CACHE_DIR>/towns/v<TOWN_VERSION>/`), `TownRecord` (the stored
+      artifact, with its version stamp and its founded/grown/ruined dates), `TownSignature` (the one
+      hash the store and the snapshot both read), and `ColonyView.townRev` on the wire.
+
+      **Recompute only when the town moved.** The signature hashes exactly what the layout is
+      derived from — the plots, what stands on each, who lives there, the tier — so a settled town
+      costs a file read, a growing one pays for the generator, and a browser is told to re-fetch by
+      one integer rather than by polling fifty kilobytes. Deliberately excludes the date, or every
+      tick would rewrite every layout on the volume for nothing.
+
+      **Stable identity** (§3a): a lot is `"<x>:<y>#<index>"` and a gate carries its `side`, so both
+      are keyed by plot coordinates rather than by a position in a list — the thing that lets an
+      authored name override (§3a.1) outlive a regeneration.
+
+      Four findings, three of them bugs the run itself surfaced:
+      - **The demo paused for the crown's decree and never resumed.** `SessionKind.playerChoosesBuilds()`
+        included `DEMO`, so the first empty ruler queue stopped the deployed public demo on its
+        opening days waiting for a decree from a visitor who is not signed in and never asked to
+        drive (owner: the interrupt is a single-player feature). The demo now decides for itself.
+      - **The synthetic population repopulated plots the colony had abandoned.** §4b's predicate read
+        "no households, no buildings" as "the sim has not reached here yet", which is also true of a
+        plot the colony *emptied* — so a month into a run, fourteen ruined plots came back full of
+        people who were never there. It now also requires the plot to be unclaimed, and the emptied
+        ones fall to ruin as §2a says they should.
+      - **The wall was not a high-water mark.** It is fitted from the colony's *current* tier, so a
+        settlement that starved back below `TOWN` lost its fortifications outright — nineteen years
+        of demo took Nathalaire from METROPOLIS to TOWN and its whole line vanished between frames.
+        §2a says the opposite in as many words. `TownView.keepingWallOf` restores it from the stored
+        layout, which is one more thing a cache could not have done.
+      - **A dirty flag must not drop what it holds.** Invalidating by deleting the layout left the
+        client with nothing to draw whenever the town changed faster than a fetch completes — a demo
+        at 25 ticks a second went permanently blank. The held shape is now kept until the new one
+        lands.
+
+      **A year of Nathalaire, run forward:** day 1 is 177 dwellings and no buildings; a month in,
+      the founding retinue has consolidated and 42 plots stand as ruins inside the wall; a year in,
+      the crown has raised 14 buildings. The town follows the sim without being told to.
 
 **The vertical slice that first shows something real** is T1→T2→T3→T7-prototype (draw the mesh and
 outline only). Wall, streets and wards can then land one at a time on a surface that already renders.

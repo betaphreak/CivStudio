@@ -78,6 +78,7 @@ public final class ColonySite implements TownWards.Site, TownLots.Density, TownR
 	private final Map<Cell, Plot> plots = new HashMap<>();
 	private final Map<Cell, Integer> realHouseholds = new HashMap<>();
 	private final Map<Cell, List<String>> buildings = new HashMap<>();
+	private final java.util.Set<Cell> claimed = new java.util.HashSet<>();
 	private final Cell centre;
 	private final int development;
 	private java.util.Set<Cell> streetCells = java.util.Set.of();
@@ -102,6 +103,9 @@ public final class ColonySite implements TownWards.Site, TownLots.Density, TownR
 		}
 		for (Map.Entry<Cell, Plot> e : plots.entrySet()) {
 			Plot p = e.getValue();
+			if (p.owner() == colony) {
+				claimed.add(e.getKey());
+			}
 			Integer homes = counted.get(p);
 			if (homes != null && homes > 0) {
 				realHouseholds.put(e.getKey(), homes);
@@ -211,8 +215,13 @@ public final class ColonySite implements TownWards.Site, TownLots.Density, TownR
 		if (real != null) {
 			return real;                            // real state always wins, without blending
 		}
-		if (buildings.containsKey(cell)) {
-			return 0;                               // built on, and nobody home: also real
+		// EMPTY IS ALSO AN ANSWER. A plot the colony has built on, or simply CLAIMED, is ground the
+		// sim has an opinion about — and "nobody lives here any more" is that opinion. Reading it as
+		// "the sim has not reached here yet" and inventing families onto it repopulates exactly the
+		// plots §2a says should be falling into ruin, which is what this did before: a month into a
+		// run, fourteen plots the colony had emptied came back full of people who were never there.
+		if (buildings.containsKey(cell) || claimed.contains(cell)) {
+			return 0;
 		}
 		return synthetic(cell);
 	}
@@ -241,7 +250,7 @@ public final class ColonySite implements TownWards.Site, TownLots.Density, TownR
 	/** Whether this plot's households are invented rather than simulated — for the diagnostics. */
 	boolean isSynthetic(Cell cell) {
 		return !realHouseholds.containsKey(cell) && !buildings.containsKey(cell)
-				&& synthetic(cell) > 0;
+				&& !claimed.contains(cell) && synthetic(cell) > 0;
 	}
 
 	/**

@@ -164,7 +164,13 @@ public final class Snapshots {
 				bankProfitTax, nobleIncomeTax, advisorViews(c), knownTechs,
 				c.getStartingDistrictCount(), culture, districts, researchingTech, researchProgress,
 				c.getTier() == null ? null : c.getTier().name(), provinceId, centerX, centerY,
-				queueView(c));
+				queueView(c),
+				// the TOWN DIRTY FLAG (docs/towngen-port.md §1 Transport, T7). The layout itself never
+				// rides the snapshot — it is hundreds of polygons and only a client past band 5.5 wants
+				// any of them — so all that travels is a hash of the state the layout is derived from.
+				// It changes exactly when the town would look different, which is the client's cue to
+				// re-fetch and the store's cue to recompute. One function, both callers.
+				com.civstudio.server.town.TownSignature.of(c));
 	}
 
 	// project EVERY plot of the colony — where it is, what stands on it, and what is rising

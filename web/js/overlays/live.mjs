@@ -14,7 +14,7 @@
 import { ctx, px, py, cssVar, VIEW, baseXr, baseYr, sxSrc, sySrc, LABEL_FONT, centerOn, S, SERVER_BASE as LIVE_BASE, pllOn } from "../core.mjs";
 import { hasDeepLink } from "../main.mjs";
 import { atLeast, BAND, bandAlpha } from "../bands.mjs";
-import { setTownSession } from "../townfetch.mjs";
+import { setTownSession, syncTownRevs } from "../townfetch.mjs";
 import { showLiveLog, ingestLog, ingestChat, resetLog, setChatSender } from "../livelog.mjs";
 import { showNotify, ingestNotify, seedNotify, resetNotify } from "../notify.mjs";
 import { minusDays, LIFETIME_DAYS, MAX_CARDS } from "../notify-age.mjs";
@@ -416,6 +416,7 @@ function onSnapshot(s) {
   // changed this frame, so the draw layer refetches only those (routefetch.mjs). The refetch is async
   // and repaints itself when the layer lands, so it does not feed the repaint decision below.
   setTownSession(s.sessionId);
+  syncTownRevs(s.colonies);   // T7's dirty flag: re-fetch a town only when its own state moved
   s.caravans.forEach(c => {
     const t = (trails[c.leader] = trails[c.leader] || []);
     t.push([c.latitude, c.longitude]);
